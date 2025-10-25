@@ -9,8 +9,6 @@ vite.config.ts.*
 .env
 .env.local
 .env.*.local
-client/.env
-client/.env.local
 
 # Local state
 .local/
