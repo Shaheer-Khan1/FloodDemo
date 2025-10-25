@@ -1,0 +1,77 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function to check if user is authenticated
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    // Helper function to check if user is admin
+    function isAdmin() {
+      return isSignedIn() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+    
+    // Helper function to check if user owns the resource
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    
+    // Users collection
+    match /users/{userId} {
+      // Anyone authenticated can read their own profile
+      allow read: if isSignedIn() && (isOwner(userId) || isAdmin());
+      
+      // Users can create their own profile (during signup)
+      allow create: if isSignedIn() && isOwner(userId) && 
+        request.resource.data.uid == userId &&
+        request.resource.data.email == request.auth.token.email &&
+        request.resource.data.isAdmin == false; // Can't self-assign admin
+      
+      // Users can update their own profile (but not admin status)
+      allow update: if isSignedIn() && isOwner(userId) &&
+        request.resource.data.uid == userId &&
+        request.resource.data.isAdmin == resource.data.isAdmin; // Can't change admin status
+      
+      // Only admins can delete users
+      allow delete: if isAdmin();
+    }
+    
+    // Teams collection
+    match /teams/{teamId} {
+      // Team owners and admins can read
+      allow read: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      
+      // Any authenticated user can create a team (they become the owner)
+      allow create: if isSignedIn() && 
+        request.resource.data.ownerId == request.auth.uid;
+      
+      // Only team owner can update
+      allow update: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      
+      // Only team owner can delete
+      allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      
+      // Team members subcollection
+      match /members/{memberId} {
+        // Team owners and admins can read team members
+        allow read: if isSignedIn() && (
+          get(/databases/$(database)/documents/teams/$(teamId)).data.ownerId == request.auth.uid ||
+          isAdmin()
+        );
+        
+        // Only team owner can add members
+        allow create: if isSignedIn() && 
+          get(/databases/$(database)/documents/teams/$(teamId)).data.ownerId == request.auth.uid;
+        
+        // Only team owner can update members
+        allow update: if isSignedIn() && 
+          get(/databases/$(database)/documents/teams/$(teamId)).data.ownerId == request.auth.uid;
+        
+        // Only team owner can delete members
+        allow delete: if isSignedIn() && 
+          get(/databases/$(database)/documents/teams/$(teamId)).data.ownerId == request.auth.uid;
+      }
+    }
+  }
+}
