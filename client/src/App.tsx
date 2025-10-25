@@ -53,7 +53,7 @@ function Router() {
       </Route>
 
       <Route path="/">
-        <Redirect to="/dashboard" />
+        <Redirect to="/login" />
       </Route>
 
       <Route component={NotFound} />

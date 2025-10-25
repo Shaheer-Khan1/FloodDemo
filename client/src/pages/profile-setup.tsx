@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -15,11 +15,21 @@ import { useToast } from "@/hooks/use-toast";
 import { MapPin, Smartphone, Image as ImageIcon, Ruler, Loader2 } from "lucide-react";
 
 export default function ProfileSetup() {
-  const { user } = useAuth();
+  const { user, userProfile, loading: authLoading } = useAuth();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
+
+  // Redirect if user already has a profile or not logged in
+  useEffect(() => {
+    if (!authLoading) {
+      if (!user) {
+        setLocation("/login");
+      } else if (userProfile) {
+        setLocation("/dashboard");
+      }
+    }
+  }, [user, userProfile, authLoading, setLocation]);
   
   const [formData, setFormData] = useState({
     displayName: user?.displayName || "",
@@ -30,8 +40,6 @@ export default function ProfileSetup() {
     photoFile: null as File | null,
     photoURL: user?.photoURL || "",
   });
-
-  const totalSteps = 4;
 
   const handleLocationDetect = () => {
     setLoading(true);
@@ -143,80 +151,87 @@ export default function ProfileSetup() {
     }
   };
 
-  const canProceed = () => {
-    switch (step) {
-      case 1:
-        return formData.displayName.trim() && formData.location.trim();
-      case 2:
-        return formData.deviceId.trim();
-      case 3:
-        return true; // Photo is optional
-      case 4:
-        return formData.height && parseFloat(formData.height) > 0;
-      default:
-        return false;
-    }
+  const isFormValid = () => {
+    return (
+      formData.displayName.trim() &&
+      formData.location.trim() &&
+      formData.deviceId.trim() &&
+      formData.height &&
+      parseFloat(formData.height) > 0
+    );
   };
+
+  // Show loading while checking auth
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  // Don't render if no user
+  if (!user) {
+    return null;
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-2xl">
+      <Card className="w-full max-w-3xl">
         <CardHeader>
-          <div className="space-y-2 mb-4">
-            <Progress value={(step / totalSteps) * 100} className="h-2" />
-            <p className="text-sm text-muted-foreground text-center">
-              Step {step} of {totalSteps}
-            </p>
-          </div>
-          <CardTitle>Complete Your Profile</CardTitle>
+          <CardTitle className="text-2xl">Complete Your Profile</CardTitle>
           <CardDescription>
-            Help us set up your flood warning profile
+            Set up your flood warning profile with all required information
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
-          {step === 1 && (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="name">Full Name</Label>
-                <Input
-                  id="name"
-                  data-testid="input-name"
-                  placeholder="John Doe"
-                  className="h-12"
-                  value={formData.displayName}
-                  onChange={(e) => setFormData(prev => ({ ...prev, displayName: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="location">Location</Label>
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="location"
-                      data-testid="input-location"
-                      placeholder="Enter your location"
-                      className="pl-10 h-12"
-                      value={formData.location}
-                      onChange={(e) => setFormData(prev => ({ ...prev, location: e.target.value }))}
-                    />
+        <CardContent className="space-y-8">
+          {/* Basic Information */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Basic Information</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="name">Full Name</Label>
+                  <Input
+                    id="name"
+                    data-testid="input-name"
+                    placeholder="John Doe"
+                    value={formData.displayName}
+                    onChange={(e) => setFormData(prev => ({ ...prev, displayName: e.target.value }))}
+                    required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="location">Location</Label>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                      <Input
+                        id="location"
+                        data-testid="input-location"
+                        placeholder="Enter your location"
+                        className="pl-10"
+                        value={formData.location}
+                        onChange={(e) => setFormData(prev => ({ ...prev, location: e.target.value }))}
+                        required
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleLocationDetect}
+                      disabled={loading}
+                      data-testid="button-detect-location"
+                    >
+                      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Detect"}
+                    </Button>
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleLocationDetect}
-                    disabled={loading}
-                    data-testid="button-detect-location"
-                    className="h-12"
-                  >
-                    {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Auto-detect"}
-                  </Button>
                 </div>
               </div>
             </div>
-          )}
 
-          {step === 2 && (
+          {/* Device Information */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Device Information</h3>
             <div className="space-y-2">
               <Label htmlFor="deviceId">Device ID</Label>
               <div className="relative">
@@ -225,54 +240,22 @@ export default function ProfileSetup() {
                   id="deviceId"
                   data-testid="input-device-id"
                   placeholder="e.g., DEVICE-12345"
-                  className="pl-10 h-12"
+                  className="pl-10"
                   value={formData.deviceId}
                   onChange={(e) => setFormData(prev => ({ ...prev, deviceId: e.target.value }))}
+                  required
                 />
               </div>
               <p className="text-sm text-muted-foreground">
                 Your unique flood monitoring device identifier
               </p>
             </div>
-          )}
+          </div>
 
-          {step === 3 && (
-            <div className="space-y-4">
-              <Label>Profile Photo (Optional)</Label>
-              <div className="flex flex-col items-center gap-4">
-                <Avatar className="h-32 w-32">
-                  <AvatarImage src={formData.photoURL} />
-                  <AvatarFallback className="text-2xl">
-                    {formData.displayName.split(' ').map(n => n[0]).join('').toUpperCase() || 'U'}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => document.getElementById('photo-upload')?.click()}
-                    data-testid="button-upload-photo"
-                  >
-                    <ImageIcon className="mr-2 h-4 w-4" />
-                    Choose Photo
-                  </Button>
-                  <input
-                    id="photo-upload"
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={handlePhotoUpload}
-                  />
-                </div>
-                <p className="text-sm text-muted-foreground text-center">
-                  Recommended: 400x400px, max 5MB
-                </p>
-              </div>
-            </div>
-          )}
-
-          {step === 4 && (
-            <div className="space-y-4">
+          {/* Physical Information */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Physical Information</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="height">Height</Label>
                 <div className="relative">
@@ -283,9 +266,10 @@ export default function ProfileSetup() {
                     type="number"
                     step="0.1"
                     placeholder="Enter height"
-                    className="pl-10 h-12"
+                    className="pl-10"
                     value={formData.height}
                     onChange={(e) => setFormData(prev => ({ ...prev, height: e.target.value }))}
+                    required
                   />
                 </div>
               </div>
@@ -295,6 +279,7 @@ export default function ProfileSetup() {
                   value={formData.heightUnit}
                   onValueChange={(value: "cm" | "ft") => setFormData(prev => ({ ...prev, heightUnit: value }))}
                   data-testid="radio-height-unit"
+                  className="flex gap-4"
                 >
                   <div className="flex items-center space-x-2">
                     <RadioGroupItem value="cm" id="cm" />
@@ -307,42 +292,54 @@ export default function ProfileSetup() {
                 </RadioGroup>
               </div>
             </div>
-          )}
+          </div>
 
-          <div className="flex gap-2 pt-4">
-            {step > 1 && (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setStep(step - 1)}
-                disabled={loading}
-                data-testid="button-back"
-              >
-                Back
-              </Button>
-            )}
-            {step < totalSteps ? (
-              <Button
-                type="button"
-                onClick={() => setStep(step + 1)}
-                disabled={!canProceed() || loading}
-                className="flex-1"
-                data-testid="button-next"
-              >
-                Next
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                onClick={handleSubmit}
-                disabled={!canProceed() || loading}
-                className="flex-1"
-                data-testid="button-submit-profile"
-              >
-                {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                Complete Setup
-              </Button>
-            )}
+          {/* Profile Photo */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Profile Photo <span className="text-sm text-muted-foreground font-normal">(Optional)</span></h3>
+            <div className="flex items-center gap-6">
+              <Avatar className="h-24 w-24">
+                <AvatarImage src={formData.photoURL} />
+                <AvatarFallback className="text-2xl">
+                  {formData.displayName.split(' ').map(n => n[0]).join('').toUpperCase() || 'U'}
+                </AvatarFallback>
+              </Avatar>
+              <div className="flex flex-col gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => document.getElementById('photo-upload')?.click()}
+                  data-testid="button-upload-photo"
+                >
+                  <ImageIcon className="mr-2 h-4 w-4" />
+                  Choose Photo
+                </Button>
+                <input
+                  id="photo-upload"
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handlePhotoUpload}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Max 5MB • Recommended: 400x400px
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Submit Button */}
+          <div className="pt-4">
+            <Button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!isFormValid() || loading}
+              className="w-full"
+              data-testid="button-submit-profile"
+            >
+              {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Complete Setup
+            </Button>
           </div>
         </CardContent>
       </Card>

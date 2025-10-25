@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { collection, query, where, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp } from "firebase/firestore";
+import { collection, query, where, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, getDocs } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { Users, Plus, Trash2, UserPlus, Loader2 } from "lucide-react";
-import type { Team, TeamMember } from "@shared/schema";
+import type { Team, TeamMember } from "@/lib/types";
 import { TeamMemberDialog } from "@/components/team-member-dialog";
 
 export default function Teams() {
@@ -92,12 +92,21 @@ export default function Teams() {
     
     setCreating(true);
     try {
-      await addDoc(collection(db, "teams"), {
+      // Create the team
+      const teamRef = await addDoc(collection(db, "teams"), {
         name: newTeamName.trim(),
         ownerId: user.uid,
         ownerName: userProfile.displayName,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
+      });
+      
+      // Add creator as team member with admin role
+      await addDoc(collection(db, "teamMembers"), {
+        teamId: teamRef.id,
+        userId: user.uid,
+        role: "admin",
+        joinedAt: serverTimestamp(),
       });
       
       toast({
@@ -122,7 +131,19 @@ export default function Teams() {
     if (!confirm(`Are you sure you want to delete "${teamName}"?`)) return;
     
     try {
+      // Delete the team
       await deleteDoc(doc(db, "teams", teamId));
+      
+      // Delete all teamMembers associated with this team
+      const membersQuery = query(collection(db, "teamMembers"), where("teamId", "==", teamId));
+      const membersSnapshot = await getDocs(membersQuery);
+      
+      const deletePromises = membersSnapshot.docs.map(memberDoc => 
+        deleteDoc(doc(db, "teamMembers", memberDoc.id))
+      );
+      
+      await Promise.all(deletePromises);
+      
       toast({
         title: "Team deleted",
         description: `${teamName} has been deleted.`,

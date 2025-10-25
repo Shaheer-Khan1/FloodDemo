@@ -1,8 +1,8 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { User, onAuthStateChanged } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, onSnapshot } from "firebase/firestore";
 import { auth, db } from "./firebase";
-import type { UserProfile } from "@shared/schema";
+import type { UserProfile } from "./types";
 
 interface AuthContextType {
   user: User | null;
@@ -22,30 +22,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    let unsubscribeProfile: (() => void) | null = null;
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
       
-      if (firebaseUser) {
-        // Fetch user profile from Firestore
-        const profileDoc = await getDoc(doc(db, "users", firebaseUser.uid));
-        if (profileDoc.exists()) {
-          const data = profileDoc.data();
-          setUserProfile({
-            ...data,
-            createdAt: data.createdAt?.toDate(),
-            updatedAt: data.updatedAt?.toDate(),
-          } as UserProfile);
-        } else {
-          setUserProfile(null);
-        }
-      } else {
-        setUserProfile(null);
+      // Unsubscribe from previous profile listener
+      if (unsubscribeProfile) {
+        unsubscribeProfile();
+        unsubscribeProfile = null;
       }
       
-      setLoading(false);
+      if (firebaseUser) {
+        // Listen to real-time profile updates
+        unsubscribeProfile = onSnapshot(
+          doc(db, "users", firebaseUser.uid),
+          (profileDoc) => {
+            if (profileDoc.exists()) {
+              const data = profileDoc.data();
+              setUserProfile({
+                ...data,
+                createdAt: data.createdAt?.toDate(),
+                updatedAt: data.updatedAt?.toDate(),
+              } as UserProfile);
+            } else {
+              setUserProfile(null);
+            }
+            setLoading(false);
+          },
+          (error) => {
+            console.error("Error listening to profile:", error);
+            setUserProfile(null);
+            setLoading(false);
+          }
+        );
+      } else {
+        setUserProfile(null);
+        setLoading(false);
+      }
     });
 
-    return unsubscribe;
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeProfile) {
+        unsubscribeProfile();
+      }
+    };
   }, []);
 
   return (
