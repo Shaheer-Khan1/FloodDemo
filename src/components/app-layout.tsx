@@ -14,7 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, FileUp, Plus, List, CheckSquare, Box } from "lucide-react";
+import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, FileUp, Plus, List, CheckSquare, Box, UserPlus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
@@ -40,11 +40,15 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   };
 
   const menuItems = [
-    { title: "Dashboard", icon: LayoutDashboard, url: "/dashboard" },
-    { title: "Profile", icon: User, url: "/profile" },
-    { title: "Teams", icon: Users, url: "/teams" },
+    // Dashboard, Teams - Not for installers
+    ...(userProfile?.role !== "installer" ? [
+      { title: "Dashboard", icon: LayoutDashboard, url: "/dashboard" },
+      { title: "Teams", icon: Users, url: "/teams" },
+    ] : []),
+    // Admin menu items
     ...(userProfile?.isAdmin ? [
       { title: "Admin", icon: Shield, url: "/admin" },
+      { title: "Create User", icon: UserPlus, url: "/create-user" },
       { title: "Devices", icon: Package, url: "/devices" },
       { title: "Import Devices", icon: FileUp, url: "/device-import" },
       { title: "Import Box Numbers", icon: Box, url: "/box-import" },
@@ -59,11 +63,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     ] : []),
     // Verifier-specific menu items
     ...(userProfile?.role === "verifier" && !userProfile?.isAdmin ? [
+      { title: "Create Installer", icon: UserPlus, url: "/create-user" },
       { title: "Devices", icon: Package, url: "/devices" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
     ] : []),
     // Manager-specific menu items
     ...(userProfile?.role === "manager" && !userProfile?.isAdmin ? [
+      { title: "Create Installer", icon: UserPlus, url: "/create-user" },
       { title: "Devices", icon: Package, url: "/devices" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
     ] : []),
@@ -77,7 +83,14 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           {/* Logo & Brand */}
           <div className="flex items-center gap-8">
             <button 
-              onClick={() => setLocation("/dashboard")}
+              onClick={() => {
+                // Redirect based on user role
+                if (userProfile?.role === "installer") {
+                  setLocation("/new-installation");
+                } else {
+                  setLocation("/dashboard");
+                }
+              }}
               className="flex items-center gap-2 hover:opacity-80 transition-opacity"
             >
               <div className="h-9 w-9 rounded-lg bg-gradient-to-br from-blue-600 to-blue-700 flex items-center justify-center shadow-md">
@@ -113,13 +126,6 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
           {/* Right Side: User Menu */}
           <div className="flex items-center gap-3">
-            {userProfile?.isAdmin && (
-              <Badge variant="secondary" className="hidden sm:flex gap-1 px-3">
-                <Shield className="h-3 w-3" />
-                Admin
-              </Badge>
-            )}
-            
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button 
@@ -127,23 +133,51 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                   className="relative h-10 w-10 rounded-full ring-2 ring-slate-200 dark:ring-slate-800 hover:ring-blue-500 transition-all" 
                   data-testid="button-user-menu"
                 >
-                  <Avatar className="h-10 w-10">
-                    <AvatarImage src={userProfile?.photoURL} />
-                    <AvatarFallback className="bg-gradient-to-br from-blue-600 to-blue-700 text-white font-semibold">
-                      {userProfile?.displayName?.split(' ').map(n => n[0]).join('').toUpperCase() || 'U'}
-                    </AvatarFallback>
-                  </Avatar>
+                  {userProfile?.isAdmin ? (
+                    <Avatar className="h-10 w-10 ring-2 ring-amber-500">
+                      <AvatarImage src={userProfile?.photoURL} />
+                      <AvatarFallback className="bg-gradient-to-br from-amber-500 to-amber-600 text-white font-semibold">
+                        {userProfile?.displayName?.split(' ').map(n => n[0]).join('').toUpperCase() || 'U'}
+                      </AvatarFallback>
+                    </Avatar>
+                  ) : (
+                    <Avatar className="h-10 w-10">
+                      <AvatarImage src={userProfile?.photoURL} />
+                      <AvatarFallback className="bg-gradient-to-br from-blue-600 to-blue-700 text-white font-semibold">
+                        {userProfile?.displayName?.split(' ').map(n => n[0]).join('').toUpperCase() || 'U'}
+                      </AvatarFallback>
+                    </Avatar>
+                  )}
+                  {userProfile?.isAdmin && (
+                    <span className="absolute -bottom-0.5 -right-0.5 h-4 w-4 bg-amber-500 rounded-full border-2 border-white dark:border-slate-950 flex items-center justify-center">
+                      <Shield className="h-2.5 w-2.5 text-white" />
+                    </span>
+                  )}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-64">
                 <DropdownMenuLabel>
                   <div className="flex items-center gap-3">
-                    <Avatar className="h-12 w-12">
-                      <AvatarImage src={userProfile?.photoURL} />
-                      <AvatarFallback className="bg-gradient-to-br from-blue-600 to-blue-700 text-white">
-                        {userProfile?.displayName?.split(' ').map(n => n[0]).join('').toUpperCase() || 'U'}
-                      </AvatarFallback>
-                    </Avatar>
+                    {userProfile?.isAdmin ? (
+                      <div className="relative">
+                        <Avatar className="h-12 w-12 ring-2 ring-amber-500">
+                          <AvatarImage src={userProfile?.photoURL} />
+                          <AvatarFallback className="bg-gradient-to-br from-amber-500 to-amber-600 text-white">
+                            {userProfile?.displayName?.split(' ').map(n => n[0]).join('').toUpperCase() || 'U'}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="absolute -bottom-0.5 -right-0.5 h-4 w-4 bg-amber-500 rounded-full border-2 border-white dark:border-slate-900 flex items-center justify-center">
+                          <Shield className="h-2.5 w-2.5 text-white" />
+                        </span>
+                      </div>
+                    ) : (
+                      <Avatar className="h-12 w-12">
+                        <AvatarImage src={userProfile?.photoURL} />
+                        <AvatarFallback className="bg-gradient-to-br from-blue-600 to-blue-700 text-white">
+                          {userProfile?.displayName?.split(' ').map(n => n[0]).join('').toUpperCase() || 'U'}
+                        </AvatarFallback>
+                      </Avatar>
+                    )}
                     <div className="flex flex-col space-y-1">
                       <p className="text-sm font-semibold">{userProfile?.displayName}</p>
                       <p className="text-xs text-muted-foreground">{user?.email}</p>
@@ -172,7 +206,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 
                 <DropdownMenuItem onClick={() => setLocation("/profile")} data-testid="menu-profile">
                   <User className="mr-2 h-4 w-4" />
-                  Account Settings
+                  Profile
                 </DropdownMenuItem>
                 <DropdownMenuItem 
                   onClick={handleSignOut} 

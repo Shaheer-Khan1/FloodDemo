@@ -10,20 +10,26 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
-import { MapPin, Smartphone, Ruler, Loader2, Image as ImageIcon, Save } from "lucide-react";
+import { MapPin, Loader2, Image as ImageIcon, Save } from "lucide-react";
+import { useLocation } from "wouter";
 
 export default function Profile() {
   const { user, userProfile } = useAuth();
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
   const [loading, setLoading] = useState(false);
   const [detectingLocation, setDetectingLocation] = useState(false);
+
+  // Redirect installers to their installation page
+  useEffect(() => {
+    if (userProfile?.role === "installer") {
+      setLocation("/new-installation");
+    }
+  }, [userProfile, setLocation]);
   
   const [formData, setFormData] = useState({
     displayName: "",
     location: "",
-    deviceId: "",
-    height: "",
-    heightUnit: "cm" as "cm" | "ft",
     photoFile: null as File | null,
     photoURL: "",
   });
@@ -33,9 +39,6 @@ export default function Profile() {
       setFormData({
         displayName: userProfile.displayName,
         location: userProfile.location,
-        deviceId: userProfile.deviceId,
-        height: userProfile.height.toString(),
-        heightUnit: userProfile.heightUnit,
         photoFile: null,
         photoURL: userProfile.photoURL || "",
       });
@@ -127,9 +130,6 @@ export default function Profile() {
         displayName: formData.displayName,
         photoURL,
         location: formData.location,
-        deviceId: formData.deviceId,
-        height: parseFloat(formData.height),
-        heightUnit: formData.heightUnit,
         updatedAt: serverTimestamp(),
       });
 
@@ -234,57 +234,6 @@ export default function Profile() {
                   >
                     {detectingLocation ? <Loader2 className="h-4 w-4 animate-spin" /> : "Detect"}
                   </Button>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="deviceId">Device ID</Label>
-                <div className="relative">
-                  <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="deviceId"
-                    data-testid="input-edit-device"
-                    placeholder="e.g., DEVICE-12345"
-                    className="pl-10 h-12"
-                    value={formData.deviceId}
-                    onChange={(e) => setFormData(prev => ({ ...prev, deviceId: e.target.value }))}
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="height">Height</Label>
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <Ruler className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="height"
-                      data-testid="input-edit-height"
-                      type="number"
-                      step="0.1"
-                      placeholder="Enter height"
-                      className="pl-10 h-12"
-                      value={formData.height}
-                      onChange={(e) => setFormData(prev => ({ ...prev, height: e.target.value }))}
-                      required
-                    />
-                  </div>
-                  <RadioGroup
-                    value={formData.heightUnit}
-                    onValueChange={(value: "cm" | "ft") => setFormData(prev => ({ ...prev, heightUnit: value }))}
-                    className="flex gap-2"
-                    data-testid="radio-edit-unit"
-                  >
-                    <div className="flex items-center h-12 px-3 border rounded-md">
-                      <RadioGroupItem value="cm" id="edit-cm" />
-                      <Label htmlFor="edit-cm" className="ml-2 font-normal cursor-pointer">cm</Label>
-                    </div>
-                    <div className="flex items-center h-12 px-3 border rounded-md">
-                      <RadioGroupItem value="ft" id="edit-ft" />
-                      <Label htmlFor="edit-ft" className="ml-2 font-normal cursor-pointer">ft</Label>
-                    </div>
-                  </RadioGroup>
                 </div>
               </div>
             </div>

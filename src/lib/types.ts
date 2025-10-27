@@ -36,11 +36,12 @@ export interface TeamMember {
 
 export interface CustomTeamMember {
   id: string;
-  name: string;
+  name?: string;
+  displayName?: string;
   email: string;
-  deviceId: string;
-  height: number;
-  heightUnit: "cm" | "ft";
+  deviceId?: string;
+  height?: number;
+  heightUnit?: "cm" | "ft";
   addedAt?: Date;
 }
 
@@ -68,8 +69,8 @@ export interface Installation {
   latitude?: number; // GPS latitude
   longitude?: number; // GPS longitude
   sensorReading: number;
-  imageUrl: string; // mandatory image
-  optionalImageUrl?: string; // optional image
+  imageUrls: string[]; // Array of installation images (up to 4)
+  videoUrl?: string; // Optional 360 video
   installedBy: string; // userId
   installedByName: string; // displayName
   teamId?: string;

@@ -320,24 +320,29 @@ export default function MySubmissions() {
                 <div>
                   <div className="flex items-center gap-2 mb-2">
                     <ImageIcon className="h-4 w-4 text-muted-foreground" />
-                    <p className="text-sm font-medium">Installation Photo</p>
+                    <p className="text-sm font-medium">Installation Photos ({selectedSubmission.imageUrls?.length || 0})</p>
                   </div>
-                  <img
-                    src={selectedSubmission.imageUrl}
-                    alt="Installation"
-                    className="w-full h-64 object-cover rounded-lg border"
-                  />
+                  <div className="grid grid-cols-2 gap-4">
+                    {selectedSubmission.imageUrls?.map((url, index) => (
+                      <img
+                        key={index}
+                        src={url}
+                        alt={`Installation photo ${index + 1}`}
+                        className="w-full h-48 object-cover rounded-lg border"
+                      />
+                    ))}
+                  </div>
                 </div>
                 
-                {selectedSubmission.optionalImageUrl && (
+                {selectedSubmission.videoUrl && (
                   <div>
                     <div className="flex items-center gap-2 mb-2">
                       <ImageIcon className="h-4 w-4 text-muted-foreground" />
-                      <p className="text-sm font-medium">Additional Photo</p>
+                      <p className="text-sm font-medium">360° Video</p>
                     </div>
-                    <img
-                      src={selectedSubmission.optionalImageUrl}
-                      alt="Additional"
+                    <video
+                      src={selectedSubmission.videoUrl}
+                      controls
                       className="w-full h-64 object-cover rounded-lg border"
                     />
                   </div>

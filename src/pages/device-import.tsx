@@ -146,13 +146,22 @@ export default function DeviceImport() {
         const row = dataRows[i];
         setProgress(Math.round(((i + 1) / totalRows) * 100));
 
-        if (row.length < 7) {
+        // Detect format: 7 columns (with PRODUCT COUNT and TIMESTAMP) or 5 columns (without them)
+        let productId, deviceSerialId, deviceUid, deviceImei, iccid, timestamp, productCount;
+        
+        if (row.length >= 7) {
+          // Format 1: PRODUCT COUNT, TIMESTAMP, PRODUCT ID, DEVICE SERIAL ID, DEVICE UID, DEVICE IMEI, ICCID
+          [productCount, timestamp, productId, deviceSerialId, deviceUid, deviceImei, iccid] = row;
+        } else if (row.length >= 5) {
+          // Format 2: PRODUCT ID, DEVICE SERIAL ID, DEVICE UID, DEVICE IMEI, ICCID
+          [productId, deviceSerialId, deviceUid, deviceImei, iccid] = row;
+          productCount = "";
+          timestamp = new Date().toISOString();
+        } else {
           result.failed++;
-          result.errors.push(`Row ${i + 2}: Incomplete data (expected 7 columns, got ${row.length})`);
+          result.errors.push(`Row ${i + 2}: Incomplete data (expected 5 or 7 columns, got ${row.length})`);
           continue;
         }
-
-        const [productCount, timestamp, productId, deviceSerialId, deviceUid, deviceImei, iccid] = row;
 
         if (!deviceUid || !productId) {
           result.failed++;

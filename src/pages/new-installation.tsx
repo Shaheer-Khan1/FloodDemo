@@ -1,17 +1,18 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, QrCode, CheckCircle2, Upload, Image as ImageIcon, MapPin, Camera } from "lucide-react";
+import { Loader2, QrCode, CheckCircle2, Upload, Image as ImageIcon, MapPin, Camera, X } from "lucide-react";
 import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, query, where, getDocs } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
 import { useLocation } from "wouter";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Html5QrcodeScanner } from "html5-qrcode";
 
 export default function NewInstallation() {
   const { userProfile } = useAuth();
@@ -23,18 +24,72 @@ export default function NewInstallation() {
   const [validatingDevice, setValidatingDevice] = useState(false);
   const [deviceValid, setDeviceValid] = useState<boolean | null>(null);
   const [deviceInfo, setDeviceInfo] = useState<any>(null);
+  const [showScanner, setShowScanner] = useState(false);
+  const scannerRef = useRef<Html5QrcodeScanner | null>(null);
   
   const [locationId, setLocationId] = useState("");
   const [latitude, setLatitude] = useState<number | null>(null);
   const [longitude, setLongitude] = useState<number | null>(null);
   const [gettingLocation, setGettingLocation] = useState(false);
   const [sensorReading, setSensorReading] = useState("");
-  const [mandatoryImage, setMandatoryImage] = useState<File | null>(null);
-  const [optionalImage, setOptionalImage] = useState<File | null>(null);
-  const [mandatoryImagePreview, setMandatoryImagePreview] = useState<string | null>(null);
-  const [optionalImagePreview, setOptionalImagePreview] = useState<string | null>(null);
+  const [images, setImages] = useState<(File | null)[]>([null, null, null, null]);
+  const [imagePreviews, setImagePreviews] = useState<(string | null)[]>([null, null, null, null]);
+  const [video, setVideo] = useState<File | null>(null);
+  const [videoPreview, setVideoPreview] = useState<string | null>(null);
   
   const [submitting, setSubmitting] = useState(false);
+
+  // Initialize QR Scanner
+  useEffect(() => {
+    if (showScanner && !scannerRef.current) {
+      const scanner = new Html5QrcodeScanner(
+        "qr-reader",
+        {
+          fps: 10,
+          qrbox: { width: 250, height: 250 },
+          aspectRatio: 1.0,
+        },
+        false
+      );
+
+      scanner.render(
+        (decodedText) => {
+          // Success callback
+          const last4 = decodedText.slice(-4).toUpperCase();
+          setDeviceId(last4);
+          setShowScanner(false);
+          scanner.clear();
+          scannerRef.current = null;
+          
+          toast({
+            title: "QR Code Scanned",
+            description: `Last 4 digits: ${last4}`,
+          });
+        },
+        (error) => {
+          // Error callback - can be ignored for continuous scanning
+          console.log(error);
+        }
+      );
+
+      scannerRef.current = scanner;
+    }
+
+    return () => {
+      if (scannerRef.current) {
+        scannerRef.current.clear().catch(console.error);
+        scannerRef.current = null;
+      }
+    };
+  }, [showScanner, toast]);
+
+  const handleScannerClose = () => {
+    if (scannerRef.current) {
+      scannerRef.current.clear().catch(console.error);
+      scannerRef.current = null;
+    }
+    setShowScanner(false);
+  };
 
   const getCurrentLocation = () => {
     if (!navigator.geolocation) {
@@ -178,7 +233,7 @@ export default function NewInstallation() {
     }
   };
 
-  const handleMandatoryImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageChange = (index: number) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       if (!file.type.startsWith("image/")) {
@@ -197,42 +252,64 @@ export default function NewInstallation() {
         });
         return;
       }
-      setMandatoryImage(file);
+      
+      const newImages = [...images];
+      newImages[index] = file;
+      setImages(newImages);
+      
       const reader = new FileReader();
-      reader.onloadend = () => setMandatoryImagePreview(reader.result as string);
+      reader.onloadend = () => {
+        const newPreviews = [...imagePreviews];
+        newPreviews[index] = reader.result as string;
+        setImagePreviews(newPreviews);
+      };
       reader.readAsDataURL(file);
     }
   };
 
-  const handleOptionalImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleRemoveImage = (index: number) => {
+    const newImages = [...images];
+    newImages[index] = null;
+    setImages(newImages);
+    
+    const newPreviews = [...imagePreviews];
+    newPreviews[index] = null;
+    setImagePreviews(newPreviews);
+  };
+
+  const handleVideoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (!file.type.startsWith("image/")) {
+      if (!file.type.startsWith("video/")) {
         toast({
           variant: "destructive",
           title: "Invalid File",
-          description: "Please upload an image file.",
+          description: "Please upload a video file.",
         });
         return;
       }
-      if (file.size > 5 * 1024 * 1024) {
+      
+      // Check file size (max 100MB)
+      if (file.size > 100 * 1024 * 1024) {
         toast({
           variant: "destructive",
           title: "File Too Large",
-          description: "Image must be less than 5MB.",
+          description: "Video must be less than 100MB.",
         });
         return;
       }
-      setOptionalImage(file);
+      
+      setVideo(file);
       const reader = new FileReader();
-      reader.onloadend = () => setOptionalImagePreview(reader.result as string);
+      reader.onloadend = () => setVideoPreview(reader.result as string);
       reader.readAsDataURL(file);
     }
   };
 
-  const uploadImage = async (file: File, deviceId: string, type: "mandatory" | "optional"): Promise<string> => {
+  const uploadFile = async (file: File, deviceId: string, fileType: "image" | "video", index?: number): Promise<string> => {
     const timestamp = Date.now();
-    const fileName = `${deviceId}_${type}_${timestamp}_${file.name}`;
+    const suffix = fileType === "image" ? `image_${index}` : "360video";
+    const fileName = `${deviceId}_${suffix}_${timestamp}_${file.name}`;
     const storageRef = ref(storage, `installations/${deviceId}/${fileName}`);
     
     await uploadBytes(storageRef, file);
@@ -270,11 +347,13 @@ export default function NewInstallation() {
       return;
     }
 
-    if (!mandatoryImage) {
+    // Check if at least one image is uploaded
+    const uploadedImages = images.filter(img => img !== null);
+    if (uploadedImages.length === 0) {
       toast({
         variant: "destructive",
         title: "Image Required",
-        description: "Please upload at least one image of the installation.",
+        description: "Please capture at least one installation photo.",
       });
       return;
     }
@@ -291,11 +370,19 @@ export default function NewInstallation() {
     setSubmitting(true);
 
     try {
-      // Upload images using the full device ID
-      const mandatoryImageUrl = await uploadImage(mandatoryImage, fullDeviceId, "mandatory");
-      let optionalImageUrl: string | undefined;
-      if (optionalImage) {
-        optionalImageUrl = await uploadImage(optionalImage, fullDeviceId, "optional");
+      // Upload all images
+      const imageUrls: string[] = [];
+      for (let i = 0; i < images.length; i++) {
+        if (images[i]) {
+          const url = await uploadFile(images[i]!, fullDeviceId, "image", i);
+          imageUrls.push(url);
+        }
+      }
+
+      // Upload video if present
+      let videoUrl: string | undefined;
+      if (video) {
+        videoUrl = await uploadFile(video, fullDeviceId, "video");
       }
 
       // Create installation document
@@ -307,8 +394,8 @@ export default function NewInstallation() {
         latitude: latitude,
         longitude: longitude,
         sensorReading: Number(sensorReading),
-        imageUrl: mandatoryImageUrl,
-        optionalImageUrl: optionalImageUrl || null,
+        imageUrls: imageUrls,
+        videoUrl: videoUrl || null,
         installedBy: userProfile.uid,
         installedByName: userProfile.displayName,
         teamId: userProfile.teamId || null,
@@ -337,10 +424,10 @@ export default function NewInstallation() {
       setLatitude(null);
       setLongitude(null);
       setSensorReading("");
-      setMandatoryImage(null);
-      setOptionalImage(null);
-      setMandatoryImagePreview(null);
-      setOptionalImagePreview(null);
+      setImages([null, null, null, null]);
+      setImagePreviews([null, null, null, null]);
+      setVideo(null);
+      setVideoPreview(null);
 
       // Navigate to submissions
       setTimeout(() => setLocation("/my-submissions"), 1500);
@@ -407,6 +494,7 @@ export default function NewInstallation() {
                   type="button"
                   variant="outline"
                   size="icon"
+                  onClick={() => setShowScanner(true)}
                   disabled={submitting}
                   title="Scan QR Code"
                 >
@@ -521,81 +609,86 @@ export default function NewInstallation() {
           </CardContent>
         </Card>
 
-        {/* Image Capture */}
+        {/* Image & Video Capture */}
         <Card className={`border shadow-sm ${!deviceValid ? "opacity-50" : ""}`}>
           <CardHeader>
-            <CardTitle>Step 3: Capture Photos</CardTitle>
-            <CardDescription>Take installation photos using your device camera (at least one required)</CardDescription>
+            <CardTitle>Step 3: Capture Media</CardTitle>
+            <CardDescription>Take up to 4 installation photos (at least 1 required) and optionally upload a 360° video</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            {/* Mandatory Image */}
+            {/* Images Grid */}
             <div>
-              <Label htmlFor="mandatoryImage" className="flex items-center gap-2 mb-3">
+              <Label className="flex items-center gap-2 mb-3">
                 <Camera className="h-4 w-4" />
-                Installation Photo *
-                <Badge variant="secondary">Required</Badge>
+                Installation Photos (up to 4)
+                <Badge variant="secondary">At least 1 required</Badge>
               </Label>
-              <label htmlFor="mandatoryImage">
-                <div className={`
-                  flex flex-col items-center justify-center 
-                  border-2 border-dashed rounded-lg p-6 
-                  cursor-pointer transition-colors
-                  ${!deviceValid || submitting 
-                    ? 'border-gray-300 bg-gray-50 cursor-not-allowed' 
-                    : 'border-primary/50 hover:border-primary hover:bg-primary/5'
-                  }
-                `}>
-                  {mandatoryImagePreview ? (
-                    <div className="relative w-full">
-                      <img
-                        src={mandatoryImagePreview}
-                        alt="Installation preview"
-                        className="w-full h-48 object-cover rounded-lg border"
-                      />
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="destructive"
-                        className="absolute top-2 right-2"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          setMandatoryImage(null);
-                          setMandatoryImagePreview(null);
-                        }}
-                      >
-                        Remove
-                      </Button>
-                    </div>
-                  ) : (
-                    <>
-                      <Camera className="h-12 w-12 text-muted-foreground mb-2" />
-                      <p className="text-sm font-medium text-center">Tap to capture photo</p>
-                      <p className="text-xs text-muted-foreground text-center mt-1">
-                        Use your device camera
-                      </p>
-                    </>
-                  )}
-                </div>
-              </label>
-              <Input
-                id="mandatoryImage"
-                type="file"
-                accept="image/*"
-                capture="environment"
-                onChange={handleMandatoryImageChange}
-                disabled={!deviceValid || submitting}
-                className="hidden"
-              />
+              <div className="grid grid-cols-2 gap-4">
+                {images.map((image, index) => (
+                  <div key={index}>
+                    <label htmlFor={`image-${index}`} className="block">
+                      <div className={`
+                        flex flex-col items-center justify-center 
+                        border-2 border-dashed rounded-lg p-4 
+                        cursor-pointer transition-colors min-h-[160px]
+                        ${!deviceValid || submitting 
+                          ? 'border-gray-300 bg-gray-50 cursor-not-allowed' 
+                          : 'border-primary/50 hover:border-primary hover:bg-primary/5'
+                        }
+                      `}>
+                        {imagePreviews[index] ? (
+                          <div className="relative w-full">
+                            <img
+                              src={imagePreviews[index]!}
+                              alt={`Photo ${index + 1}`}
+                              className="w-full h-32 object-cover rounded-lg border"
+                            />
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="destructive"
+                              className="absolute top-1 right-1 h-6 w-6 p-0"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                handleRemoveImage(index);
+                              }}
+                            >
+                              <X className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <>
+                            <Camera className="h-8 w-8 text-muted-foreground mb-1" />
+                            <p className="text-xs font-medium text-center">Photo {index + 1}</p>
+                            <p className="text-[10px] text-muted-foreground text-center mt-0.5">
+                              Tap to capture
+                            </p>
+                          </>
+                        )}
+                      </div>
+                    </label>
+                    <Input
+                      id={`image-${index}`}
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={handleImageChange(index)}
+                      disabled={!deviceValid || submitting}
+                      className="hidden"
+                    />
+                  </div>
+                ))}
+              </div>
             </div>
 
-            {/* Optional Image */}
+            {/* 360 Video Upload */}
             <div>
-              <Label htmlFor="optionalImage" className="flex items-center gap-2 mb-3">
-                <Camera className="h-4 w-4" />
-                Additional Photo
+              <Label className="flex items-center gap-2 mb-3">
+                <Upload className="h-4 w-4" />
+                360° Video
                 <Badge variant="outline">Optional</Badge>
               </Label>
-              <label htmlFor="optionalImage">
+              <label htmlFor="video360">
                 <div className={`
                   flex flex-col items-center justify-center 
                   border-2 border-dashed rounded-lg p-6 
@@ -605,11 +698,11 @@ export default function NewInstallation() {
                     : 'border-primary/50 hover:border-primary hover:bg-primary/5'
                   }
                 `}>
-                  {optionalImagePreview ? (
+                  {videoPreview ? (
                     <div className="relative w-full">
-                      <img
-                        src={optionalImagePreview}
-                        alt="Optional preview"
+                      <video
+                        src={videoPreview}
+                        controls
                         className="w-full h-48 object-cover rounded-lg border"
                       />
                       <Button
@@ -619,30 +712,34 @@ export default function NewInstallation() {
                         className="absolute top-2 right-2"
                         onClick={(e) => {
                           e.preventDefault();
-                          setOptionalImage(null);
-                          setOptionalImagePreview(null);
+                          setVideo(null);
+                          setVideoPreview(null);
                         }}
                       >
                         Remove
                       </Button>
+                      {video && (
+                        <p className="text-xs text-muted-foreground mt-2">
+                          {(video.size / (1024 * 1024)).toFixed(2)} MB
+                        </p>
+                      )}
                     </div>
                   ) : (
                     <>
-                      <Camera className="h-12 w-12 text-muted-foreground mb-2" />
-                      <p className="text-sm font-medium text-center">Tap to capture photo</p>
+                      <Upload className="h-12 w-12 text-muted-foreground mb-2" />
+                      <p className="text-sm font-medium text-center">Tap to upload 360° video</p>
                       <p className="text-xs text-muted-foreground text-center mt-1">
-                        Use your device camera
+                        Max 100MB • MP4, MOV, AVI
                       </p>
                     </>
                   )}
                 </div>
               </label>
               <Input
-                id="optionalImage"
+                id="video360"
                 type="file"
-                accept="image/*"
-                capture="environment"
-                onChange={handleOptionalImageChange}
+                accept="video/*"
+                onChange={handleVideoChange}
                 disabled={!deviceValid || submitting}
                 className="hidden"
               />
@@ -679,6 +776,36 @@ export default function NewInstallation() {
           </Button>
         </div>
       </form>
+
+      {/* QR Scanner Modal */}
+      {showScanner && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+          <Card className="w-full max-w-md">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <QrCode className="h-5 w-5" />
+                  Scan QR Code
+                </CardTitle>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleScannerClose}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <CardDescription>
+                Position the QR code within the frame to scan
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div id="qr-reader" className="w-full"></div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }

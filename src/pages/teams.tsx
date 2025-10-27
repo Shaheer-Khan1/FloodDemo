@@ -9,13 +9,14 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { Users, Plus, Trash2, UserPlus, Loader2 } from "lucide-react";
+import { Users, Plus, Trash2, Loader2, UserPlus } from "lucide-react";
 import type { Team, CustomTeamMember } from "@/lib/types";
-import { TeamMemberDialog } from "@/components/team-member-dialog";
+import { useLocation } from "wouter";
 
 export default function Teams() {
   const { user, userProfile } = useAuth();
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
   const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -24,15 +25,30 @@ export default function Teams() {
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
   const [teamMembers, setTeamMembers] = useState<Record<string, CustomTeamMember[]>>({});
 
+  // Redirect installers to their installation page
+  useEffect(() => {
+    if (userProfile?.role === "installer") {
+      setLocation("/new-installation");
+    }
+  }, [userProfile, setLocation]);
+
   // Real-time teams listener
   useEffect(() => {
-    if (!user) return;
+    if (!user || !userProfile) return;
     
     setLoading(true);
-    const teamsQuery = query(
-      collection(db, "teams"),
-      where("ownerId", "==", user.uid)
-    );
+    
+    // Admins can see all teams, others see teams they own or are assigned to
+    let teamsQuery;
+    if (userProfile.isAdmin) {
+      teamsQuery = collection(db, "teams");
+    } else if (userProfile.teamId) {
+      // Show the team they're assigned to
+      teamsQuery = query(collection(db, "teams"), where("__name__", "==", userProfile.teamId));
+    } else {
+      // Show teams where user is owner
+      teamsQuery = query(collection(db, "teams"), where("ownerId", "==", user.uid));
+    }
     
     const unsubscribe = onSnapshot(
       teamsQuery,
@@ -43,6 +59,9 @@ export default function Teams() {
           createdAt: doc.data().createdAt?.toDate(),
           updatedAt: doc.data().updatedAt?.toDate(),
         })) as Team[];
+        
+        // Sort teams by name
+        teamsData.sort((a, b) => a.name.localeCompare(b.name));
         
         setTeams(teamsData);
         setLoading(false);
@@ -58,7 +77,7 @@ export default function Teams() {
     );
 
     return () => unsubscribe();
-  }, [user, toast]);
+  }, [user, userProfile, toast]);
 
   // Real-time team members listener for each team
   useEffect(() => {
@@ -169,55 +188,63 @@ export default function Teams() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
-          <h1 className="text-3xl font-bold">My Teams</h1>
-          <p className="text-muted-foreground">Manage your flood response teams</p>
+          <h1 className="text-3xl font-bold">
+            {userProfile?.isAdmin ? "All Teams" : "My Teams"}
+          </h1>
+          <p className="text-muted-foreground">
+            {userProfile?.isAdmin 
+              ? "Manage all teams and their members" 
+              : "Manage your teams"}
+          </p>
         </div>
-        <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-          <DialogTrigger asChild>
-            <Button data-testid="button-create-team">
-              <Plus className="mr-2 h-4 w-4" />
-              Create Team
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Create New Team</DialogTitle>
-              <DialogDescription>
-                Create a team to manage flood response members
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 pt-4">
-              <div className="space-y-2">
-                <Label htmlFor="team-name">Team Name</Label>
-                <Input
-                  id="team-name"
-                  data-testid="input-team-name"
-                  placeholder="e.g., North District Response Team"
-                  value={newTeamName}
-                  onChange={(e) => setNewTeamName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleCreateTeam()}
-                />
-              </div>
-              <div className="flex gap-2 justify-end">
-                <Button 
-                  variant="outline" 
-                  onClick={() => setCreateDialogOpen(false)}
-                  data-testid="button-cancel-team"
-                >
-                  Cancel
-                </Button>
-                <Button 
-                  onClick={handleCreateTeam}
-                  disabled={!newTeamName.trim() || creating}
-                  data-testid="button-submit-team"
-                >
+        {userProfile?.isAdmin && (
+          <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+            <DialogTrigger asChild>
+              <Button data-testid="button-create-team">
+                <Plus className="mr-2 h-4 w-4" />
+                Create Team
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Create New Team</DialogTitle>
+                <DialogDescription>
+                  Create a team to manage flood response members
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 pt-4">
+                <div className="space-y-2">
+                  <Label htmlFor="team-name">Team Name</Label>
+                  <Input
+                    id="team-name"
+                    data-testid="input-team-name"
+                    placeholder="e.g., North District Response Team"
+                    value={newTeamName}
+                    onChange={(e) => setNewTeamName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleCreateTeam()}
+                  />
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <Button 
+                    variant="outline" 
+                    onClick={() => setCreateDialogOpen(false)}
+                    data-testid="button-cancel-team"
+                  >
+                    Cancel
+                  </Button>
+                  <Button 
+                    onClick={handleCreateTeam}
+                    disabled={!newTeamName.trim() || creating}
+                    data-testid="button-submit-team"
+                  >
                   {creating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                   Create Team
                 </Button>
               </div>
             </div>
           </DialogContent>
-        </Dialog>
+          </Dialog>
+        )}
       </div>
 
       {teams.length === 0 ? (
@@ -226,12 +253,16 @@ export default function Teams() {
             <Users className="h-12 w-12 text-muted-foreground mb-4" />
             <h3 className="text-lg font-semibold mb-2">No teams yet</h3>
             <p className="text-muted-foreground text-center mb-4">
-              Create your first team to start managing flood response members
+              {userProfile?.isAdmin 
+                ? "Create your first team to start managing members"
+                : "You haven't been assigned to any team yet"}
             </p>
-            <Button onClick={() => setCreateDialogOpen(true)} data-testid="button-create-first-team">
-              <Plus className="mr-2 h-4 w-4" />
-              Create Team
-            </Button>
+            {userProfile?.isAdmin && (
+              <Button onClick={() => setCreateDialogOpen(true)} data-testid="button-create-first-team">
+                <Plus className="mr-2 h-4 w-4" />
+                Create Team
+              </Button>
+            )}
           </CardContent>
         </Card>
       ) : (
@@ -247,46 +278,47 @@ export default function Teams() {
                     {teamMembers[team.id]?.length || 0} members
                   </Badge>
                 </div>
-                <div className="flex gap-2">
-                  <TeamMemberDialog 
-                    teamId={team.id}
-                    onMemberAdded={() => {}} // Real-time listener handles updates
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleDeleteTeam(team.id, team.name)}
-                    data-testid={`button-delete-team-${team.id}`}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
+                {userProfile?.isAdmin && (
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleDeleteTeam(team.id, team.name)}
+                      data-testid={`button-delete-team-${team.id}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                )}
               </CardHeader>
               <CardContent>
                 {teamMembers[team.id]?.length > 0 ? (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {teamMembers[team.id].map((member) => (
-                      <Card key={member.id} className="hover-elevate">
-                        <CardContent className="p-4">
-                          <div className="flex items-start gap-3">
-                            <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-                              <span className="text-sm font-semibold text-primary">
-                                {member.name.split(' ').map(n => n[0]).join('').toUpperCase()}
-                              </span>
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <p className="font-medium truncate" data-testid={`text-member-name-${member.id}`}>{member.name}</p>
-                              <p className="text-sm text-muted-foreground truncate">{member.email}</p>
-                              <div className="flex gap-2 mt-2 text-xs text-muted-foreground">
-                                <span>ID: {member.deviceId}</span>
-                                <span>•</span>
-                                <span>{member.height} {member.heightUnit}</span>
+                    {teamMembers[team.id].map((member) => {
+                      const memberName = member.name || member.displayName || 'Unknown';
+                      const initials = memberName.split(' ').map(n => n[0]).join('').toUpperCase() || 'U';
+                      return (
+                        <Card key={member.id} className="hover-elevate">
+                          <CardContent className="p-4">
+                            <div className="flex items-start gap-3">
+                              <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+                                <span className="text-sm font-semibold text-primary">
+                                  {initials}
+                                </span>
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="font-medium truncate" data-testid={`text-member-name-${member.id}`}>{memberName}</p>
+                                <p className="text-sm text-muted-foreground truncate">{member.email || 'No email'}</p>
+                                <div className="flex gap-2 mt-2 text-xs text-muted-foreground">
+                                  {member.deviceId && <><span>ID: {member.deviceId}</span><span>•</span></>}
+                                  {member.height && <span>{member.height} {member.heightUnit || 'cm'}</span>}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="text-center py-8 text-muted-foreground">

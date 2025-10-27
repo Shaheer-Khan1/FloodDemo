@@ -21,6 +21,7 @@ import BoxImport from "@/pages/box-import";
 import NewInstallation from "@/pages/new-installation";
 import MySubmissions from "@/pages/my-submissions";
 import Verification from "@/pages/verification";
+import CreateUser from "@/pages/create-user";
 
 function Router() {
   return (
@@ -105,6 +106,14 @@ function Router() {
         <ProtectedRoute>
           <AppLayout>
             <Verification />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/create-user">
+        <ProtectedRoute>
+          <AppLayout>
+            <CreateUser />
           </AppLayout>
         </ProtectedRoute>
       </Route>

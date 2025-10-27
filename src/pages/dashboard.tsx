@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { MapPin, Smartphone, Ruler, Users, Shield } from "lucide-react";
+import { MapPin, Users, Shield } from "lucide-react";
 import { useLocation } from "wouter";
 import { useState, useEffect } from "react";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
@@ -13,6 +13,13 @@ export default function Dashboard() {
   const { userProfile } = useAuth();
   const [, setLocation] = useLocation();
   const [teamsCount, setTeamsCount] = useState(0);
+
+  // Redirect installers to their installation page
+  useEffect(() => {
+    if (userProfile?.role === "installer") {
+      setLocation("/new-installation");
+    }
+  }, [userProfile, setLocation]);
 
   // Fetch teams count in real-time
   useEffect(() => {
@@ -145,22 +152,6 @@ export default function Dashboard() {
                   Location
                 </p>
                 <p className="text-base font-medium" data-testid="text-user-location">{userProfile.location}</p>
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground flex items-center gap-1">
-                  <Smartphone className="h-3 w-3" />
-                  Device ID
-                </p>
-                <p className="text-base font-medium font-mono text-xs" data-testid="text-user-device">{userProfile.deviceId}</p>
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground flex items-center gap-1">
-                  <Ruler className="h-3 w-3" />
-                  Height
-                </p>
-                <p className="text-base font-medium" data-testid="text-user-height">
-                  {userProfile.height} {userProfile.heightUnit}
-                </p>
               </div>
             </div>
           </div>

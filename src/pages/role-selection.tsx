@@ -23,7 +23,7 @@ export default function RoleSelection() {
     setSelectedRole(role);
 
     try {
-      await updateDoc(doc(db, "users", userProfile.uid), {
+      await updateDoc(doc(db, "userProfiles", userProfile.uid), {
         role: role,
         updatedAt: new Date(),
       });

@@ -167,7 +167,7 @@ export default function Admin() {
 
   // Get unique locations for filter
   const uniqueLocations = useMemo(() => {
-    const locations = new Set(users.map(u => u.location));
+    const locations = new Set(users.map(u => u.location).filter(Boolean));
     return Array.from(locations).sort();
   }, [users]);
 
@@ -480,27 +480,31 @@ export default function Admin() {
                                       ))}
                                       
                                       {/* Custom Members */}
-                                      {customMembers.map((member: any) => (
-                                        <div key={member.id} className="flex items-center gap-2 text-xs p-2 rounded-md bg-muted/50">
-                                          <Avatar className="h-6 w-6">
-                                            <AvatarImage src={member.photoURL} />
-                                            <AvatarFallback className="text-[10px]">
-                                              {member.name.split(' ').map((n: string) => n[0]).join('').toUpperCase()}
-                                            </AvatarFallback>
-                                          </Avatar>
-                                          <div className="flex-1 min-w-0">
-                                            <p className="font-medium truncate">{member.name}</p>
-                                            <p className="text-[10px] text-muted-foreground truncate">{member.email}</p>
+                                      {customMembers.map((member: any) => {
+                                        const memberName = member.name || member.displayName || 'Unknown';
+                                        const initials = memberName.split(' ').map((n: string) => n[0]).join('').toUpperCase() || 'U';
+                                        return (
+                                          <div key={member.id} className="flex items-center gap-2 text-xs p-2 rounded-md bg-muted/50">
+                                            <Avatar className="h-6 w-6">
+                                              <AvatarImage src={member.photoURL} />
+                                              <AvatarFallback className="text-[10px]">
+                                                {initials}
+                                              </AvatarFallback>
+                                            </Avatar>
+                                            <div className="flex-1 min-w-0">
+                                              <p className="font-medium truncate">{memberName}</p>
+                                              <p className="text-[10px] text-muted-foreground truncate">{member.email || 'No email'}</p>
+                                            </div>
+                                            <div className="text-right">
+                                              {member.height && <p className="text-muted-foreground">{member.height} {member.heightUnit || 'cm'}</p>}
+                                              {member.deviceId && <p className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                <Smartphone className="h-3 w-3" />
+                                                {member.deviceId}
+                                              </p>}
+                                            </div>
                                           </div>
-                                          <div className="text-right">
-                                            <p className="text-muted-foreground">{member.height} {member.heightUnit}</p>
-                                            <p className="text-[10px] text-muted-foreground flex items-center gap-1">
-                                              <Smartphone className="h-3 w-3" />
-                                              {member.deviceId}
-                                            </p>
-                                          </div>
-                                        </div>
-                                      ))}
+                                        );
+                                      })}
                                     </div>
                                   )}
                                 </CardContent>
