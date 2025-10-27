@@ -17,6 +17,7 @@ import NotFound from "@/pages/not-found";
 // FlowSet Pages
 import Devices from "@/pages/devices";
 import DeviceImport from "@/pages/device-import";
+import BoxImport from "@/pages/box-import";
 import NewInstallation from "@/pages/new-installation";
 import MySubmissions from "@/pages/my-submissions";
 import Verification from "@/pages/verification";
@@ -72,6 +73,14 @@ function Router() {
         <ProtectedRoute>
           <AppLayout>
             <DeviceImport />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/box-import">
+        <ProtectedRoute>
+          <AppLayout>
+            <BoxImport />
           </AppLayout>
         </ProtectedRoute>
       </Route>

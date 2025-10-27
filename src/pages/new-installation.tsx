@@ -5,8 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, QrCode, CheckCircle2, Upload, Image as ImageIcon } from "lucide-react";
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
+import { Loader2, QrCode, CheckCircle2, Upload, Image as ImageIcon, MapPin, Camera } from "lucide-react";
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, query, where, getDocs } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
 import { useLocation } from "wouter";
@@ -19,11 +19,15 @@ export default function NewInstallation() {
   const [, setLocation] = useLocation();
   
   const [deviceId, setDeviceId] = useState("");
+  const [fullDeviceId, setFullDeviceId] = useState(""); // Store the full UID after validation
   const [validatingDevice, setValidatingDevice] = useState(false);
   const [deviceValid, setDeviceValid] = useState<boolean | null>(null);
   const [deviceInfo, setDeviceInfo] = useState<any>(null);
   
   const [locationId, setLocationId] = useState("");
+  const [latitude, setLatitude] = useState<number | null>(null);
+  const [longitude, setLongitude] = useState<number | null>(null);
+  const [gettingLocation, setGettingLocation] = useState(false);
   const [sensorReading, setSensorReading] = useState("");
   const [mandatoryImage, setMandatoryImage] = useState<File | null>(null);
   const [optionalImage, setOptionalImage] = useState<File | null>(null);
@@ -32,12 +36,76 @@ export default function NewInstallation() {
   
   const [submitting, setSubmitting] = useState(false);
 
+  const getCurrentLocation = () => {
+    if (!navigator.geolocation) {
+      toast({
+        variant: "destructive",
+        title: "Location Not Supported",
+        description: "Your browser doesn't support geolocation.",
+      });
+      return;
+    }
+
+    setGettingLocation(true);
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setLatitude(position.coords.latitude);
+        setLongitude(position.coords.longitude);
+        setLocationId(`${position.coords.latitude.toFixed(6)}, ${position.coords.longitude.toFixed(6)}`);
+        setGettingLocation(false);
+        toast({
+          title: "Location Captured",
+          description: "GPS coordinates have been recorded.",
+        });
+      },
+      (error) => {
+        setGettingLocation(false);
+        let errorMessage = "Unable to retrieve your location.";
+        
+        switch (error.code) {
+          case error.PERMISSION_DENIED:
+            errorMessage = "Location permission denied. Please enable location access.";
+            break;
+          case error.POSITION_UNAVAILABLE:
+            errorMessage = "Location information is unavailable.";
+            break;
+          case error.TIMEOUT:
+            errorMessage = "Location request timed out.";
+            break;
+        }
+        
+        toast({
+          variant: "destructive",
+          title: "Location Error",
+          description: errorMessage,
+        });
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
+      }
+    );
+  };
+
   const validateDeviceId = async () => {
-    if (!deviceId.trim()) {
+    const last4Digits = deviceId.trim();
+    
+    if (!last4Digits) {
       toast({
         variant: "destructive",
         title: "Device ID Required",
-        description: "Please enter a Device ID to validate.",
+        description: "Please enter the last 4 digits of the Device UID.",
+      });
+      return;
+    }
+
+    if (last4Digits.length !== 4) {
+      toast({
+        variant: "destructive",
+        title: "Invalid Input",
+        description: "Please enter exactly 4 digits.",
       });
       return;
     }
@@ -45,22 +113,40 @@ export default function NewInstallation() {
     setValidatingDevice(true);
     setDeviceValid(null);
     setDeviceInfo(null);
+    setFullDeviceId("");
 
     try {
-      const deviceRef = doc(db, "devices", deviceId.trim());
-      const deviceSnap = await getDoc(deviceRef);
+      // Fetch all devices and find the one with matching last 4 digits
+      const devicesRef = collection(db, "devices");
+      const querySnapshot = await getDocs(devicesRef);
+      
+      const matchingDevices = querySnapshot.docs.filter(doc => {
+        const uid = doc.id;
+        return uid.slice(-4).toUpperCase() === last4Digits.toUpperCase();
+      });
 
-      if (!deviceSnap.exists()) {
+      if (matchingDevices.length === 0) {
         setDeviceValid(false);
         toast({
           variant: "destructive",
           title: "Device Not Found",
-          description: "This Device ID does not exist in the master database.",
+          description: "No device found with these last 4 digits in the master database.",
         });
         return;
       }
 
-      const device = deviceSnap.data();
+      if (matchingDevices.length > 1) {
+        setDeviceValid(false);
+        toast({
+          variant: "destructive",
+          title: "Multiple Devices Found",
+          description: "Multiple devices match these digits. Please contact admin.",
+        });
+        return;
+      }
+
+      const deviceDoc = matchingDevices[0];
+      const device = deviceDoc.data();
 
       // Check if already installed
       if (device.status !== "pending") {
@@ -75,9 +161,10 @@ export default function NewInstallation() {
 
       setDeviceValid(true);
       setDeviceInfo(device);
+      setFullDeviceId(deviceDoc.id);
       toast({
         title: "Device Validated",
-        description: "Device is ready for installation.",
+        description: `Device ${deviceDoc.id} is ready for installation.`,
       });
     } catch (error) {
       toast({
@@ -165,11 +252,11 @@ export default function NewInstallation() {
       return;
     }
 
-    if (!locationId.trim()) {
+    if (!latitude || !longitude) {
       toast({
         variant: "destructive",
-        title: "Location ID Required",
-        description: "Please enter a Location ID.",
+        title: "GPS Location Required",
+        description: "Please capture GPS coordinates before submitting.",
       });
       return;
     }
@@ -204,19 +291,21 @@ export default function NewInstallation() {
     setSubmitting(true);
 
     try {
-      // Upload images
-      const mandatoryImageUrl = await uploadImage(mandatoryImage, deviceId, "mandatory");
+      // Upload images using the full device ID
+      const mandatoryImageUrl = await uploadImage(mandatoryImage, fullDeviceId, "mandatory");
       let optionalImageUrl: string | undefined;
       if (optionalImage) {
-        optionalImageUrl = await uploadImage(optionalImage, deviceId, "optional");
+        optionalImageUrl = await uploadImage(optionalImage, fullDeviceId, "optional");
       }
 
       // Create installation document
-      const installationId = `${deviceId}_${Date.now()}`;
+      const installationId = `${fullDeviceId}_${Date.now()}`;
       await setDoc(doc(db, "installations", installationId), {
         id: installationId,
-        deviceId: deviceId.trim(),
+        deviceId: fullDeviceId,
         locationId: locationId.trim(),
+        latitude: latitude,
+        longitude: longitude,
         sensorReading: Number(sensorReading),
         imageUrl: mandatoryImageUrl,
         optionalImageUrl: optionalImageUrl || null,
@@ -229,7 +318,7 @@ export default function NewInstallation() {
       });
 
       // Update device status
-      await updateDoc(doc(db, "devices", deviceId.trim()), {
+      await updateDoc(doc(db, "devices", fullDeviceId), {
         status: "installed",
         updatedAt: serverTimestamp(),
       });
@@ -241,9 +330,12 @@ export default function NewInstallation() {
 
       // Reset form
       setDeviceId("");
+      setFullDeviceId("");
       setDeviceValid(null);
       setDeviceInfo(null);
       setLocationId("");
+      setLatitude(null);
+      setLongitude(null);
       setSensorReading("");
       setMandatoryImage(null);
       setOptionalImage(null);
@@ -277,22 +369,25 @@ export default function NewInstallation() {
         <Card className="border shadow-sm">
           <CardHeader>
             <CardTitle>Step 1: Validate Device</CardTitle>
-            <CardDescription>Enter the Device ID to verify it exists in the system</CardDescription>
+            <CardDescription>Enter the last 4 digits of the Device UID to verify it exists</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex gap-2">
               <div className="flex-1">
-                <Label htmlFor="deviceId">Device ID</Label>
+                <Label htmlFor="deviceId">Last 4 Digits of Device UID</Label>
                 <Input
                   id="deviceId"
                   value={deviceId}
                   onChange={(e) => {
-                    setDeviceId(e.target.value);
+                    setDeviceId(e.target.value.toUpperCase());
                     setDeviceValid(null);
                     setDeviceInfo(null);
+                    setFullDeviceId("");
                   }}
-                  placeholder="Enter Device ID or scan QR code"
+                  placeholder="Enter last 4 digits (e.g., A3D5)"
+                  maxLength={4}
                   disabled={submitting}
+                  className="font-mono uppercase"
                 />
               </div>
               <div className="flex items-end gap-2">
@@ -324,13 +419,17 @@ export default function NewInstallation() {
               <Alert className="bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800">
                 <CheckCircle2 className="h-4 w-4 text-green-600" />
                 <AlertDescription>
-                  <div className="space-y-1">
+                  <div className="space-y-2">
                     <p className="font-semibold text-green-900 dark:text-green-100">Device Validated Successfully</p>
+                    <div className="p-2 bg-white dark:bg-slate-800 rounded border border-green-200 dark:border-green-700">
+                      <p className="text-xs font-medium text-green-900 dark:text-green-100 mb-1">Full Device UID:</p>
+                      <p className="font-mono text-xs text-green-800 dark:text-green-200 break-all">{fullDeviceId}</p>
+                    </div>
                     <div className="grid grid-cols-2 gap-2 text-xs text-green-800 dark:text-green-200">
-                      <div><span className="font-medium">Batch:</span> {deviceInfo.batchId}</div>
-                      <div><span className="font-medium">City:</span> {deviceInfo.cityOfDispatch}</div>
-                      <div><span className="font-medium">Manufacturer:</span> {deviceInfo.manufacturer}</div>
-                      <div><span className="font-medium">Description:</span> {deviceInfo.description}</div>
+                      <div><span className="font-medium">Product ID:</span> {deviceInfo.productId}</div>
+                      <div><span className="font-medium">IMEI:</span> {deviceInfo.deviceImei}</div>
+                      <div><span className="font-medium">Serial:</span> <span className="font-mono text-[10px]">{deviceInfo.deviceSerialId}</span></div>
+                      <div><span className="font-medium">ICCID:</span> <span className="font-mono text-[10px]">{deviceInfo.iccid}</span></div>
                     </div>
                   </div>
                 </AlertDescription>
@@ -354,16 +453,56 @@ export default function NewInstallation() {
             <CardDescription>Enter the installation information</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div>
-              <Label htmlFor="locationId">Location ID *</Label>
-              <Input
-                id="locationId"
-                value={locationId}
-                onChange={(e) => setLocationId(e.target.value)}
-                placeholder="Enter installation location ID"
-                disabled={!deviceValid || submitting}
-                required
-              />
+            <div className="space-y-2">
+              <Label>GPS Location *</Label>
+              <Button
+                type="button"
+                onClick={getCurrentLocation}
+                disabled={!deviceValid || gettingLocation || submitting}
+                variant="outline"
+                className="w-full"
+              >
+                {gettingLocation ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Getting Location...
+                  </>
+                ) : (
+                  <>
+                    <MapPin className="h-4 w-4 mr-2" />
+                    Capture GPS Coordinates
+                  </>
+                )}
+              </Button>
+              
+              {latitude && longitude && (
+                <div className="p-3 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-md">
+                  <div className="flex items-start gap-2">
+                    <MapPin className="h-4 w-4 text-blue-600 mt-0.5" />
+                    <div className="flex-1 space-y-1">
+                      <p className="text-sm font-medium text-blue-900 dark:text-blue-100">Location Captured</p>
+                      <div className="grid grid-cols-2 gap-2 text-xs text-blue-800 dark:text-blue-200">
+                        <div>
+                          <span className="font-medium">Latitude:</span>
+                          <span className="ml-1 font-mono">{latitude.toFixed(6)}</span>
+                        </div>
+                        <div>
+                          <span className="font-medium">Longitude:</span>
+                          <span className="ml-1 font-mono">{longitude.toFixed(6)}</span>
+                        </div>
+                      </div>
+                      <a
+                        href={`https://www.google.com/maps?q=${latitude},${longitude}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-600 dark:text-blue-400 hover:underline inline-flex items-center gap-1"
+                      >
+                        View on Google Maps →
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div>
@@ -382,85 +521,131 @@ export default function NewInstallation() {
           </CardContent>
         </Card>
 
-        {/* Image Upload */}
+        {/* Image Capture */}
         <Card className={`border shadow-sm ${!deviceValid ? "opacity-50" : ""}`}>
           <CardHeader>
-            <CardTitle>Step 3: Upload Images</CardTitle>
-            <CardDescription>Upload installation photos (at least one required)</CardDescription>
+            <CardTitle>Step 3: Capture Photos</CardTitle>
+            <CardDescription>Take installation photos using your device camera (at least one required)</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
             {/* Mandatory Image */}
             <div>
-              <Label htmlFor="mandatoryImage" className="flex items-center gap-2">
+              <Label htmlFor="mandatoryImage" className="flex items-center gap-2 mb-3">
+                <Camera className="h-4 w-4" />
                 Installation Photo *
                 <Badge variant="secondary">Required</Badge>
               </Label>
+              <label htmlFor="mandatoryImage">
+                <div className={`
+                  flex flex-col items-center justify-center 
+                  border-2 border-dashed rounded-lg p-6 
+                  cursor-pointer transition-colors
+                  ${!deviceValid || submitting 
+                    ? 'border-gray-300 bg-gray-50 cursor-not-allowed' 
+                    : 'border-primary/50 hover:border-primary hover:bg-primary/5'
+                  }
+                `}>
+                  {mandatoryImagePreview ? (
+                    <div className="relative w-full">
+                      <img
+                        src={mandatoryImagePreview}
+                        alt="Installation preview"
+                        className="w-full h-48 object-cover rounded-lg border"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="destructive"
+                        className="absolute top-2 right-2"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setMandatoryImage(null);
+                          setMandatoryImagePreview(null);
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  ) : (
+                    <>
+                      <Camera className="h-12 w-12 text-muted-foreground mb-2" />
+                      <p className="text-sm font-medium text-center">Tap to capture photo</p>
+                      <p className="text-xs text-muted-foreground text-center mt-1">
+                        Use your device camera
+                      </p>
+                    </>
+                  )}
+                </div>
+              </label>
               <Input
                 id="mandatoryImage"
                 type="file"
                 accept="image/*"
+                capture="environment"
                 onChange={handleMandatoryImageChange}
                 disabled={!deviceValid || submitting}
-                className="mt-2"
+                className="hidden"
               />
-              {mandatoryImagePreview && (
-                <div className="mt-4 relative">
-                  <img
-                    src={mandatoryImagePreview}
-                    alt="Installation preview"
-                    className="w-full h-48 object-cover rounded-lg border"
-                  />
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="destructive"
-                    className="absolute top-2 right-2"
-                    onClick={() => {
-                      setMandatoryImage(null);
-                      setMandatoryImagePreview(null);
-                    }}
-                  >
-                    Remove
-                  </Button>
-                </div>
-              )}
             </div>
 
             {/* Optional Image */}
             <div>
-              <Label htmlFor="optionalImage" className="flex items-center gap-2">
+              <Label htmlFor="optionalImage" className="flex items-center gap-2 mb-3">
+                <Camera className="h-4 w-4" />
                 Additional Photo
                 <Badge variant="outline">Optional</Badge>
               </Label>
+              <label htmlFor="optionalImage">
+                <div className={`
+                  flex flex-col items-center justify-center 
+                  border-2 border-dashed rounded-lg p-6 
+                  cursor-pointer transition-colors
+                  ${!deviceValid || submitting 
+                    ? 'border-gray-300 bg-gray-50 cursor-not-allowed' 
+                    : 'border-primary/50 hover:border-primary hover:bg-primary/5'
+                  }
+                `}>
+                  {optionalImagePreview ? (
+                    <div className="relative w-full">
+                      <img
+                        src={optionalImagePreview}
+                        alt="Optional preview"
+                        className="w-full h-48 object-cover rounded-lg border"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="destructive"
+                        className="absolute top-2 right-2"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setOptionalImage(null);
+                          setOptionalImagePreview(null);
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  ) : (
+                    <>
+                      <Camera className="h-12 w-12 text-muted-foreground mb-2" />
+                      <p className="text-sm font-medium text-center">Tap to capture photo</p>
+                      <p className="text-xs text-muted-foreground text-center mt-1">
+                        Use your device camera
+                      </p>
+                    </>
+                  )}
+                </div>
+              </label>
               <Input
                 id="optionalImage"
                 type="file"
                 accept="image/*"
+                capture="environment"
                 onChange={handleOptionalImageChange}
                 disabled={!deviceValid || submitting}
-                className="mt-2"
+                className="hidden"
               />
-              {optionalImagePreview && (
-                <div className="mt-4 relative">
-                  <img
-                    src={optionalImagePreview}
-                    alt="Optional preview"
-                    className="w-full h-48 object-cover rounded-lg border"
-                  />
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="destructive"
-                    className="absolute top-2 right-2"
-                    onClick={() => {
-                      setOptionalImage(null);
-                      setOptionalImagePreview(null);
-                    }}
-                  >
-                    Remove
-                  </Button>
-                </div>
-              )}
             </div>
           </CardContent>
         </Card>

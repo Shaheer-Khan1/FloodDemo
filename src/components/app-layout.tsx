@@ -14,7 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, FileUp, Plus, List, CheckSquare } from "lucide-react";
+import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, FileUp, Plus, List, CheckSquare, Box } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
@@ -47,6 +47,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       { title: "Admin", icon: Shield, url: "/admin" },
       { title: "Devices", icon: Package, url: "/devices" },
       { title: "Import Devices", icon: FileUp, url: "/device-import" },
+      { title: "Import Box Numbers", icon: Box, url: "/box-import" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
       { title: "New Installation", icon: Plus, url: "/new-installation" },
       { title: "My Submissions", icon: List, url: "/my-submissions" },

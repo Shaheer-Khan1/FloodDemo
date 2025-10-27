@@ -42,7 +42,7 @@ export default function Devices() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [cityFilter, setCityFilter] = useState<string>("all");
+  const [productFilter, setProductFilter] = useState<string>("all");
 
   // Real-time devices listener
   useEffect(() => {
@@ -135,10 +135,10 @@ export default function Devices() {
     });
   }, [devices, installations, serverDataList]);
 
-  // Get unique cities for filter
-  const uniqueCities = useMemo(() => {
-    const cities = new Set(devices.map(d => d.cityOfDispatch).filter(Boolean));
-    return Array.from(cities).sort();
+  // Get unique product IDs for filter
+  const uniqueProductIds = useMemo(() => {
+    const productIds = new Set(devices.map(d => d.productId).filter(Boolean));
+    return Array.from(productIds).sort();
   }, [devices]);
 
   // Filter devices
@@ -146,24 +146,25 @@ export default function Devices() {
     return devicesWithDetails.filter(device => {
       const matchesSearch = searchTerm === "" ||
         device.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        device.batchId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        device.manufacturer.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        device.description.toLowerCase().includes(searchTerm.toLowerCase());
+        device.productId.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        device.deviceSerialId.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        device.deviceImei.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        device.iccid.toLowerCase().includes(searchTerm.toLowerCase());
 
       const matchesStatus = statusFilter === "all" || device.status === statusFilter;
-      const matchesCity = cityFilter === "all" || device.cityOfDispatch === cityFilter;
+      const matchesProduct = productFilter === "all" || device.productId === productFilter;
 
-      return matchesSearch && matchesStatus && matchesCity;
+      return matchesSearch && matchesStatus && matchesProduct;
     });
-  }, [devicesWithDetails, searchTerm, statusFilter, cityFilter]);
+  }, [devicesWithDetails, searchTerm, statusFilter, productFilter]);
 
   const clearFilters = () => {
     setSearchTerm("");
     setStatusFilter("all");
-    setCityFilter("all");
+    setProductFilter("all");
   };
 
-  const hasActiveFilters = searchTerm !== "" || statusFilter !== "all" || cityFilter !== "all";
+  const hasActiveFilters = searchTerm !== "" || statusFilter !== "all" || productFilter !== "all";
 
   // Stats
   const stats = useMemo(() => {
@@ -200,6 +201,16 @@ export default function Devices() {
 
   return (
     <div className="space-y-8">
+      {/* Shipment Header */}
+      <Card className="border-2 border-primary/20 bg-primary/5 dark:bg-primary/10">
+        <CardContent className="p-6">
+          <div className="text-center">
+            <h2 className="text-2xl font-bold text-primary mb-1">Shipment No#1</h2>
+            <p className="text-lg font-semibold text-slate-700 dark:text-slate-300">Project: MOMAH</p>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-4xl font-bold text-slate-900 dark:text-white">
@@ -270,7 +281,7 @@ export default function Devices() {
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search by Device ID, Batch ID, Manufacturer, or Description..."
+              placeholder="Search by Device UID, Product ID, Serial ID, IMEI, or ICCID..."
               className="pl-10 h-12"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -298,16 +309,16 @@ export default function Devices() {
               </SelectContent>
             </Select>
 
-            {/* City Filter */}
-            <Select value={cityFilter} onValueChange={setCityFilter}>
+            {/* Product Filter */}
+            <Select value={productFilter} onValueChange={setProductFilter}>
               <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="All Cities" />
+                <SelectValue placeholder="All Products" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Cities</SelectItem>
-                {uniqueCities.map((city) => (
-                  <SelectItem key={city} value={city}>
-                    {city}
+                <SelectItem value="all">All Products</SelectItem>
+                {uniqueProductIds.map((productId) => (
+                  <SelectItem key={productId} value={productId}>
+                    {productId}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -340,26 +351,50 @@ export default function Devices() {
           <CardTitle className="text-2xl font-bold">Devices ({filteredDevices.length})</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="rounded-md border">
+          <div className="rounded-md border overflow-x-auto">
             <Table>
               <TableHeader>
-                <TableRow>
-                  <TableHead>Device ID</TableHead>
-                  <TableHead>Batch ID</TableHead>
-                  <TableHead>City</TableHead>
-                  <TableHead>Manufacturer</TableHead>
-                  <TableHead>Description</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Installed By</TableHead>
-                  <TableHead>Location ID</TableHead>
-                  <TableHead>Sensor Reading</TableHead>
-                  <TableHead>Server Data</TableHead>
+                <TableRow className="text-xs">
+                  <TableHead className="px-2 py-2 w-[100px]">
+                    <div className="truncate">Device UID</div>
+                  </TableHead>
+                  <TableHead className="px-2 py-2 w-[70px]">
+                    <div className="truncate">Box</div>
+                  </TableHead>
+                  <TableHead className="px-2 py-2 w-[80px]">
+                    <div className="truncate">Product</div>
+                  </TableHead>
+                  <TableHead className="px-2 py-2 w-[140px]">
+                    <div className="truncate">Serial ID</div>
+                  </TableHead>
+                  <TableHead className="px-2 py-2 w-[110px]">
+                    <div className="truncate">IMEI</div>
+                  </TableHead>
+                  <TableHead className="px-2 py-2 w-[120px]">
+                    <div className="truncate">ICCID</div>
+                  </TableHead>
+                  <TableHead className="px-2 py-2 w-[100px]">
+                    <div className="truncate">Timestamp</div>
+                  </TableHead>
+                  <TableHead className="px-2 py-2 w-[90px]">Status</TableHead>
+                  <TableHead className="px-2 py-2 w-[100px]">
+                    <div className="truncate">Installed By</div>
+                  </TableHead>
+                  <TableHead className="px-2 py-2 w-[80px]">
+                    <div className="truncate">Location</div>
+                  </TableHead>
+                  <TableHead className="px-2 py-2 w-[70px]">
+                    <div className="truncate">Sensor</div>
+                  </TableHead>
+                  <TableHead className="px-2 py-2 w-[70px]">
+                    <div className="truncate">Server</div>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredDevices.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={12} className="text-center text-muted-foreground py-8">
                       No devices found
                     </TableCell>
                   </TableRow>
@@ -369,29 +404,67 @@ export default function Devices() {
                     const Icon = config.icon;
                     
                     return (
-                      <TableRow key={device.id}>
-                        <TableCell className="font-mono font-medium">{device.id}</TableCell>
-                        <TableCell>{device.batchId}</TableCell>
-                        <TableCell>{device.cityOfDispatch}</TableCell>
-                        <TableCell>{device.manufacturer}</TableCell>
-                        <TableCell className="max-w-xs truncate">{device.description}</TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className={config.color}>
-                            <Icon className="h-3 w-3 mr-1" />
+                      <TableRow key={device.id} className="text-xs">
+                        <TableCell className="px-2 py-2 font-mono font-medium">
+                          <div className="truncate max-w-[100px]" title={device.id}>
+                            {device.id}
+                          </div>
+                        </TableCell>
+                        <TableCell className="px-2 py-2">
+                          <div className="truncate max-w-[70px]" title={device.boxNumber || "-"}>
+                            {device.boxNumber || "-"}
+                          </div>
+                        </TableCell>
+                        <TableCell className="px-2 py-2">
+                          <div className="truncate max-w-[80px]" title={device.productId}>
+                            {device.productId}
+                          </div>
+                        </TableCell>
+                        <TableCell className="px-2 py-2 font-mono">
+                          <div className="truncate max-w-[140px]" title={device.deviceSerialId}>
+                            {device.deviceSerialId}
+                          </div>
+                        </TableCell>
+                        <TableCell className="px-2 py-2 font-mono">
+                          <div className="truncate max-w-[110px]" title={device.deviceImei}>
+                            {device.deviceImei}
+                          </div>
+                        </TableCell>
+                        <TableCell className="px-2 py-2 font-mono">
+                          <div className="truncate max-w-[120px]" title={device.iccid}>
+                            {device.iccid}
+                          </div>
+                        </TableCell>
+                        <TableCell className="px-2 py-2 text-muted-foreground">
+                          <div className="truncate max-w-[100px]" title={device.timestamp || "-"}>
+                            {device.timestamp ? device.timestamp.split(' ')[0] : "-"}
+                          </div>
+                        </TableCell>
+                        <TableCell className="px-2 py-2">
+                          <Badge variant="outline" className={`${config.color} text-[10px] px-1.5 py-0.5`}>
+                            <Icon className="h-2.5 w-2.5 mr-0.5" />
                             {config.label}
                           </Badge>
                         </TableCell>
-                        <TableCell>
-                          {device.installation?.installedByName || "-"}
+                        <TableCell className="px-2 py-2">
+                          <div className="truncate max-w-[100px]" title={device.installation?.installedByName || "-"}>
+                            {device.installation?.installedByName || "-"}
+                          </div>
                         </TableCell>
-                        <TableCell>
-                          {device.installation?.locationId || "-"}
+                        <TableCell className="px-2 py-2">
+                          <div className="truncate max-w-[80px]" title={device.installation?.locationId || "-"}>
+                            {device.installation?.locationId || "-"}
+                          </div>
                         </TableCell>
-                        <TableCell>
-                          {device.installation?.sensorReading ?? "-"}
+                        <TableCell className="px-2 py-2">
+                          <div className="truncate max-w-[70px]" title={String(device.installation?.sensorReading ?? "-")}>
+                            {device.installation?.sensorReading ?? "-"}
+                          </div>
                         </TableCell>
-                        <TableCell>
-                          {device.serverData?.sensorData ?? "-"}
+                        <TableCell className="px-2 py-2">
+                          <div className="truncate max-w-[70px]" title={String(device.serverData?.sensorData ?? "-")}>
+                            {device.serverData?.sensorData ?? "-"}
+                          </div>
                         </TableCell>
                       </TableRow>
                     );

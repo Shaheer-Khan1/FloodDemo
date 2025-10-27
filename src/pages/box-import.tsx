@@ -4,8 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { Upload, Download, CheckCircle2, XCircle, Loader2, FileSpreadsheet, AlertCircle } from "lucide-react";
-import { collection, doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { Upload, Download, CheckCircle2, XCircle, Loader2, Package, AlertCircle } from "lucide-react";
+import { collection, query, where, getDocs, doc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -15,10 +15,11 @@ import * as XLSX from 'xlsx';
 interface ImportResult {
   success: number;
   failed: number;
+  notFound: number;
   errors: string[];
 }
 
-export default function DeviceImport() {
+export default function BoxImport() {
   const { userProfile } = useAuth();
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(null);
@@ -27,38 +28,28 @@ export default function DeviceImport() {
   const [progress, setProgress] = useState(0);
 
   const downloadTemplate = () => {
-    const headers = ["PRODUCT COUNT", "TIMESTAMP", "PRODUCT ID", "DEVICE SERIAL ID", "DEVICE UID", "DEVICE IMEI", "ICCID"];
-    const sampleData = [
-      ["1", "2025-10-04  11:40:39", "BBNGJV2I", "SNNEP312045H0104J25000163F915135DD44169DELDYGCDK", "63F915135DD44169", "868927087312836", "89966098241131297102"],
-      ["2", "2025-10-04  11:49:29", "BBNGJV2I", "SNNEP312045H0104J250002B8A5027D6B68E1CEDELDYGCDK", "B8A5027D6B68E1CE", "868927087312893", "89966098241131297136"],
-      ["3", "2025-10-04  12:03:19", "BBNGJV2I", "SNNEP312045H0104J250003EE040E85BCB40FFCDELDYGCDK", "EE040E85BCB40FFC", "868927087294646", "89966098241131297144"],
-    ];
-
-    const csvContent = [
-      headers.join(","),
-      ...sampleData.map(row => row.map(cell => `"${cell}"`).join(","))
-    ].join("\n");
+    const csvContent = `Box,No,Serial ID (Full)
+1,1,SNNEP312045H0105J25007685CEFD507B1EBDA3DELDYGCDK-85CEFD507B1EBDA3
+1,2,SNNEP312045H0105J250071C53604506914FC9BDELDYGCDK-C53604506914FC9B
+2,1,SNNEP312045H0106J2500ED36D86B2E8120F6CDDELDYGCDK-36D86B2E8120F6CD`;
 
     const blob = new Blob([csvContent], { type: "text/csv" });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "device_import_template.csv";
-    document.body.appendChild(a);
+    a.download = "box_numbers_template.csv";
     a.click();
-    document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
 
     toast({
       title: "Template Downloaded",
-      description: "Use this template to format your device data.",
+      description: "Use this template to format your box number data.",
     });
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
     if (selectedFile) {
-      // Check file type
       const validTypes = ["text/csv", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"];
       const isValidExtension = selectedFile.name.endsWith(".csv") || selectedFile.name.endsWith(".xlsx") || selectedFile.name.endsWith(".xls");
       
@@ -78,7 +69,7 @@ export default function DeviceImport() {
   const parseCSV = (text: string): string[][] => {
     const lines = text.split("\n").filter(line => line.trim());
     return lines.map(line => {
-      const matches = line.match(/(".*?"|[^,]+)(?=\s*,|\s*$)/g);
+      const matches = line.match(/(".*?"|[^,\t]+)(?=\s*[,\t]|\s*$)/g);
       return matches ? matches.map(cell => cell.replace(/^"|"$/g, "").trim()) : [];
     });
   };
@@ -92,11 +83,9 @@ export default function DeviceImport() {
           const data = e.target?.result;
           const workbook = XLSX.read(data, { type: 'binary' });
           
-          // Get first sheet
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
           
-          // Convert to array of arrays
           const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as string[][];
           
           resolve(jsonData);
@@ -115,12 +104,11 @@ export default function DeviceImport() {
 
     setImporting(true);
     setProgress(0);
-    const result: ImportResult = { success: 0, failed: 0, errors: [] };
+    const result: ImportResult = { success: 0, failed: 0, notFound: 0, errors: [] };
 
     try {
       let rows: string[][];
       
-      // Check file type and parse accordingly
       if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
         rows = await parseExcel(file);
       } else {
@@ -138,62 +126,64 @@ export default function DeviceImport() {
         return;
       }
 
-      // Skip header row
-      const dataRows = rows.slice(1);
+      // Filter out header rows (rows that contain "Box" in the first column)
+      const dataRows = rows.filter((row, index) => {
+        if (index === 0) return false; // Skip first row (header)
+        const firstCol = row[0]?.toString().trim().toLowerCase();
+        return firstCol !== "box" && firstCol !== ""; // Skip "Box" headers and empty rows
+      });
+      
       const totalRows = dataRows.length;
 
       for (let i = 0; i < dataRows.length; i++) {
         const row = dataRows[i];
-        setProgress(Math.round(((i + 1) / totalRows) * 100));
+        const [boxNumber, , serialIdFull] = row;
 
-        if (row.length < 7) {
+        if (!boxNumber || !serialIdFull) {
           result.failed++;
-          result.errors.push(`Row ${i + 2}: Incomplete data (expected 7 columns, got ${row.length})`);
-          continue;
-        }
-
-        const [productCount, timestamp, productId, deviceSerialId, deviceUid, deviceImei, iccid] = row;
-
-        if (!deviceUid || !productId) {
-          result.failed++;
-          result.errors.push(`Row ${i + 2}: DEVICE UID and PRODUCT ID are required`);
+          result.errors.push(`Row ${i + 2}: Missing box number or serial ID`);
           continue;
         }
 
         try {
-          await setDoc(doc(db, "devices", deviceUid), {
-            id: deviceUid,
-            productId: productId || "",
-            deviceSerialId: deviceSerialId || "",
-            deviceImei: deviceImei || "",
-            iccid: iccid || "",
-            timestamp: timestamp || "",
-            status: "pending",
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-          result.success++;
-        } catch (error) {
+          // Extract the device serial ID (before the dash)
+          const deviceSerialId = serialIdFull.split('-')[0].trim();
+
+          // Find the device by serial ID
+          const devicesRef = collection(db, "devices");
+          const q = query(devicesRef, where("deviceSerialId", "==", deviceSerialId));
+          const querySnapshot = await getDocs(q);
+
+          if (querySnapshot.empty) {
+            result.notFound++;
+            result.errors.push(`Row ${i + 2}: Device not found with serial ID: ${deviceSerialId.substring(0, 30)}...`);
+          } else {
+            // Update the device with box number
+            const deviceDoc = querySnapshot.docs[0];
+            await updateDoc(doc(db, "devices", deviceDoc.id), {
+              boxNumber: boxNumber.toString(),
+              updatedAt: serverTimestamp(),
+            });
+            result.success++;
+          }
+        } catch (error: any) {
           result.failed++;
-          result.errors.push(`Row ${i + 2}: ${error instanceof Error ? error.message : "Unknown error"}`);
+          result.errors.push(`Row ${i + 2}: ${error.message}`);
         }
+
+        setProgress(Math.round(((i + 1) / totalRows) * 100));
       }
 
       setImportResult(result);
       toast({
         title: "Import Complete",
-        description: `Successfully imported ${result.success} devices. ${result.failed} failed.`,
-        variant: result.failed > 0 ? "destructive" : "default",
+        description: `Successfully updated ${result.success} device(s). ${result.notFound} not found. ${result.failed} failed.`,
       });
-
-      if (result.success > 0) {
-        setFile(null);
-      }
-    } catch (error) {
+    } catch (error: any) {
       toast({
         variant: "destructive",
         title: "Import Failed",
-        description: error instanceof Error ? error.message : "An error occurred during import.",
+        description: error.message || "An unexpected error occurred.",
       });
     } finally {
       setImporting(false);
@@ -208,7 +198,7 @@ export default function DeviceImport() {
           <CardContent className="pt-6 text-center">
             <AlertCircle className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
             <h2 className="text-xl font-semibold mb-2">Access Denied</h2>
-            <p className="text-muted-foreground">Only administrators can import devices.</p>
+            <p className="text-muted-foreground">Only administrators can import box numbers.</p>
           </CardContent>
         </Card>
       </div>
@@ -216,19 +206,19 @@ export default function DeviceImport() {
   }
 
   return (
-    <div className="space-y-8 max-w-4xl mx-auto">
+    <div className="space-y-8">
       <div>
         <h1 className="text-4xl font-bold text-slate-900 dark:text-white">
-          Device Import
+          Box Number Import
         </h1>
-        <p className="text-muted-foreground mt-2">Bulk import devices from CSV file</p>
+        <p className="text-muted-foreground mt-2">Update devices with their box numbers</p>
       </div>
 
       {/* Instructions Card */}
       <Card className="border shadow-sm">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <FileSpreadsheet className="h-5 w-5" />
+            <Package className="h-5 w-5" />
             Import Instructions
           </CardTitle>
           <CardDescription>
@@ -238,19 +228,16 @@ export default function DeviceImport() {
         <CardContent className="space-y-4">
           <ol className="list-decimal list-inside space-y-2 text-sm">
             <li>Download the CSV template using the button below</li>
-            <li>Fill in your device data with the required columns:
+            <li>Fill in your box number data with the required columns:
               <ul className="list-disc list-inside ml-4 mt-1 text-xs text-muted-foreground">
-                <li>PRODUCT COUNT - Sequential number</li>
-                <li>TIMESTAMP - Import date/time</li>
-                <li>PRODUCT ID - Product identifier</li>
-                <li>DEVICE SERIAL ID - Full serial number</li>
-                <li>DEVICE UID - Unique identifier (primary key)</li>
-                <li>DEVICE IMEI - IMEI number</li>
-                <li>ICCID - SIM card identifier</li>
+                <li>Box - Box number</li>
+                <li>No - Sequential number within box (optional, for reference)</li>
+                <li>Serial ID (Full) - Complete device serial ID from the device label</li>
               </ul>
             </li>
+            <li>The file can contain multiple "Box" header rows - they will be automatically skipped</li>
             <li>Save the file as CSV or keep it as Excel (.xlsx) format</li>
-            <li>Upload the file and click "Import Devices"</li>
+            <li>Upload the file and click "Import Box Numbers"</li>
           </ol>
 
           <Button onClick={downloadTemplate} variant="outline" className="w-full sm:w-auto">
@@ -264,7 +251,7 @@ export default function DeviceImport() {
       <Card className="border shadow-sm">
         <CardHeader>
           <CardTitle>Upload File</CardTitle>
-          <CardDescription>Select a CSV or Excel (.xlsx) file containing device data</CardDescription>
+          <CardDescription>Select a CSV or Excel (.xlsx) file containing box number data</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
@@ -277,7 +264,7 @@ export default function DeviceImport() {
             />
             {file && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <FileSpreadsheet className="h-4 w-4" />
+                <Package className="h-4 w-4" />
                 <span>{file.name}</span>
                 <Badge variant="secondary">{(file.size / 1024).toFixed(2)} KB</Badge>
               </div>
@@ -286,30 +273,21 @@ export default function DeviceImport() {
 
           {importing && (
             <div className="space-y-2">
-              <div className="flex items-center justify-between text-sm">
-                <span>Importing devices...</span>
-                <span>{progress}%</span>
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>Importing... {progress}%</span>
               </div>
-              <Progress value={progress} className="h-2" />
+              <Progress value={progress} className="w-full" />
             </div>
           )}
 
           <Button 
             onClick={handleImport} 
-            disabled={!file || importing} 
+            disabled={!file || importing}
             className="w-full"
           >
-            {importing ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Importing...
-              </>
-            ) : (
-              <>
-                <Upload className="h-4 w-4 mr-2" />
-                Import Devices
-              </>
-            )}
+            <Upload className="h-4 w-4 mr-2" />
+            {importing ? "Importing..." : "Import Box Numbers"}
           </Button>
         </CardContent>
       </Card>
@@ -321,23 +299,28 @@ export default function DeviceImport() {
             <CardTitle>Import Results</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="flex items-center gap-3 p-4 bg-green-50 dark:bg-green-950/20 rounded-lg border border-green-200 dark:border-green-800">
-                <CheckCircle2 className="h-8 w-8 text-green-600 dark:text-green-500" />
+                <CheckCircle2 className="h-8 w-8 text-green-600" />
                 <div>
-                  <p className="text-sm text-muted-foreground">Success</p>
-                  <p className="text-2xl font-bold text-green-600 dark:text-green-500">
-                    {importResult.success}
-                  </p>
+                  <p className="text-2xl font-bold text-green-600">{importResult.success}</p>
+                  <p className="text-sm text-green-600/80">Updated</p>
                 </div>
               </div>
-              <div className="flex items-center gap-3 p-4 bg-red-50 dark:bg-red-950/20 rounded-lg border border-red-200 dark:border-red-800">
-                <XCircle className="h-8 w-8 text-red-600 dark:text-red-500" />
+
+              <div className="flex items-center gap-3 p-4 bg-yellow-50 dark:bg-yellow-950/20 rounded-lg border border-yellow-200 dark:border-yellow-800">
+                <AlertCircle className="h-8 w-8 text-yellow-600" />
                 <div>
-                  <p className="text-sm text-muted-foreground">Failed</p>
-                  <p className="text-2xl font-bold text-red-600 dark:text-red-500">
-                    {importResult.failed}
-                  </p>
+                  <p className="text-2xl font-bold text-yellow-600">{importResult.notFound}</p>
+                  <p className="text-sm text-yellow-600/80">Not Found</p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 p-4 bg-red-50 dark:bg-red-950/20 rounded-lg border border-red-200 dark:border-red-800">
+                <XCircle className="h-8 w-8 text-red-600" />
+                <div>
+                  <p className="text-2xl font-bold text-red-600">{importResult.failed}</p>
+                  <p className="text-sm text-red-600/80">Failed</p>
                 </div>
               </div>
             </div>
@@ -345,18 +328,18 @@ export default function DeviceImport() {
             {importResult.errors.length > 0 && (
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
-                <AlertTitle>Import Errors</AlertTitle>
+                <AlertTitle>Errors Encountered</AlertTitle>
                 <AlertDescription>
-                  <div className="mt-2 max-h-48 overflow-y-auto space-y-1">
-                    {importResult.errors.slice(0, 10).map((error, index) => (
-                      <p key={index} className="text-xs font-mono">
+                  <div className="mt-2 max-h-60 overflow-y-auto space-y-1">
+                    {importResult.errors.slice(0, 20).map((error, index) => (
+                      <div key={index} className="text-xs font-mono">
                         {error}
-                      </p>
+                      </div>
                     ))}
-                    {importResult.errors.length > 10 && (
-                      <p className="text-xs italic">
-                        ... and {importResult.errors.length - 10} more errors
-                      </p>
+                    {importResult.errors.length > 20 && (
+                      <div className="text-xs italic">
+                        ... and {importResult.errors.length - 20} more errors
+                      </div>
                     )}
                   </div>
                 </AlertDescription>

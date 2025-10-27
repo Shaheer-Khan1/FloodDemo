@@ -49,11 +49,13 @@ export interface CustomTeamMember {
 export type DeviceStatus = "pending" | "installed" | "verified" | "flagged";
 
 export interface Device {
-  id: string; // deviceId
-  batchId: string;
-  cityOfDispatch: string;
-  manufacturer: string;
-  description: string;
+  id: string; // DEVICE UID (primary identifier)
+  productId: string; // PRODUCT ID
+  deviceSerialId: string; // DEVICE SERIAL ID
+  deviceImei: string; // DEVICE IMEI
+  iccid: string; // ICCID
+  timestamp?: string; // Original import timestamp
+  boxNumber?: string; // Box number from packaging
   status: DeviceStatus;
   createdAt?: Date;
   updatedAt?: Date;
@@ -63,6 +65,8 @@ export interface Installation {
   id: string;
   deviceId: string;
   locationId: string;
+  latitude?: number; // GPS latitude
+  longitude?: number; // GPS longitude
   sensorReading: number;
   imageUrl: string; // mandatory image
   optionalImageUrl?: string; // optional image

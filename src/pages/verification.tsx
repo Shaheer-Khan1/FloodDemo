@@ -524,31 +524,31 @@ export default function Verification() {
               </div>
 
               {/* Device Info */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-lg">Device Information</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <p className="text-sm text-muted-foreground">Device ID</p>
-                      <p className="text-base font-mono font-medium">{selectedItem.device.id}</p>
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-lg">Device Information</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Device UID</p>
+                        <p className="text-base font-mono font-medium text-xs">{selectedItem.device.id}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-muted-foreground">Product ID</p>
+                        <p className="text-base font-medium">{selectedItem.device.productId}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-muted-foreground">IMEI</p>
+                        <p className="text-base font-mono font-medium text-xs">{selectedItem.device.deviceImei}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-muted-foreground">ICCID</p>
+                        <p className="text-base font-mono font-medium text-xs">{selectedItem.device.iccid}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-sm text-muted-foreground">Batch ID</p>
-                      <p className="text-base font-medium">{selectedItem.device.batchId}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-muted-foreground">Manufacturer</p>
-                      <p className="text-base font-medium">{selectedItem.device.manufacturer}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-muted-foreground">City of Dispatch</p>
-                      <p className="text-base font-medium">{selectedItem.device.cityOfDispatch}</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+                  </CardContent>
+                </Card>
 
               {/* Installation Images */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
