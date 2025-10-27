@@ -225,6 +225,36 @@ export default function NewInstallation() {
         return;
       }
 
+      // Fetch device data from API using last 4 digits
+      try {
+        const apiResponse = await fetch(`https://op1.smarttive.com/device/${last4Digits.toUpperCase()}`, {
+          method: 'GET',
+          headers: {
+            'X-API-KEY': 'M2nJ5vKt8QwR3pLxT0yZ7aDbU1sH6cYe'
+          }
+        });
+
+        if (apiResponse.ok) {
+          const apiData = await apiResponse.json();
+          if (apiData.success && apiData.records && apiData.records.length > 0) {
+            // Get the latest record (first in array)
+            const latestRecord = apiData.records[0];
+            const latestDistance = latestRecord.dis_cm;
+            const latestTimestamp = latestRecord.timestamp;
+            
+            console.log('Device API Response:', {
+              device_id: apiData.device_id,
+              latest_dis_cm: latestDistance,
+              latest_timestamp: latestTimestamp,
+              all_records: apiData.records
+            });
+          }
+        }
+      } catch (apiError) {
+        console.warn('API fetch failed:', apiError);
+        // Don't block validation if API fails
+      }
+
       setDeviceValid(true);
       setDeviceInfo(device);
       setFullDeviceId(deviceDoc.id);
