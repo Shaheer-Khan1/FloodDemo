@@ -230,7 +230,7 @@ export default function NewInstallation() {
         const apiResponse = await fetch(`https://op1.smarttive.com/device/${last4Digits.toUpperCase()}`, {
           method: 'GET',
           headers: {
-            'X-API-KEY': 'M2nJ5vKt8QwR3pLxT0yZ7aDbU1sH6cYe'
+            'X-API-KEY': import.meta.env.VITE_API_KEY || ''
           }
         });
 
@@ -562,12 +562,6 @@ export default function NewInstallation() {
                     <div className="p-2 bg-white dark:bg-slate-800 rounded border border-green-200 dark:border-green-700">
                       <p className="text-xs font-medium text-green-900 dark:text-green-100 mb-1">Full Device UID:</p>
                       <p className="font-mono text-xs text-green-800 dark:text-green-200 break-all">{fullDeviceId}</p>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 text-xs text-green-800 dark:text-green-200">
-                      <div><span className="font-medium">Product ID:</span> {deviceInfo.productId}</div>
-                      <div><span className="font-medium">IMEI:</span> {deviceInfo.deviceImei}</div>
-                      <div><span className="font-medium">Serial:</span> <span className="font-mono text-[10px]">{deviceInfo.deviceSerialId}</span></div>
-                      <div><span className="font-medium">ICCID:</span> <span className="font-mono text-[10px]">{deviceInfo.iccid}</span></div>
                     </div>
                   </div>
                 </AlertDescription>
