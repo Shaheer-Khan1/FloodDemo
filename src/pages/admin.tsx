@@ -32,13 +32,17 @@ export default function Admin() {
     if (!userProfile?.isAdmin) return;
     
     const unsubscribe = onSnapshot(
-      query(collection(db, "users"), orderBy("displayName")),
+      collection(db, "users"),
       (snapshot) => {
         const usersData = snapshot.docs.map(doc => ({
           ...doc.data(),
           createdAt: doc.data().createdAt?.toDate(),
           updatedAt: doc.data().updatedAt?.toDate(),
         })) as UserProfile[];
+        
+        // Sort in JavaScript to avoid index requirement
+        usersData.sort((a, b) => a.displayName.localeCompare(b.displayName));
+        
         setUsers(usersData);
         setLoading(false);
       },
@@ -74,10 +78,11 @@ export default function Admin() {
         // Organize teams by owner
         const teamsByOwner: Record<string, Team[]> = {};
         for (const team of allTeams) {
-          if (!teamsByOwner[team.ownerId]) {
-            teamsByOwner[team.ownerId] = [];
+          const ownerId = team.ownerId || team.createdBy;
+          if (!teamsByOwner[ownerId]) {
+            teamsByOwner[ownerId] = [];
           }
-          teamsByOwner[team.ownerId].push(team);
+          teamsByOwner[ownerId].push(team);
         }
         setUserTeams(teamsByOwner);
       },

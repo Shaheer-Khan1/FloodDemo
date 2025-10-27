@@ -51,7 +51,27 @@ export default function Dashboard() {
           <h1 className="text-4xl font-bold text-slate-900 dark:text-white">
             Welcome back, {userProfile.displayName.split(' ')[0]}
           </h1>
-          <p className="text-muted-foreground mt-2">Here's what's happening with your flood monitoring system</p>
+          <div className="flex items-center gap-2 mt-2">
+            <p className="text-muted-foreground">
+              {userProfile.isAdmin 
+                ? "Admin Dashboard - Full system access" 
+                : userProfile.role === "installer"
+                ? "Installer Dashboard - Record installations"
+                : userProfile.role === "verifier"
+                ? "Verifier Dashboard - Review submissions"
+                : "FlowSet IoT Installation Management"}
+            </p>
+            {userProfile.role && !userProfile.isAdmin && (
+              <Badge variant="secondary" className="capitalize">
+                {userProfile.role}
+              </Badge>
+            )}
+            {userProfile.isAdmin && (
+              <Badge variant="default" className="bg-blue-600">
+                Administrator
+              </Badge>
+            )}
+          </div>
         </div>
       </div>
 
@@ -151,6 +171,130 @@ export default function Dashboard() {
           <CardTitle className="text-2xl font-bold">Quick Actions</CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Admin Actions */}
+          {userProfile.isAdmin && (
+            <>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setLocation("/devices")}
+              >
+                <div className="h-12 w-12 rounded-xl bg-blue-100 dark:bg-blue-950 flex items-center justify-center mr-4">
+                  <Shield className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Master Device List</div>
+                  <div className="text-sm text-muted-foreground">View and manage all devices</div>
+                </div>
+              </Button>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setLocation("/verification")}
+              >
+                <div className="h-12 w-12 rounded-xl bg-green-100 dark:bg-green-950 flex items-center justify-center mr-4">
+                  <Shield className="h-6 w-6 text-green-600 dark:text-green-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Verification Queue</div>
+                  <div className="text-sm text-muted-foreground">Review pending installations</div>
+                </div>
+              </Button>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setLocation("/device-import")}
+              >
+                <div className="h-12 w-12 rounded-xl bg-purple-100 dark:bg-purple-950 flex items-center justify-center mr-4">
+                  <Shield className="h-6 w-6 text-purple-600 dark:text-purple-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Import Devices</div>
+                  <div className="text-sm text-muted-foreground">Bulk import from CSV</div>
+                </div>
+              </Button>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setLocation("/admin")}
+                data-testid="button-admin-dashboard"
+              >
+                <div className="h-12 w-12 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mr-4">
+                  <Shield className="h-6 w-6 text-slate-600 dark:text-slate-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Admin Dashboard</div>
+                  <div className="text-sm text-muted-foreground">Manage users and teams</div>
+                </div>
+              </Button>
+            </>
+          )}
+
+          {/* Installer Actions */}
+          {userProfile.role === "installer" && !userProfile.isAdmin && (
+            <>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setLocation("/new-installation")}
+              >
+                <div className="h-12 w-12 rounded-xl bg-blue-100 dark:bg-blue-950 flex items-center justify-center mr-4">
+                  <Users className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">New Installation</div>
+                  <div className="text-sm text-muted-foreground">Record a device installation</div>
+                </div>
+              </Button>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setLocation("/my-submissions")}
+              >
+                <div className="h-12 w-12 rounded-xl bg-green-100 dark:bg-green-950 flex items-center justify-center mr-4">
+                  <Users className="h-6 w-6 text-green-600 dark:text-green-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">My Submissions</div>
+                  <div className="text-sm text-muted-foreground">Track your installations</div>
+                </div>
+              </Button>
+            </>
+          )}
+
+          {/* Verifier Actions */}
+          {userProfile.role === "verifier" && !userProfile.isAdmin && (
+            <>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setLocation("/verification")}
+              >
+                <div className="h-12 w-12 rounded-xl bg-green-100 dark:bg-green-950 flex items-center justify-center mr-4">
+                  <Shield className="h-6 w-6 text-green-600 dark:text-green-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Verification Queue</div>
+                  <div className="text-sm text-muted-foreground">Review pending installations</div>
+                </div>
+              </Button>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setLocation("/devices")}
+              >
+                <div className="h-12 w-12 rounded-xl bg-blue-100 dark:bg-blue-950 flex items-center justify-center mr-4">
+                  <Users className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Device List</div>
+                  <div className="text-sm text-muted-foreground">View all devices</div>
+                </div>
+              </Button>
+            </>
+          )}
+
+          {/* Common Actions */}
           <Button 
             variant="outline" 
             className="h-auto py-6 justify-start hover:bg-accent transition-all group"
@@ -161,26 +305,10 @@ export default function Dashboard() {
               <Users className="h-6 w-6 text-slate-600 dark:text-slate-400" />
             </div>
             <div className="text-left">
-              <div className="font-semibold text-lg">Manage Teams</div>
-              <div className="text-sm text-muted-foreground">Create and manage your teams</div>
+              <div className="font-semibold text-lg">Teams</div>
+              <div className="text-sm text-muted-foreground">Manage your teams</div>
             </div>
           </Button>
-          {userProfile.isAdmin && (
-            <Button 
-              variant="outline" 
-              className="h-auto py-6 justify-start hover:bg-accent transition-all group"
-              onClick={() => setLocation("/admin")}
-              data-testid="button-admin-dashboard"
-            >
-              <div className="h-12 w-12 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mr-4">
-                <Shield className="h-6 w-6 text-slate-600 dark:text-slate-400" />
-              </div>
-              <div className="text-left">
-                <div className="font-semibold text-lg">Admin Dashboard</div>
-                <div className="text-sm text-muted-foreground">View all users and teams</div>
-              </div>
-            </Button>
-          )}
         </CardContent>
       </Card>
     </div>

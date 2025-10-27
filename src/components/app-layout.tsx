@@ -14,7 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { Droplets, LayoutDashboard, Users, Shield, User, LogOut } from "lucide-react";
+import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, FileUp, Plus, List, CheckSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
@@ -43,7 +43,24 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     { title: "Dashboard", icon: LayoutDashboard, url: "/dashboard" },
     { title: "Profile", icon: User, url: "/profile" },
     { title: "Teams", icon: Users, url: "/teams" },
-    ...(userProfile?.isAdmin ? [{ title: "Admin", icon: Shield, url: "/admin" }] : []),
+    ...(userProfile?.isAdmin ? [
+      { title: "Admin", icon: Shield, url: "/admin" },
+      { title: "Devices", icon: Package, url: "/devices" },
+      { title: "Import Devices", icon: FileUp, url: "/device-import" },
+      { title: "Verification", icon: CheckSquare, url: "/verification" },
+      { title: "New Installation", icon: Plus, url: "/new-installation" },
+      { title: "My Submissions", icon: List, url: "/my-submissions" },
+    ] : []),
+    // Installer-specific menu items
+    ...(userProfile?.role === "installer" && !userProfile?.isAdmin ? [
+      { title: "New Installation", icon: Plus, url: "/new-installation" },
+      { title: "My Submissions", icon: List, url: "/my-submissions" },
+    ] : []),
+    // Verifier-specific menu items
+    ...(userProfile?.role === "verifier" && !userProfile?.isAdmin ? [
+      { title: "Devices", icon: Package, url: "/devices" },
+      { title: "Verification", icon: CheckSquare, url: "/verification" },
+    ] : []),
   ];
 
   return (
@@ -61,8 +78,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 <Droplets className="h-5 w-5 text-white" />
               </div>
               <div className="flex flex-col">
-                <span className="font-bold text-lg leading-none">FloodWatch</span>
-                <span className="text-xs text-muted-foreground leading-none">Console</span>
+                <span className="font-bold text-lg leading-none">FlowSet</span>
+                <span className="text-xs text-muted-foreground leading-none">IoT Installation</span>
               </div>
             </button>
 
@@ -175,7 +192,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       {/* Footer - stays at bottom */}
       <footer className="border-t bg-white/50 dark:bg-slate-950/50 backdrop-blur-sm mt-auto">
         <div className="container mx-auto px-4 py-6 text-center text-sm text-muted-foreground">
-          <p>Built by <span className="font-semibold text-foreground">smarttive</span></p>
+          <p>Built by <span className="font-semibold text-foreground">Smarttive</span> - FlowSet IoT Installation Management</p>
         </div>
       </footer>
     </div>

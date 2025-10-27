@@ -18,6 +18,9 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
       } else if (userProfile && location === "/profile-setup") {
         // Has profile but on setup page - redirect to dashboard
         setLocation("/dashboard");
+      } else if (userProfile && !userProfile.isAdmin && !userProfile.role && location !== "/role-selection") {
+        // Has profile but no role (non-admin) and not on role selection - redirect to role selection
+        setLocation("/role-selection");
       }
     }
   }, [user, userProfile, loading, location, setLocation]);

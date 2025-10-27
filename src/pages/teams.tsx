@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { Users, Plus, Trash2, UserPlus, Loader2 } from "lucide-react";
-import type { Team, TeamMember } from "@/lib/types";
+import type { Team, CustomTeamMember } from "@/lib/types";
 import { TeamMemberDialog } from "@/components/team-member-dialog";
 
 export default function Teams() {
@@ -22,7 +22,7 @@ export default function Teams() {
   const [newTeamName, setNewTeamName] = useState("");
   const [creating, setCreating] = useState(false);
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
-  const [teamMembers, setTeamMembers] = useState<Record<string, TeamMember[]>>({});
+  const [teamMembers, setTeamMembers] = useState<Record<string, CustomTeamMember[]>>({});
 
   // Real-time teams listener
   useEffect(() => {
@@ -72,7 +72,7 @@ export default function Teams() {
             id: doc.id,
             ...doc.data(),
             addedAt: doc.data().addedAt?.toDate(),
-          })) as TeamMember[];
+          })) as CustomTeamMember[];
           
           setTeamMembers(prev => ({ ...prev, [team.id]: members }));
         },
