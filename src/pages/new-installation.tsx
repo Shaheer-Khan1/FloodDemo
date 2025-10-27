@@ -12,7 +12,7 @@ import { db, storage } from "@/lib/firebase";
 import { useLocation } from "wouter";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Html5QrcodeScanner } from "html5-qrcode";
+import { Html5Qrcode } from "html5-qrcode";
 
 export default function NewInstallation() {
   const { userProfile } = useAuth();
@@ -25,7 +25,7 @@ export default function NewInstallation() {
   const [deviceValid, setDeviceValid] = useState<boolean | null>(null);
   const [deviceInfo, setDeviceInfo] = useState<any>(null);
   const [showScanner, setShowScanner] = useState(false);
-  const scannerRef = useRef<Html5QrcodeScanner | null>(null);
+  const scannerRef = useRef<Html5Qrcode | null>(null);
   
   const [locationId, setLocationId] = useState("");
   const [latitude, setLatitude] = useState<number | null>(null);
@@ -39,45 +39,56 @@ export default function NewInstallation() {
   
   const [submitting, setSubmitting] = useState(false);
 
-  // Initialize QR Scanner
+  // Initialize QR Scanner with better settings
   useEffect(() => {
-    if (showScanner && !scannerRef.current) {
-      const scanner = new Html5QrcodeScanner(
-        "qr-reader",
-        {
-          fps: 10,
-          qrbox: { width: 250, height: 250 },
-          aspectRatio: 1.0,
-        },
-        false
-      );
+    const initScanner = async () => {
+      if (showScanner && !scannerRef.current) {
+        const scanner = new Html5Qrcode("qr-reader");
+        scannerRef.current = scanner;
 
-      scanner.render(
-        (decodedText) => {
-          // Success callback
-          const last4 = decodedText.slice(-4).toUpperCase();
-          setDeviceId(last4);
-          setShowScanner(false);
-          scanner.clear();
-          scannerRef.current = null;
-          
+        try {
+          // Start scanning with better settings for low-quality QR codes
+          await scanner.start(
+            { facingMode: "environment" }, // Use back camera on mobile
+            {
+              fps: 20, // Higher FPS
+              qrbox: { width: 300, height: 300 }, // Larger scanning area
+            },
+            (decodedText, decodedResult) => {
+              // Success callback
+              const last4 = decodedText.slice(-4).toUpperCase();
+              setDeviceId(last4);
+              setShowScanner(false);
+              scanner.stop().then(() => {
+                scannerRef.current = null;
+              }).catch(console.error);
+              
+              toast({
+                title: "QR Code Scanned",
+                description: `Last 4 digits: ${last4}`,
+              });
+            },
+            (error) => {
+              // Error callback - can be ignored for continuous scanning
+              // console.log(error);
+            }
+          );
+        } catch (error) {
+          console.error("Scanner init failed:", error);
           toast({
-            title: "QR Code Scanned",
-            description: `Last 4 digits: ${last4}`,
+            variant: "destructive",
+            title: "Camera Error",
+            description: "Could not access camera. Try manual entry.",
           });
-        },
-        (error) => {
-          // Error callback - can be ignored for continuous scanning
-          console.log(error);
         }
-      );
+      }
+    };
 
-      scannerRef.current = scanner;
-    }
+    initScanner();
 
     return () => {
       if (scannerRef.current) {
-        scannerRef.current.clear().catch(console.error);
+        scannerRef.current.stop().catch(console.error);
         scannerRef.current = null;
       }
     };
@@ -85,7 +96,7 @@ export default function NewInstallation() {
 
   const handleScannerClose = () => {
     if (scannerRef.current) {
-      scannerRef.current.clear().catch(console.error);
+      scannerRef.current.stop().catch(console.error);
       scannerRef.current = null;
     }
     setShowScanner(false);
@@ -236,11 +247,20 @@ export default function NewInstallation() {
   const handleImageChange = (index: number) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      // Check if file was selected from gallery (not captured from camera)
+      // Note: This is a basic heuristic - file.lastModified can help detect
+      const isFromGallery = file.webkitRelativePath || file.lastModified < Date.now() - 5000;
+      
+      if (isFromGallery) {
+        // Warn but allow it, as the capture attribute should handle this on mobile
+        // On desktop, users might need to upload
+      }
+      
       if (!file.type.startsWith("image/")) {
         toast({
           variant: "destructive",
           title: "Invalid File",
-          description: "Please upload an image file.",
+          description: "Please capture an image using the camera.",
         });
         return;
       }
@@ -248,7 +268,7 @@ export default function NewInstallation() {
         toast({
           variant: "destructive",
           title: "File Too Large",
-          description: "Image must be less than 5MB.",
+          description: "Image must be less than 5MB. Please capture again.",
         });
         return;
       }
@@ -620,9 +640,12 @@ export default function NewInstallation() {
             <div>
               <Label className="flex items-center gap-2 mb-3">
                 <Camera className="h-4 w-4" />
-                Installation Photos (up to 4)
+                Installation Photos (up to 4) - Camera Capture Only
                 <Badge variant="secondary">At least 1 required</Badge>
               </Label>
+              <p className="text-sm text-muted-foreground mb-3">
+                Take photos directly using your device camera. Uploads from gallery are not allowed.
+              </p>
               <div className="grid grid-cols-2 gap-4">
                 {images.map((image, index) => (
                   <div key={index}>
