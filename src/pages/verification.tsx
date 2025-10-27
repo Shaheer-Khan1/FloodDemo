@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp, getDoc } from "firebase/firestore";
+import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,9 +39,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 export default function Verification() {
   const { userProfile } = useAuth();
   const { toast } = useToast();
-  const [installations, setInstallations] = useState<Installation[]>([]);
+  const [allInstallations, setAllInstallations] = useState<Installation[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
-  const [serverData, setServerData] = useState<ServerData[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState<VerificationItem | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -52,10 +51,8 @@ export default function Verification() {
   useEffect(() => {
     if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
 
-    const installationsQuery = query(
-      collection(db, "installations"),
-      where("status", "==", "pending")
-    );
+    // Fetch all installations for verification (pending, verified, flagged)
+    const installationsQuery = collection(db, "installations");
 
     const unsubscribe = onSnapshot(
       installationsQuery,
@@ -66,7 +63,7 @@ export default function Verification() {
           createdAt: doc.data().createdAt?.toDate(),
           updatedAt: doc.data().updatedAt?.toDate(),
         })) as Installation[];
-        setInstallations(installationsData);
+        setAllInstallations(installationsData);
         setLoading(false);
       },
       (error) => {
@@ -104,49 +101,89 @@ export default function Verification() {
     return () => unsubscribe();
   }, [userProfile]);
 
-  // Real-time server data listener
-  useEffect(() => {
-    if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
+  // Separate pending and verified installations
+  const pendingInstallations = useMemo(() => {
+    return allInstallations.filter(inst => inst.status === "pending");
+  }, [allInstallations]);
 
-    const unsubscribe = onSnapshot(
-      collection(db, "serverData"),
-      (snapshot) => {
-        const serverDataList = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-          createdAt: doc.data().createdAt?.toDate(),
-          receivedAt: doc.data().receivedAt?.toDate(),
-        })) as ServerData[];
-        setServerData(serverDataList);
-      },
-      (error) => {
-        console.error("Failed to load server data:", error);
-      }
-    );
+  const verifiedInstallations = useMemo(() => {
+    return allInstallations.filter(inst => inst.status === "verified");
+  }, [allInstallations]);
 
-    return () => unsubscribe();
-  }, [userProfile]);
-
-  // Create verification items
+  // Create verification items for pending installations
   const verificationItems = useMemo(() => {
-    return installations.map(installation => {
+    return pendingInstallations.map(installation => {
       const device = devices.find(d => d.id === installation.deviceId);
-      const serverDataItem = serverData.find(sd => sd.deviceId === installation.deviceId);
+      
+      // Use latestDisCm from installation document instead of serverData collection
+      const serverValue = installation.latestDisCm;
       
       let percentageDifference: number | undefined;
-      if (serverDataItem && installation.sensorReading) {
-        const diff = Math.abs(serverDataItem.sensorData - installation.sensorReading);
+      if (serverValue !== undefined && installation.sensorReading) {
+        const diff = Math.abs(serverValue - installation.sensorReading);
         percentageDifference = (diff / installation.sensorReading) * 100;
       }
 
       return {
         installation,
         device: device!,
-        serverData: serverDataItem,
+        serverData: serverValue !== undefined ? {
+          id: `${installation.id}_server`,
+          deviceId: installation.deviceId,
+          sensorData: serverValue,
+        } : undefined,
         percentageDifference,
       } as VerificationItem;
     }).filter(item => item.device); // Filter out items without device info
-  }, [installations, devices, serverData]);
+  }, [pendingInstallations, devices]);
+
+  // Auto-approve installations with variance < 5%
+  useEffect(() => {
+    if (loading || !userProfile) return;
+
+    const autoApproveInstallations = async () => {
+      const itemsToAutoApprove = verificationItems.filter(item => {
+        // Only auto-approve if:
+        // 1. Has server data
+        // 2. Variance is less than 5%
+        // 3. Variance is not undefined
+        return item.serverData && 
+               item.percentageDifference !== undefined && 
+               item.percentageDifference < 5;
+      });
+
+      if (itemsToAutoApprove.length === 0) return;
+
+      for (const item of itemsToAutoApprove) {
+        try {
+          // Update installation status
+          await updateDoc(doc(db, "installations", item.installation.id), {
+            status: "verified",
+            verifiedBy: "System (Auto-approved)",
+            verifiedAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+
+          // Update device status
+          await updateDoc(doc(db, "devices", item.installation.deviceId), {
+            status: "verified",
+            updatedAt: serverTimestamp(),
+          });
+        } catch (error) {
+          console.error("Auto-approval failed:", error);
+        }
+      }
+
+      if (itemsToAutoApprove.length > 0) {
+        toast({
+          title: "Auto-Approved Installations",
+          description: `${itemsToAutoApprove.length} installation(s) were automatically approved due to low variance.`,
+        });
+      }
+    };
+
+    autoApproveInstallations();
+  }, [verificationItems, loading, userProfile, toast]);
 
   const viewDetails = (item: VerificationItem) => {
     setSelectedItem(item);
@@ -417,6 +454,101 @@ export default function Verification() {
           )}
         </CardContent>
       </Card>
+
+      {/* Verified Installations Table */}
+      {verifiedInstallations.length > 0 && (
+        <Card className="border shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-2xl font-bold">Verified Installations ({verifiedInstallations.length})</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Device ID</TableHead>
+                    <TableHead>Installer</TableHead>
+                    <TableHead>Location</TableHead>
+                    <TableHead>Installer Reading</TableHead>
+                    <TableHead>Server Data</TableHead>
+                    <TableHead>Variance</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Verified By</TableHead>
+                    <TableHead>Submitted</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {verifiedInstallations.map((installation) => {
+                    const device = devices.find(d => d.id === installation.deviceId);
+                    const serverValue = installation.latestDisCm;
+                    
+                    let percentageDifference: number | undefined;
+                    if (serverValue !== undefined && installation.sensorReading) {
+                      const diff = Math.abs(serverValue - installation.sensorReading);
+                      percentageDifference = (diff / installation.sensorReading) * 100;
+                    }
+
+                    return (
+                      <TableRow key={installation.id}>
+                        <TableCell className="font-mono font-medium">{installation.deviceId}</TableCell>
+                        <TableCell>{installation.installedByName}</TableCell>
+                        <TableCell>{installation.locationId}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-1">
+                            <Gauge className="h-3 w-3 text-muted-foreground" />
+                            {installation.sensorReading}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          {serverValue !== undefined ? (
+                            <div className="flex items-center gap-1">
+                              <Gauge className="h-3 w-3 text-green-600" />
+                              {serverValue}
+                            </div>
+                          ) : (
+                            <Badge variant="outline" className="text-xs">
+                              <Minus className="h-3 w-3 mr-1" />
+                              No Data
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {percentageDifference !== undefined ? (
+                            <Badge 
+                              variant="outline" 
+                              className={percentageDifference > 5
+                                ? "text-red-600 bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800" 
+                                : "text-green-600 bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800"}
+                            >
+                              {percentageDifference.toFixed(2)}%
+                            </Badge>
+                          ) : (
+                            "-"
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="default" className="bg-green-600">
+                            <CheckCircle2 className="h-3 w-3 mr-1" />
+                            Verified
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {installation.verifiedBy || "-"}
+                        </TableCell>
+                        <TableCell>
+                          {installation.createdAt 
+                            ? format(installation.createdAt, "MMM d, HH:mm")
+                            : "-"}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Verification Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
