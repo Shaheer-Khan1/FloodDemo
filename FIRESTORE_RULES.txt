@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isSignedIn() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+    
+    function isVerifier() {
+      return isSignedIn() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "verifier";
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    
+    // Users collection
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
+    }
+    
+    // UserProfiles collection (for profile setup)
+    match /userProfiles/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId || isAdmin();
+    }
+    
+    // Teams collection
+    match /teams/{teamId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isAdmin() || resource.data.ownerId == request.auth.uid;
+      allow delete: if isAdmin() || resource.data.ownerId == request.auth.uid;
+    }
+    
+    // Team members collection
+    match /teamMembers/{memberId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
+    }
+    
+    // Teams subcollection members
+    match /teams/{teamId}/members/{memberId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || 
+        get(/databases/$(database)/documents/teams/$(teamId)).data.ownerId == request.auth.uid;
+    }
+    
+    // Devices collection (Master device database)
+    match /devices/{deviceId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+    
+    // Installations collection
+    match /installations/{installationId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && 
+        request.resource.data.installedBy == request.auth.uid;
+      allow update: if isAdmin() || isVerifier();
+      allow delete: if isAdmin();
+    }
+    
+    // Server data collection
+    match /serverData/{dataId} {
+      allow read: if isSignedIn();
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+  }
+}
+

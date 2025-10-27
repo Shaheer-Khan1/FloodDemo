@@ -35,15 +35,23 @@ export default function ProfileSetup() {
       }
 
       // Try to get profile from userProfiles collection
-      const profileDocRef = doc(db, "userProfiles", user.uid);
-      const profileSnapshot = await getDoc(profileDocRef);
-      
-      if (profileSnapshot.exists()) {
-        const data = profileSnapshot.data();
-        setFormData({
-          displayName: data.displayName || "",
-          location: data.location || "",
-        });
+      try {
+        const profileDocRef = doc(db, "userProfiles", user.uid);
+        const profileSnapshot = await getDoc(profileDocRef);
+        
+        if (profileSnapshot.exists()) {
+          const data = profileSnapshot.data();
+          setFormData({
+            displayName: data.displayName || "",
+            location: data.location || "",
+          });
+        }
+      } catch (error: any) {
+        console.error("Error fetching profile:", error);
+        // If permission error, profile doesn't exist yet - this is okay during signup
+        if (error.code !== 'permission-denied') {
+          console.error("Error details:", error);
+        }
       }
     };
 

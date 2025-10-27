@@ -32,6 +32,8 @@ export default function NewInstallation() {
   const [longitude, setLongitude] = useState<number | null>(null);
   const [gettingLocation, setGettingLocation] = useState(false);
   const [sensorReading, setSensorReading] = useState("");
+  const [sensorReadingUnit, setSensorReadingUnit] = useState<"cm" | "m">("cm");
+  const [latestDisCm, setLatestDisCm] = useState<number | null>(null);
   const [images, setImages] = useState<(File | null)[]>([null, null, null, null]);
   const [imagePreviews, setImagePreviews] = useState<(string | null)[]>([null, null, null, null]);
   const [video, setVideo] = useState<File | null>(null);
@@ -242,6 +244,9 @@ export default function NewInstallation() {
             const latestDistance = latestRecord.dis_cm;
             const latestTimestamp = latestRecord.timestamp;
             
+            // Store the latest dis_cm for submission
+            setLatestDisCm(latestDistance);
+            
             console.log('Device API Response:', {
               device_id: apiData.device_id,
               latest_dis_cm: latestDistance,
@@ -435,6 +440,12 @@ export default function NewInstallation() {
         videoUrl = await uploadFile(video, fullDeviceId, "video");
       }
 
+      // Convert sensor reading to cm if needed
+      let sensorReadingCm = Number(sensorReading);
+      if (sensorReadingUnit === "m") {
+        sensorReadingCm = sensorReadingCm * 100;
+      }
+
       // Create installation document
       const installationId = `${fullDeviceId}_${Date.now()}`;
       await setDoc(doc(db, "installations", installationId), {
@@ -443,7 +454,8 @@ export default function NewInstallation() {
         locationId: locationId.trim(),
         latitude: latitude,
         longitude: longitude,
-        sensorReading: Number(sensorReading),
+        sensorReading: sensorReadingCm,
+        latestDisCm: latestDisCm || null,
         imageUrls: imageUrls,
         videoUrl: videoUrl || null,
         installedBy: userProfile.uid,
@@ -474,6 +486,8 @@ export default function NewInstallation() {
       setLatitude(null);
       setLongitude(null);
       setSensorReading("");
+      setSensorReadingUnit("cm");
+      setLatestDisCm(null);
       setImages([null, null, null, null]);
       setImagePreviews([null, null, null, null]);
       setVideo(null);
@@ -639,16 +653,28 @@ export default function NewInstallation() {
 
             <div>
               <Label htmlFor="sensorReading">Sensor Reading *</Label>
-              <Input
-                id="sensorReading"
-                type="number"
-                step="0.01"
-                value={sensorReading}
-                onChange={(e) => setSensorReading(e.target.value)}
-                placeholder="Enter sensor reading value"
-                disabled={!deviceValid || submitting}
-                required
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="sensorReading"
+                  type="number"
+                  step="0.01"
+                  value={sensorReading}
+                  onChange={(e) => setSensorReading(e.target.value)}
+                  placeholder="Enter sensor reading value"
+                  disabled={!deviceValid || submitting}
+                  required
+                  className="flex-1"
+                />
+                <select
+                  value={sensorReadingUnit}
+                  onChange={(e) => setSensorReadingUnit(e.target.value as "cm" | "m")}
+                  disabled={!deviceValid || submitting}
+                  className="px-3 py-2 border border-input bg-background rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <option value="cm">cm</option>
+                  <option value="m">m</option>
+                </select>
+              </div>
             </div>
           </CardContent>
         </Card>

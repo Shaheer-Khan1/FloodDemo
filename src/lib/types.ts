@@ -69,6 +69,7 @@ export interface Installation {
   latitude?: number; // GPS latitude
   longitude?: number; // GPS longitude
   sensorReading: number;
+  latestDisCm?: number; // Latest sensor reading from API
   imageUrls: string[]; // Array of installation images (up to 4)
   videoUrl?: string; // Optional 360 video
   installedBy: string; // userId

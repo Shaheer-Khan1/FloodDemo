@@ -50,8 +50,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             }
             setLoading(false);
           },
-          (error) => {
+          (error: any) => {
             console.error("Error listening to profile:", error);
+            // If permission error, profile doesn't exist yet - this is okay during signup
+            if (error.code !== 'permission-denied') {
+              console.error("Error details:", error);
+            }
             setUserProfile(null);
             setLoading(false);
           }
