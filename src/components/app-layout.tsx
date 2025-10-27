@@ -61,6 +61,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       { title: "Devices", icon: Package, url: "/devices" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
     ] : []),
+    // Manager-specific menu items
+    ...(userProfile?.role === "manager" && !userProfile?.isAdmin ? [
+      { title: "Devices", icon: Package, url: "/devices" },
+      { title: "Verification", icon: CheckSquare, url: "/verification" },
+    ] : []),
   ];
 
   return (

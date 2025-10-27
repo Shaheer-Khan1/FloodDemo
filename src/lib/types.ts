@@ -10,7 +10,7 @@ export interface UserProfile {
   height: number;
   heightUnit: "cm" | "ft";
   isAdmin: boolean;
-  role?: "admin" | "installer" | "verifier"; // FlowSet roles
+  role?: "admin" | "installer" | "verifier" | "manager"; // FlowSet roles
   teamId?: string; // For installers/verifiers
   createdAt?: Date;
   updatedAt?: Date;

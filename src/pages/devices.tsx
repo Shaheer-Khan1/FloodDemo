@@ -46,7 +46,7 @@ export default function Devices() {
 
   // Real-time devices listener
   useEffect(() => {
-    if (!userProfile?.isAdmin && userProfile?.role !== "verifier") return;
+    if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
 
     const unsubscribe = onSnapshot(
       collection(db, "devices"),
@@ -81,7 +81,7 @@ export default function Devices() {
 
   // Real-time installations listener
   useEffect(() => {
-    if (!userProfile?.isAdmin && userProfile?.role !== "verifier") return;
+    if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
 
     const unsubscribe = onSnapshot(
       collection(db, "installations"),
@@ -105,7 +105,7 @@ export default function Devices() {
 
   // Real-time server data listener
   useEffect(() => {
-    if (!userProfile?.isAdmin && userProfile?.role !== "verifier") return;
+    if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
 
     const unsubscribe = onSnapshot(
       collection(db, "serverData"),
@@ -176,14 +176,14 @@ export default function Devices() {
     };
   }, [devices]);
 
-  if (!userProfile?.isAdmin && userProfile?.role !== "verifier") {
+  if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <Card className="max-w-md">
           <CardContent className="pt-6 text-center">
             <AlertCircle className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
             <h2 className="text-xl font-semibold mb-2">Access Denied</h2>
-            <p className="text-muted-foreground">Only administrators and verifiers can view the master device list.</p>
+            <p className="text-muted-foreground">Only administrators, verifiers, and managers can view the master device list.</p>
           </CardContent>
         </Card>
       </div>

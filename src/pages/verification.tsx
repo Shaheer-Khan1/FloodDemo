@@ -50,7 +50,7 @@ export default function Verification() {
 
   // Real-time installations listener (pending verification)
   useEffect(() => {
-    if (!userProfile?.isAdmin && userProfile?.role !== "verifier") return;
+    if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
 
     const installationsQuery = query(
       collection(db, "installations"),
@@ -84,7 +84,7 @@ export default function Verification() {
 
   // Real-time devices listener
   useEffect(() => {
-    if (!userProfile?.isAdmin && userProfile?.role !== "verifier") return;
+    if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
 
     const unsubscribe = onSnapshot(
       collection(db, "devices"),
@@ -106,7 +106,7 @@ export default function Verification() {
 
   // Real-time server data listener
   useEffect(() => {
-    if (!userProfile?.isAdmin && userProfile?.role !== "verifier") return;
+    if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
 
     const unsubscribe = onSnapshot(
       collection(db, "serverData"),
@@ -238,14 +238,14 @@ export default function Verification() {
     }
   };
 
-  if (!userProfile?.isAdmin && userProfile?.role !== "verifier") {
+  if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <Card className="max-w-md">
           <CardContent className="pt-6 text-center">
             <AlertCircle className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
             <h2 className="text-xl font-semibold mb-2">Access Denied</h2>
-            <p className="text-muted-foreground">Only verifiers and administrators can access this page.</p>
+            <p className="text-muted-foreground">Only verifiers, managers, and administrators can access this page.</p>
           </CardContent>
         </Card>
       </div>
@@ -599,32 +599,36 @@ export default function Verification() {
               onClick={() => setDialogOpen(false)}
               disabled={processing}
             >
-              Cancel
+              {userProfile?.role === "manager" ? "Close" : "Cancel"}
             </Button>
-            <Button
-              variant="destructive"
-              onClick={handleReject}
-              disabled={processing}
-            >
-              {processing ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <XCircle className="h-4 w-4 mr-2" />
-              )}
-              Flag Installation
-            </Button>
-            <Button
-              onClick={handleApprove}
-              disabled={processing}
-              className="bg-green-600 hover:bg-green-700"
-            >
-              {processing ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <CheckCircle2 className="h-4 w-4 mr-2" />
-              )}
-              Approve Installation
-            </Button>
+            {(userProfile?.isAdmin || userProfile?.role === "verifier") && (
+              <>
+                <Button
+                  variant="destructive"
+                  onClick={handleReject}
+                  disabled={processing}
+                >
+                  {processing ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <XCircle className="h-4 w-4 mr-2" />
+                  )}
+                  Flag Installation
+                </Button>
+                <Button
+                  onClick={handleApprove}
+                  disabled={processing}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  {processing ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4 mr-2" />
+                  )}
+                  Approve Installation
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

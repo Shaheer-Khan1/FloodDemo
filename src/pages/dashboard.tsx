@@ -59,6 +59,8 @@ export default function Dashboard() {
                 ? "Installer Dashboard - Record installations"
                 : userProfile.role === "verifier"
                 ? "Verifier Dashboard - Review submissions"
+                : userProfile.role === "manager"
+                ? "Manager Dashboard - Monitor & analyze"
                 : "FlowSet IoT Installation Management"}
             </p>
             {userProfile.role && !userProfile.isAdmin && (
@@ -289,6 +291,38 @@ export default function Dashboard() {
                 <div className="text-left">
                   <div className="font-semibold text-lg">Device List</div>
                   <div className="text-sm text-muted-foreground">View all devices</div>
+                </div>
+              </Button>
+            </>
+          )}
+
+          {/* Manager Actions */}
+          {userProfile.role === "manager" && !userProfile.isAdmin && (
+            <>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setLocation("/devices")}
+              >
+                <div className="h-12 w-12 rounded-xl bg-purple-100 dark:bg-purple-950 flex items-center justify-center mr-4">
+                  <Shield className="h-6 w-6 text-purple-600 dark:text-purple-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Master Device List</div>
+                  <div className="text-sm text-muted-foreground">View consolidated data</div>
+                </div>
+              </Button>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setLocation("/verification")}
+              >
+                <div className="h-12 w-12 rounded-xl bg-green-100 dark:bg-green-950 flex items-center justify-center mr-4">
+                  <Users className="h-6 w-6 text-green-600 dark:text-green-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Verification Status</div>
+                  <div className="text-sm text-muted-foreground">Monitor quality metrics</div>
                 </div>
               </Button>
             </>

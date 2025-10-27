@@ -6,7 +6,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import { Loader2, Wrench, ClipboardCheck, Shield } from "lucide-react";
+import { Loader2, Wrench, ClipboardCheck, Shield, BarChart3 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 export default function RoleSelection() {
@@ -14,9 +14,9 @@ export default function RoleSelection() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [selecting, setSelecting] = useState(false);
-  const [selectedRole, setSelectedRole] = useState<"installer" | "verifier" | null>(null);
+  const [selectedRole, setSelectedRole] = useState<"installer" | "verifier" | "manager" | null>(null);
 
-  const handleRoleSelect = async (role: "installer" | "verifier") => {
+  const handleRoleSelect = async (role: "installer" | "verifier" | "manager") => {
     if (!userProfile?.uid) return;
 
     setSelecting(true);
@@ -30,14 +30,20 @@ export default function RoleSelection() {
 
       toast({
         title: "Role Selected",
-        description: `You are now set as ${role === "installer" ? "an Installer" : "a Verifier"}.`,
+        description: `You are now set as ${
+          role === "installer" ? "an Installer" : 
+          role === "verifier" ? "a Verifier" : 
+          "a Manager"
+        }.`,
       });
 
       // Redirect based on role
       if (role === "installer") {
         setLocation("/new-installation");
-      } else {
+      } else if (role === "verifier") {
         setLocation("/verification");
+      } else {
+        setLocation("/devices");
       }
     } catch (error) {
       toast({
@@ -62,6 +68,8 @@ export default function RoleSelection() {
       setLocation("/new-installation");
     } else if (userProfile.role === "verifier") {
       setLocation("/verification");
+    } else if (userProfile.role === "manager") {
+      setLocation("/devices");
     } else {
       setLocation("/dashboard");
     }
@@ -81,7 +89,7 @@ export default function RoleSelection() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {/* Installer Role */}
             <Card 
               className={`cursor-pointer transition-all hover:shadow-lg hover:scale-105 ${
@@ -177,6 +185,56 @@ export default function RoleSelection() {
                     </>
                   ) : (
                     "Select Verifier"
+                  )}
+                </Button>
+              </CardContent>
+            </Card>
+
+            {/* Manager Role */}
+            <Card 
+              className={`cursor-pointer transition-all hover:shadow-lg hover:scale-105 ${
+                selectedRole === "manager" ? "ring-2 ring-purple-600 shadow-lg" : ""
+              }`}
+              onClick={() => !selecting && handleRoleSelect("manager")}
+            >
+              <CardContent className="p-8 text-center space-y-4">
+                <div className="mx-auto h-20 w-20 rounded-full bg-purple-100 dark:bg-purple-950 flex items-center justify-center">
+                  <BarChart3 className="h-10 w-10 text-purple-600 dark:text-purple-500" />
+                </div>
+                <div>
+                  <h3 className="text-2xl font-bold mb-2">Manager</h3>
+                  <Badge variant="secondary" className="mb-3">Management & Reporting</Badge>
+                  <p className="text-sm text-muted-foreground">
+                    Monitor performance and analyze data
+                  </p>
+                </div>
+                
+                <div className="text-left space-y-2 pt-4 border-t">
+                  <p className="text-sm font-semibold">You will be able to:</p>
+                  <ul className="text-sm text-muted-foreground space-y-1">
+                    <li>✓ View high-level KPI dashboards</li>
+                    <li>✓ Access master device data</li>
+                    <li>✓ Filter by date, region, team</li>
+                    <li>✓ View performance charts</li>
+                    <li>✓ Monitor team metrics</li>
+                  </ul>
+                </div>
+
+                <Button 
+                  className="w-full mt-4 bg-purple-600 hover:bg-purple-700"
+                  disabled={selecting}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleRoleSelect("manager");
+                  }}
+                >
+                  {selecting && selectedRole === "manager" ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Setting up...
+                    </>
+                  ) : (
+                    "Select Manager"
                   )}
                 </Button>
               </CardContent>
