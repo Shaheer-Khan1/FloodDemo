@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
-import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, createUserWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
@@ -9,13 +9,13 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { Droplets, Mail, Lock, Loader2 } from "lucide-react";
-import { FaGoogle } from "react-icons/fa";
+ 
 
 export default function Login() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const { user, userProfile, loading: authLoading } = useAuth();
-  const [isLogin, setIsLogin] = useState(true);
+  const [isLogin] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -36,45 +36,17 @@ export default function Login() {
     setLoading(true);
 
     try {
-      if (isLogin) {
-        await signInWithEmailAndPassword(auth, email, password);
-        toast({
-          title: "Welcome back!",
-          description: "You've successfully signed in.",
-        });
-      } else {
-        await createUserWithEmailAndPassword(auth, email, password);
-        toast({
-          title: "Account created!",
-          description: "Please complete your profile setup.",
-        });
-      }
+      await signInWithEmailAndPassword(auth, email, password);
+      toast({
+        title: "Welcome back!",
+        description: "You've successfully signed in.",
+      });
       // Auth context will handle redirect via useEffect
     } catch (error: any) {
       toast({
         variant: "destructive",
-        title: isLogin ? "Login failed" : "Signup failed",
+        title: "Login failed",
         description: error.message || "Please check your credentials and try again.",
-      });
-      setLoading(false);
-    }
-  };
-
-  const handleGoogleAuth = async () => {
-    setLoading(true);
-    try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-      toast({
-        title: "Welcome!",
-        description: "You've successfully signed in with Google.",
-      });
-      // Auth context will handle redirect via useEffect
-    } catch (error: any) {
-      toast({
-        variant: "destructive",
-        title: "Google sign-in failed",
-        description: error.message || "Please try again.",
       });
       setLoading(false);
     }
@@ -100,12 +72,10 @@ export default function Login() {
             <h1 className="text-2xl font-bold">Flood Warning</h1>
           </div>
           <CardTitle className="text-center">
-            {isLogin ? "Welcome back" : "Create account"}
+            Welcome back
           </CardTitle>
           <CardDescription className="text-center">
-            {isLogin 
-              ? "Sign in to your flood warning management console" 
-              : "Sign up to start managing flood warnings"}
+            Sign in to your flood warning management console
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
@@ -148,41 +118,10 @@ export default function Login() {
               disabled={loading}
               data-testid="button-submit"
             >
-              {loading ? "Please wait..." : (isLogin ? "Sign in" : "Sign up")}
+              {loading ? "Please wait..." : "Sign in"}
             </Button>
           </form>
 
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <span className="w-full border-t" />
-            </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-card px-2 text-muted-foreground">Or continue with</span>
-            </div>
-          </div>
-
-          <Button
-            type="button"
-            variant="outline"
-            className="w-full h-12"
-            onClick={handleGoogleAuth}
-            disabled={loading}
-            data-testid="button-google-signin"
-          >
-            <FaGoogle className="mr-2 h-4 w-4" />
-            Google
-          </Button>
-
-          <div className="text-center text-sm">
-            <button
-              type="button"
-              onClick={() => setIsLogin(!isLogin)}
-              className="text-primary hover:underline"
-              data-testid="button-toggle-mode"
-            >
-              {isLogin ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
-            </button>
-          </div>
         </CardContent>
       </Card>
     </div>
