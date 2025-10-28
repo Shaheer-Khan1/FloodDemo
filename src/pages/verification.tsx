@@ -392,7 +392,16 @@ export default function Verification() {
                       <TableRow key={item.installation.id} className={hasHighVariance ? "bg-red-50 dark:bg-red-950/10" : ""}>
                         <TableCell className="font-mono font-medium">{item.installation.deviceId}</TableCell>
                         <TableCell>{item.installation.installedByName}</TableCell>
-                        <TableCell>{item.installation.locationId}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-col">
+                            <span>{item.installation.locationId || "-"}</span>
+                            {(item.installation.latitude !== undefined && item.installation.longitude !== undefined) && (
+                              <span className="text-xs text-muted-foreground">
+                                {item.installation.latitude?.toFixed(6)}, {item.installation.longitude?.toFixed(6)}
+                              </span>
+                            )}
+                          </div>
+                        </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-1">
                             <Gauge className="h-3 w-3 text-muted-foreground" />
@@ -492,7 +501,16 @@ export default function Verification() {
                       <TableRow key={installation.id}>
                         <TableCell className="font-mono font-medium">{installation.deviceId}</TableCell>
                         <TableCell>{installation.installedByName}</TableCell>
-                        <TableCell>{installation.locationId}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-col">
+                            <span>{installation.locationId || "-"}</span>
+                            {(installation.latitude !== undefined && installation.longitude !== undefined) && (
+                              <span className="text-xs text-muted-foreground">
+                                {installation.latitude?.toFixed(6)}, {installation.longitude?.toFixed(6)}
+                              </span>
+                            )}
+                          </div>
+                        </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-1">
                             <Gauge className="h-3 w-3 text-muted-foreground" />

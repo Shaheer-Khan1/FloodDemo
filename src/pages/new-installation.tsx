@@ -120,7 +120,6 @@ export default function NewInstallation() {
       (position) => {
         setLatitude(position.coords.latitude);
         setLongitude(position.coords.longitude);
-        setLocationId(`${position.coords.latitude.toFixed(6)}, ${position.coords.longitude.toFixed(6)}`);
         setGettingLocation(false);
         toast({
           title: "Location Captured",
@@ -393,6 +392,15 @@ export default function NewInstallation() {
       return;
     }
 
+    if (!locationId.trim()) {
+      toast({
+        variant: "destructive",
+        title: "Location ID Required",
+        description: "Please enter a Location ID.",
+      });
+      return;
+    }
+
     if (!sensorReading.trim() || isNaN(Number(sensorReading))) {
       toast({
         variant: "destructive",
@@ -650,6 +658,18 @@ export default function NewInstallation() {
                 </div>
               )}
             </div>
+
+          <div>
+            <Label htmlFor="locationId">Location ID *</Label>
+            <Input
+              id="locationId"
+              value={locationId}
+              onChange={(e) => setLocationId(e.target.value)}
+              placeholder="Enter location ID (e.g., site code or name)"
+              disabled={!deviceValid || submitting}
+              required
+            />
+          </div>
 
             <div>
               <Label htmlFor="sensorReading">Sensor Reading *</Label>
