@@ -44,12 +44,12 @@ export default function Devices() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [productFilter, setProductFilter] = useState<string>("all");
 
-  // Real-time devices listener
+  // Real-time devices listener (visible to everyone)
   useEffect(() => {
-    if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
+    const devicesQuery = collection(db, "devices");
 
     const unsubscribe = onSnapshot(
-      collection(db, "devices"),
+      devicesQuery as any,
       (snapshot) => {
         const devicesData = snapshot.docs.map(doc => ({
           ...doc.data(),
@@ -79,12 +79,12 @@ export default function Devices() {
     return () => unsubscribe();
   }, [userProfile, toast]);
 
-  // Real-time installations listener
+  // Real-time installations listener (visible to everyone)
   useEffect(() => {
-    if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
+    const installationsQuery = collection(db, "installations");
 
     const unsubscribe = onSnapshot(
-      collection(db, "installations"),
+      installationsQuery as any,
       (snapshot) => {
         const installationsData = snapshot.docs.map(doc => ({
           id: doc.id,
@@ -103,10 +103,8 @@ export default function Devices() {
     return () => unsubscribe();
   }, [userProfile]);
 
-  // Real-time server data listener
+  // Real-time server data listener (visible to everyone)
   useEffect(() => {
-    if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
-
     const unsubscribe = onSnapshot(
       collection(db, "serverData"),
       (snapshot) => {
@@ -177,19 +175,7 @@ export default function Devices() {
     };
   }, [devices]);
 
-  if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <Card className="max-w-md">
-          <CardContent className="pt-6 text-center">
-            <AlertCircle className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-            <h2 className="text-xl font-semibold mb-2">Access Denied</h2>
-            <p className="text-muted-foreground">Only administrators, verifiers, and managers can view the master device list.</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  // Everyone can view devices; no access gate
 
   if (loading) {
     return (

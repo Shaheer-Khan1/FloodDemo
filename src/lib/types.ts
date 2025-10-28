@@ -79,6 +79,8 @@ export interface Installation {
   flaggedReason?: string;
   verifiedBy?: string;
   verifiedAt?: Date;
+  systemPreVerified?: boolean; // true if variance < 5% auto-check passed
+  systemPreVerifiedAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;
 }

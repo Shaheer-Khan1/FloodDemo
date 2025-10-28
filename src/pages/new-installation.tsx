@@ -226,38 +226,7 @@ export default function NewInstallation() {
         return;
       }
 
-      // Fetch device data from API using last 4 digits
-      try {
-        const apiResponse = await fetch(`https://op1.smarttive.com/device/${last4Digits.toUpperCase()}`, {
-          method: 'GET',
-          headers: {
-            'X-API-KEY': import.meta.env.VITE_API_KEY || ''
-          }
-        });
-
-        if (apiResponse.ok) {
-          const apiData = await apiResponse.json();
-          if (apiData.success && apiData.records && apiData.records.length > 0) {
-            // Get the latest record (first in array)
-            const latestRecord = apiData.records[0];
-            const latestDistance = latestRecord.dis_cm;
-            const latestTimestamp = latestRecord.timestamp;
-            
-            // Store the latest dis_cm for submission
-            setLatestDisCm(latestDistance);
-            
-            console.log('Device API Response:', {
-              device_id: apiData.device_id,
-              latest_dis_cm: latestDistance,
-              latest_timestamp: latestTimestamp,
-              all_records: apiData.records
-            });
-          }
-        }
-      } catch (apiError) {
-        console.warn('API fetch failed:', apiError);
-        // Don't block validation if API fails
-      }
+      // Skip server API fetch on installer side as per requirement
 
       setDeviceValid(true);
       setDeviceInfo(device);
@@ -463,7 +432,7 @@ export default function NewInstallation() {
         latitude: latitude,
         longitude: longitude,
         sensorReading: sensorReadingCm,
-        latestDisCm: latestDisCm || null,
+        latestDisCm: null,
         imageUrls: imageUrls,
         videoUrl: videoUrl || null,
         installedBy: userProfile.uid,

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { collection, query, where, onSnapshot, orderBy } from "firebase/firestore";
+import { collection, query, where, onSnapshot, orderBy, getDocs, getDoc, updateDoc, doc, increment, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -56,6 +56,74 @@ export default function MySubmissions() {
   const [loading, setLoading] = useState(true);
   const [selectedSubmission, setSelectedSubmission] = useState<Installation | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+
+  // Best-effort polling while installer keeps the app open:
+  // For submissions with missing latestDisCm, periodically try to fetch and fill.
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchForDue = async () => {
+      try {
+        const q = query(
+          collection(db, "installations"),
+          where("installedBy", "==", userProfile?.uid || ""),
+          where("latestDisCm", "==", null)
+        );
+        const snap = await getDocs(q);
+        await Promise.all(snap.docs.map(async d => {
+          if (cancelled) return;
+          const fresh = await getDoc(d.ref);
+          if (!fresh.exists() || fresh.data().latestDisCm !== null) return;
+          const deviceId: string = fresh.data().deviceId;
+          const last4 = deviceId.slice(-4).toUpperCase();
+          try {
+            const res = await fetch(`https://op1.smarttive.com/device/${last4}`, {
+              headers: { "X-API-KEY": import.meta.env.VITE_API_KEY ?? "" }
+            });
+            if (!res.ok) throw new Error(`API ${res.status}`);
+            const data = await res.json();
+            const latest = data?.records?.[0]?.dis_cm ?? null;
+            if (latest !== null) {
+              const sensor: number | undefined = fresh.data().sensorReading;
+              const variancePct = sensor ? (Math.abs(latest - sensor) / sensor) * 100 : undefined;
+              const preVerified = variancePct !== undefined && variancePct < 5;
+              if (variancePct !== undefined && variancePct > 10) {
+                await updateDoc(d.ref, {
+                  latestDisCm: latest,
+                  status: "flagged",
+                  flaggedReason: `Auto-rejected: variance ${variancePct.toFixed(2)}% > 10%`,
+                  verifiedBy: "System (Auto-rejected)",
+                  verifiedAt: serverTimestamp(),
+                  systemPreVerified: false,
+                  systemPreVerifiedAt: null,
+                  updatedAt: serverTimestamp(),
+                });
+              } else {
+                await updateDoc(d.ref, {
+                  latestDisCm: latest,
+                  systemPreVerified: preVerified,
+                  systemPreVerifiedAt: preVerified ? serverTimestamp() : null,
+                  updatedAt: serverTimestamp(),
+                });
+              }
+            }
+          } catch (e) {
+            // Ignore; verifier can fetch later
+          }
+        }));
+      } catch {}
+    };
+
+    // Kick immediately, then every 2 minutes while open and visible
+    fetchForDue();
+    const id = setInterval(() => {
+      if (!document.hidden) fetchForDue();
+    }, 2 * 60 * 1000);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) fetchForDue();
+    });
+    return () => { cancelled = true; clearInterval(id); };
+  }, [userProfile?.uid]);
 
   // Real-time submissions listener
   useEffect(() => {
@@ -231,6 +299,12 @@ export default function MySubmissions() {
                             <Icon className="h-3 w-3 mr-1" />
                             {config.label}
                           </Badge>
+                          {submission.status === "pending" && submission.systemPreVerified && (
+                            <div className="text-[10px] text-green-600 mt-1 font-medium">Pre-verified by system</div>
+                          )}
+                          {submission.status === "pending" && !submission.systemPreVerified && submission.latestDisCm != null && (
+                            <div className="text-[10px] text-yellow-600 mt-1 font-medium">Needs manual review</div>
+                          )}
                         </TableCell>
                         <TableCell>
                           {submission.createdAt 

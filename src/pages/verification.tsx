@@ -46,18 +46,21 @@ export default function Verification() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
   const [processing, setProcessing] = useState(false);
+  const [fetchingMap, setFetchingMap] = useState<Record<string, boolean>>({});
 
   // Real-time installations listener (pending verification)
   useEffect(() => {
     if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
 
-    // Fetch all installations for verification (pending, verified, flagged)
-    const installationsQuery = collection(db, "installations");
+    // Fetch installations; filter by team for manager/verifier
+    const installationsQuery = userProfile.isAdmin
+      ? collection(db, "installations")
+      : query(collection(db, "installations"), where("teamId", "==", userProfile.teamId || null));
 
     const unsubscribe = onSnapshot(
-      installationsQuery,
-      (snapshot) => {
-        const installationsData = snapshot.docs.map(doc => ({
+      installationsQuery as any,
+      (snapshot: any) => {
+        const installationsData = snapshot.docs.map((doc: any) => ({
           id: doc.id,
           ...doc.data(),
           createdAt: doc.data().createdAt?.toDate(),
@@ -66,7 +69,7 @@ export default function Verification() {
         setAllInstallations(installationsData);
         setLoading(false);
       },
-      (error) => {
+      (error: any) => {
         toast({
           variant: "destructive",
           title: "Failed to load installations",
@@ -119,7 +122,7 @@ export default function Verification() {
       const serverValue = installation.latestDisCm;
       
       let percentageDifference: number | undefined;
-      if (serverValue !== undefined && installation.sensorReading) {
+      if (serverValue != null && installation.sensorReading != null) {
         const diff = Math.abs(serverValue - installation.sensorReading);
         percentageDifference = (diff / installation.sensorReading) * 100;
       }
@@ -127,7 +130,7 @@ export default function Verification() {
       return {
         installation,
         device: device!,
-        serverData: serverValue !== undefined ? {
+        serverData: serverValue != null ? {
           id: `${installation.id}_server`,
           deviceId: installation.deviceId,
           sensorData: serverValue,
@@ -137,53 +140,7 @@ export default function Verification() {
     }).filter(item => item.device); // Filter out items without device info
   }, [pendingInstallations, devices]);
 
-  // Auto-approve installations with variance < 5%
-  useEffect(() => {
-    if (loading || !userProfile) return;
-
-    const autoApproveInstallations = async () => {
-      const itemsToAutoApprove = verificationItems.filter(item => {
-        // Only auto-approve if:
-        // 1. Has server data
-        // 2. Variance is less than 5%
-        // 3. Variance is not undefined
-        return item.serverData && 
-               item.percentageDifference !== undefined && 
-               item.percentageDifference < 5;
-      });
-
-      if (itemsToAutoApprove.length === 0) return;
-
-      for (const item of itemsToAutoApprove) {
-        try {
-          // Update installation status
-          await updateDoc(doc(db, "installations", item.installation.id), {
-            status: "verified",
-            verifiedBy: "System (Auto-approved)",
-            verifiedAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-
-          // Update device status
-          await updateDoc(doc(db, "devices", item.installation.deviceId), {
-            status: "verified",
-            updatedAt: serverTimestamp(),
-          });
-        } catch (error) {
-          console.error("Auto-approval failed:", error);
-        }
-      }
-
-      if (itemsToAutoApprove.length > 0) {
-        toast({
-          title: "Auto-Approved Installations",
-          description: `${itemsToAutoApprove.length} installation(s) were automatically approved due to low variance.`,
-        });
-      }
-    };
-
-    autoApproveInstallations();
-  }, [verificationItems, loading, userProfile, toast]);
+  // No auto-approval. We only mark system pre-verified for variance < 5% and keep status pending.
 
   const viewDetails = (item: VerificationItem) => {
     setSelectedItem(item);
@@ -272,6 +229,70 @@ export default function Verification() {
       });
     } finally {
       setProcessing(false);
+    }
+  };
+
+  const fetchLatestServerReadings = async (installation: Installation) => {
+    if (!installation?.deviceId) return;
+    const last4 = installation.deviceId.slice(-4).toUpperCase();
+    setFetchingMap(prev => ({ ...prev, [installation.id]: true }));
+    try {
+      const apiResponse = await fetch(`https://op1.smarttive.com/device/${last4}`, {
+        method: 'GET',
+        headers: {
+          'X-API-KEY': import.meta.env.VITE_API_KEY || ''
+        }
+      });
+      if (!apiResponse.ok) throw new Error(`API ${apiResponse.status}`);
+      const apiData = await apiResponse.json();
+      const latestRecord = apiData?.records?.[0];
+      const latestDistance = latestRecord?.dis_cm ?? null;
+
+      const hasSensor = !!installation.sensorReading;
+      const variancePct = (latestDistance != null && hasSensor)
+        ? (Math.abs(latestDistance - installation.sensorReading) / installation.sensorReading) * 100
+        : undefined;
+      const preVerified = variancePct !== undefined && variancePct < 5;
+
+      if (variancePct !== undefined && variancePct > 10) {
+        // Auto-reject due to high variance
+        await updateDoc(doc(db, "installations", installation.id), {
+          latestDisCm: latestDistance,
+          status: "flagged",
+          flaggedReason: `Auto-rejected: variance ${variancePct.toFixed(2)}% > 10%`,
+          verifiedBy: "System (Auto-rejected)",
+          verifiedAt: serverTimestamp(),
+          systemPreVerified: false,
+          systemPreVerifiedAt: null,
+          updatedAt: serverTimestamp(),
+        });
+        await updateDoc(doc(db, "devices", installation.deviceId), {
+          status: "flagged",
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await updateDoc(doc(db, "installations", installation.id), {
+          latestDisCm: latestDistance,
+          systemPreVerified: preVerified,
+          systemPreVerifiedAt: preVerified ? serverTimestamp() : null,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      toast({
+        title: variancePct !== undefined && variancePct > 10
+          ? "Installation Auto-Rejected"
+          : preVerified ? "Pre-verified by System" : "Server Readings Updated",
+        description: latestDistance != null ? `Latest dis_cm: ${latestDistance}` : "No records returned.",
+      });
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: "Fetch Failed",
+        description: e instanceof Error ? e.message : "Could not fetch server readings.",
+      });
+    } finally {
+      setFetchingMap(prev => ({ ...prev, [installation.id]: false }));
     }
   };
 
@@ -439,19 +460,38 @@ export default function Verification() {
                           ) : (
                             "-"
                           )}
+                          {!hasHighVariance && item.percentageDifference !== undefined && item.percentageDifference < 5 && (
+                            <div className="text-[10px] text-green-600 mt-1 font-medium">Pre-verified by system</div>
+                          )}
+                          {!hasHighVariance && item.percentageDifference !== undefined && item.percentageDifference >= 5 && item.percentageDifference <= 10 && (
+                            <div className="text-[10px] text-yellow-600 mt-1 font-medium">Needs manual review</div>
+                          )}
                         </TableCell>
                         <TableCell>
                           {item.installation.createdAt 
                             ? format(item.installation.createdAt, "MMM d, HH:mm")
                             : "-"}
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="space-x-2">
                           <Button
                             size="sm"
                             variant="outline"
                             onClick={() => viewDetails(item)}
                           >
                             Review
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={!!fetchingMap[item.installation.id] || (item.installation.latestDisCm !== undefined && item.installation.latestDisCm !== null)}
+                            onClick={() => fetchLatestServerReadings(item.installation)}
+                          >
+                            {fetchingMap[item.installation.id] ? (
+                              <>
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                                Fetching
+                              </>
+                            ) : (item.installation.latestDisCm !== undefined && item.installation.latestDisCm !== null ? "Already Fetched" : "Fetch Server Readings")}
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -492,7 +532,7 @@ export default function Verification() {
                     const serverValue = installation.latestDisCm;
                     
                     let percentageDifference: number | undefined;
-                    if (serverValue !== undefined && installation.sensorReading) {
+                    if (serverValue != null && installation.sensorReading != null) {
                       const diff = Math.abs(serverValue - installation.sensorReading);
                       percentageDifference = (diff / installation.sensorReading) * 100;
                     }
