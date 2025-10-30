@@ -499,7 +499,7 @@ export default function Verification() {
                           <Button
                             size="sm"
                             variant="secondary"
-                            disabled={!!fetchingMap[item.installation.id] || (item.installation.latestDisCm !== undefined && item.installation.latestDisCm !== null)}
+                            disabled={!!fetchingMap[item.installation.id]}
                             onClick={() => fetchLatestServerReadings(item.installation)}
                           >
                             {fetchingMap[item.installation.id] ? (
@@ -507,7 +507,7 @@ export default function Verification() {
                                 <Loader2 className="h-3 w-3 mr-1 animate-spin" />
                                 Fetching
                               </>
-                            ) : (item.installation.latestDisCm !== undefined && item.installation.latestDisCm !== null ? "Already Fetched" : "Fetch Server Readings")}
+                            ) : (item.installation.latestDisCm !== undefined && item.installation.latestDisCm !== null ? "Refresh Server Data" : "Fetch Server Readings")}
                           </Button>
                         </TableCell>
                       </TableRow>

@@ -57,17 +57,13 @@ export default function NewInstallation() {
               qrbox: { width: 300, height: 300 }, // Larger scanning area
             },
             (decodedText, decodedResult) => {
-              // Success callback
-              const last4 = decodedText.slice(-4).toUpperCase();
-              setDeviceId(last4);
+              // QR SCAN MODE: Use full decoded UID (no last4 truncation)
+              setDeviceId(decodedText.trim().toUpperCase()); // Store full or partial scanned UID
               setShowScanner(false);
-              scanner.stop().then(() => {
-                scannerRef.current = null;
-              }).catch(console.error);
-              
+              scanner.stop().then(() => { scannerRef.current = null; }).catch(console.error);
               toast({
                 title: "QR Code Scanned",
-                description: `Last 4 digits: ${last4}`,
+                description: `Full UID: ${decodedText}`,
               });
             },
             (error) => {
@@ -157,61 +153,51 @@ export default function NewInstallation() {
   };
 
   const validateDeviceId = async () => {
-    const last4Digits = deviceId.trim();
-    
-    if (!last4Digits) {
+    const entered = deviceId.trim().toUpperCase();
+    // If QR code was used (not 4 chars), do full/partial match; else fallback to last4 logic
+    if (!entered) {
       toast({
         variant: "destructive",
         title: "Device ID Required",
-        description: "Please enter the last 4 digits of the Device UID.",
+        description: "Please enter or scan a Device UID.",
       });
       return;
     }
-
-    if (last4Digits.length !== 4) {
-      toast({
-        variant: "destructive",
-        title: "Invalid Input",
-        description: "Please enter exactly 4 digits.",
-      });
-      return;
-    }
-
     setValidatingDevice(true);
     setDeviceValid(null);
     setDeviceInfo(null);
     setFullDeviceId("");
-
     try {
-      // Fetch all devices and find the one with matching last 4 digits
       const devicesRef = collection(db, "devices");
       const querySnapshot = await getDocs(devicesRef);
-      
-      const matchingDevices = querySnapshot.docs.filter(doc => {
-        const uid = doc.id;
-        return uid.slice(-4).toUpperCase() === last4Digits.toUpperCase();
-      });
-
+      let matchingDevices: any[] = [];
+      if (entered.length !== 4) {
+        // QR path: match by prefix/equals only (never last4)
+        matchingDevices = querySnapshot.docs.filter(doc => doc.id.toUpperCase().startsWith(entered));
+      } else {
+        // Manual last4 fallback for legacy input
+        matchingDevices = querySnapshot.docs.filter(doc => doc.id.slice(-4).toUpperCase() === entered);
+      }
       if (matchingDevices.length === 0) {
         setDeviceValid(false);
         toast({
           variant: "destructive",
           title: "Device Not Found",
-          description: "No device found with these last 4 digits in the master database.",
+          description: entered.length !== 4
+            ? "No device found matching this QR code in the master database."
+            : "No device found with these last 4 digits in the master database.",
         });
         return;
       }
-
       if (matchingDevices.length > 1) {
         setDeviceValid(false);
         toast({
           variant: "destructive",
           title: "Multiple Devices Found",
-          description: "Multiple devices match these digits. Please contact admin.",
+          description: "Multiple devices match this ID. Please contact admin.",
         });
         return;
       }
-
       const deviceDoc = matchingDevices[0];
       const device = deviceDoc.data();
 
