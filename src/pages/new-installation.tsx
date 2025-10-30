@@ -19,8 +19,9 @@ export default function NewInstallation() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   
-  const [deviceId, setDeviceId] = useState("");
+  const [deviceId, setDeviceId] = useState(""); // used for manual full UID fallback
   const [qrScannedUid, setQrScannedUid] = useState("");
+  const [deviceInputMethod, setDeviceInputMethod] = useState<"qr"|"manual"|null>(null);
   const [deviceValidationMode, setDeviceValidationMode] = useState<'manual'|'qr'>('manual');
   const [fullDeviceId, setFullDeviceId] = useState(""); // Store the full UID after validation
   const [validatingDevice, setValidatingDevice] = useState(false);
@@ -59,12 +60,13 @@ export default function NewInstallation() {
               qrbox: { width: 300, height: 300 }, // Larger scanning area
             },
             (decodedText, decodedResult) => {
-              // QR mode: Extract after last '-' or fallback to full
+              // QR mode: Extract after last '-' or fallback to full UID
               const scanned = decodedText.trim();
               const justUid = scanned.includes("-") ? scanned.split("-").pop()?.toUpperCase() : scanned.toUpperCase();
               setQrScannedUid(justUid || "");
               setDeviceId("");
-              setDeviceValidationMode('qr');
+              setDeviceInputMethod('qr');
+              setDeviceValid(null); setDeviceInfo(null); setFullDeviceId("");
               setShowScanner(false);
               scanner.stop().then(() => { scannerRef.current = null; }).catch(console.error);
               toast({ title: "QR Code Scanned", description: `UID: ${justUid}` });
@@ -155,14 +157,14 @@ export default function NewInstallation() {
     );
   };
 
-  const validateDeviceId = async (overrideId?: string) => {
-    const entered = (overrideId ? overrideId : deviceId).trim().toUpperCase();
-    // If QR code was used (not 4 chars), do full/partial match; else fallback to last4 logic
+  // Always validate by full UID (from qrScannedUid or deviceId)
+  const validateDeviceId = async () => {
+    const entered = (qrScannedUid || deviceId).trim().toUpperCase();
     if (!entered) {
       toast({
         variant: "destructive",
-        title: "Device ID Required",
-        description: "Please enter or scan a Device UID.",
+        title: "Device UID Required",
+        description: "Please scan or enter the full Device UID.",
       });
       return;
     }
@@ -173,64 +175,30 @@ export default function NewInstallation() {
     try {
       const devicesRef = collection(db, "devices");
       const querySnapshot = await getDocs(devicesRef);
-      let matchingDevices: any[] = [];
-      if (entered.length !== 4) {
-        // QR path: match by prefix/equals only (never last4)
-        matchingDevices = querySnapshot.docs.filter(doc => doc.id.toUpperCase().startsWith(entered));
-      } else {
-        // Manual last4 fallback for legacy input
-        matchingDevices = querySnapshot.docs.filter(doc => doc.id.slice(-4).toUpperCase() === entered);
-      }
+      const matchingDevices = querySnapshot.docs.filter(doc => doc.id.toUpperCase() === entered);
       if (matchingDevices.length === 0) {
         setDeviceValid(false);
         toast({
           variant: "destructive",
           title: "Device Not Found",
-          description: entered.length !== 4
-            ? "No device found matching this QR code in the master database."
-            : "No device found with these last 4 digits in the master database.",
-        });
-        return;
-      }
-      if (matchingDevices.length > 1) {
-        setDeviceValid(false);
-        toast({
-          variant: "destructive",
-          title: "Multiple Devices Found",
-          description: "Multiple devices match this ID. Please contact admin.",
+          description: "No device found matching this UID in the master database.",
         });
         return;
       }
       const deviceDoc = matchingDevices[0];
       const device = deviceDoc.data();
-
-      // Check if already installed
-      if (device.status !== "pending") {
-        setDeviceValid(false);
-        toast({
-          variant: "destructive",
-          title: "Device Already Processed",
-          description: `This device has status: ${device.status}. Only pending devices can be installed.`,
-        });
-        return;
-      }
-
-      // Skip server API fetch on installer side as per requirement
-
       setDeviceValid(true);
       setDeviceInfo(device);
       setFullDeviceId(deviceDoc.id);
-      toast({
-        title: "Device Validated",
-        description: `Device ${deviceDoc.id} is ready for installation.`,
-      });
+      // Tag input method for save
+      setDeviceInputMethod(qrScannedUid ? 'qr' : 'manual');
     } catch (error) {
+      setDeviceValid(false);
       toast({
         variant: "destructive",
-        title: "Validation Failed",
-        description: error instanceof Error ? error.message : "An error occurred.",
+        title: "Validation Error",
+        description: error instanceof Error ? error.message : String(error),
       });
-      setDeviceValid(false);
     } finally {
       setValidatingDevice(false);
     }
@@ -430,6 +398,7 @@ export default function NewInstallation() {
         status: "pending",
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
+        deviceInputMethod,
       });
 
       // Update device status
@@ -501,7 +470,7 @@ export default function NewInstallation() {
                   <Input
                     id="deviceId"
                     value={deviceId}
-                    onChange={(e) => { setDeviceId(e.target.value.toUpperCase()); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); setQrScannedUid(""); setDeviceValidationMode('manual'); }}
+                    onChange={(e) => { setDeviceId(e.target.value.toUpperCase()); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); setQrScannedUid(""); setDeviceInputMethod('manual'); }}
                     placeholder="Enter last 4 digits (e.g., A3D5)"
                     maxLength={4}
                     disabled={submitting}
@@ -528,11 +497,13 @@ export default function NewInstallation() {
                   </Button>
                   {qrScannedUid && (<div className="font-mono bg-muted px-3 py-2 rounded text-xs">{qrScannedUid}</div>)}
                 </div>
-                {qrScannedUid && (
-                  <Button type="button" onClick={() => qrScannedUid && validateDeviceId(qrScannedUid)} variant="outline" disabled={validatingDevice || submitting}>
-                    {validatingDevice ? (<Loader2 className="h-4 w-4 animate-spin" />) : ("Validate QR")}
-                  </Button>
-                )}
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="deviceId">Or enter full Device UID:</Label>
+                  <Input id="deviceId" value={deviceId} onChange={e => { setDeviceId(e.target.value.toUpperCase()); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); setQrScannedUid(""); setDeviceInputMethod('manual'); }} placeholder="Full UID (e.g., 6461561B7911ED6E)" disabled={submitting} className="font-mono uppercase w-64" />
+                </div>
+                <Button type="button" onClick={validateDeviceId} disabled={validatingDevice || submitting || (!qrScannedUid && !deviceId)} variant="outline" className="mt-2">
+                  {validatingDevice ? (<Loader2 className="h-4 w-4 animate-spin" />) : ("Validate Device")}
+                </Button>
               </div>
             )}
             {deviceValid === true && deviceInfo && (
