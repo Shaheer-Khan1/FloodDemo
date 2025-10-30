@@ -243,13 +243,22 @@ export default function Verification() {
           'X-API-KEY': import.meta.env.VITE_API_KEY || ''
         }
       });
+      // If server hasn't ingested data yet, the API may return 404. Show a friendly message instead of an error.
+      if (apiResponse.status === 404) {
+        toast({
+          title: "Data not available yet, please try later.",
+        });
+        return;
+      }
       if (!apiResponse.ok) throw new Error(`API ${apiResponse.status}`);
       const apiData = await apiResponse.json();
       const latestRecord = apiData?.records?.[0];
       const latestDistance = latestRecord?.dis_cm ?? null;
 
+      // Consider null or 0 as "no server data yet"
+      const hasServerData = latestDistance !== null && Number(latestDistance) > 0;
       const hasSensor = !!installation.sensorReading;
-      const variancePct = (latestDistance != null && hasSensor)
+      const variancePct = (hasServerData && hasSensor)
         ? (Math.abs(latestDistance - installation.sensorReading) / installation.sensorReading) * 100
         : undefined;
       const preVerified = variancePct !== undefined && variancePct < 5;
@@ -270,7 +279,7 @@ export default function Verification() {
           status: "flagged",
           updatedAt: serverTimestamp(),
         });
-      } else {
+      } else if (hasServerData) {
         await updateDoc(doc(db, "installations", installation.id), {
           latestDisCm: latestDistance,
           systemPreVerified: preVerified,
@@ -282,8 +291,8 @@ export default function Verification() {
       toast({
         title: variancePct !== undefined && variancePct > 10
           ? "Installation Auto-Rejected"
-          : preVerified ? "Pre-verified by System" : "Server Readings Updated",
-        description: latestDistance != null ? `Latest dis_cm: ${latestDistance}` : "No records returned.",
+          : hasServerData ? (preVerified ? "Pre-verified by System" : "Server Readings Updated") : "No Server Data Yet",
+        description: hasServerData ? `Latest dis_cm: ${latestDistance}` : "No valid records returned.",
       });
     } catch (e) {
       toast({

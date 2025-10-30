@@ -44,8 +44,9 @@ export default function Devices() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [productFilter, setProductFilter] = useState<string>("all");
 
-  // Real-time devices listener (visible to everyone)
+  // Real-time devices listener (admin only)
   useEffect(() => {
+    if (!userProfile?.isAdmin) return;
     const devicesQuery = collection(db, "devices");
 
     const unsubscribe = onSnapshot(
@@ -79,8 +80,9 @@ export default function Devices() {
     return () => unsubscribe();
   }, [userProfile, toast]);
 
-  // Real-time installations listener (visible to everyone)
+  // Real-time installations listener (admin only)
   useEffect(() => {
+    if (!userProfile?.isAdmin) return;
     const installationsQuery = collection(db, "installations");
 
     const unsubscribe = onSnapshot(
@@ -103,8 +105,9 @@ export default function Devices() {
     return () => unsubscribe();
   }, [userProfile]);
 
-  // Real-time server data listener (visible to everyone)
+  // Real-time server data listener (admin only)
   useEffect(() => {
+    if (!userProfile?.isAdmin) return;
     const unsubscribe = onSnapshot(
       collection(db, "serverData"),
       (snapshot) => {
@@ -175,7 +178,20 @@ export default function Devices() {
     };
   }, [devices]);
 
-  // Everyone can view devices; no access gate
+  // Admin-only access gate
+  if (!userProfile?.isAdmin) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <Card className="max-w-md">
+          <CardContent className="pt-6 text-center">
+            <AlertCircle className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+            <h2 className="text-xl font-semibold mb-2">Access Denied</h2>
+            <p className="text-muted-foreground">Only administrators can view the master device list.</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   if (loading) {
     return (

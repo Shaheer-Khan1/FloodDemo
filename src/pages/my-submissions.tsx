@@ -83,7 +83,9 @@ export default function MySubmissions() {
             if (!res.ok) throw new Error(`API ${res.status}`);
             const data = await res.json();
             const latest = data?.records?.[0]?.dis_cm ?? null;
-            if (latest !== null) {
+            // Treat null or zero as "no server data yet"; skip variance/flagging until real data exists
+            const hasServerData = latest !== null && Number(latest) > 0;
+            if (hasServerData) {
               const sensor: number | undefined = fresh.data().sensorReading;
               const variancePct = sensor ? (Math.abs(latest - sensor) / sensor) * 100 : undefined;
               const preVerified = variancePct !== undefined && variancePct < 5;
