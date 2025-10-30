@@ -64,13 +64,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     // Verifier-specific menu items
     ...(userProfile?.role === "verifier" && !userProfile?.isAdmin ? [
       { title: "Create Installer", icon: UserPlus, url: "/create-user" },
-      { title: "Devices", icon: Package, url: "/devices" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
     ] : []),
     // Manager-specific menu items
     ...(userProfile?.role === "manager" && !userProfile?.isAdmin ? [
       { title: "Create Installer", icon: UserPlus, url: "/create-user" },
-      { title: "Devices", icon: Package, url: "/devices" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
     ] : []),
   ];

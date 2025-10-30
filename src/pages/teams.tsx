@@ -307,7 +307,14 @@ export default function Teams() {
                                 </span>
                               </div>
                               <div className="flex-1 min-w-0">
-                                <p className="font-medium truncate" data-testid={`text-member-name-${member.id}`}>{memberName}</p>
+                                <div className="flex items-center gap-2">
+                                  <p className="font-medium truncate" data-testid={`text-member-name-${member.id}`}>{memberName}</p>
+                                  {member.role && (
+                                    <Badge variant="secondary" className="text-[10px] h-5 px-1.5 capitalize">
+                                      {member.role}
+                                    </Badge>
+                                  )}
+                                </div>
                                 <p className="text-sm text-muted-foreground truncate">{member.email || 'No email'}</p>
                                 <div className="flex gap-2 mt-2 text-xs text-muted-foreground">
                                   {member.deviceId && <><span>ID: {member.deviceId}</span><span>•</span></>}

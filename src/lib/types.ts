@@ -39,6 +39,7 @@ export interface CustomTeamMember {
   name?: string;
   displayName?: string;
   email: string;
+  role?: "owner" | "admin" | "manager" | "verifier" | "installer" | "member";
   deviceId?: string;
   height?: number;
   heightUnit?: "cm" | "ft";
