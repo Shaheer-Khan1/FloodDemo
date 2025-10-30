@@ -106,7 +106,14 @@ export default function Verification() {
 
   // Separate pending and verified installations
   const pendingInstallations = useMemo(() => {
-    return allInstallations.filter(inst => inst.status === "pending");
+    return allInstallations.filter(inst => {
+      const isPending = inst.status === "pending";
+      const isAutoFlagged = inst.status === "flagged" && (
+        (inst.verifiedBy && inst.verifiedBy.startsWith("System")) ||
+        (inst.flaggedReason && inst.flaggedReason.toLowerCase().includes("auto-rejected"))
+      );
+      return isPending || isAutoFlagged;
+    });
   }, [allInstallations]);
 
   const verifiedInstallations = useMemo(() => {
