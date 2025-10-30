@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, QrCode, CheckCircle2, Upload, Image as ImageIcon, MapPin, Camera, X } from "lucide-react";
+import { Loader2, QrCode, CheckCircle2, Upload, Image as ImageIcon, MapPin, Camera, X, AlertTriangle } from "lucide-react";
 import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, query, where, getDocs } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
@@ -471,6 +471,28 @@ export default function NewInstallation() {
             <Button type="button" onClick={validateDeviceId} disabled={validatingDevice || submitting || (!qrScannedUid && !deviceId)} variant="outline" className="mt-2">
               {validatingDevice ? (<Loader2 className="h-4 w-4 animate-spin" />) : ("Validate Device")}
             </Button>
+            {deviceValid === true && deviceInfo && (
+              <Alert className="bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800 mt-4">
+                <CheckCircle2 className="h-4 w-4 text-green-600" />
+                <AlertDescription>
+                  <div className="space-y-2">
+                    <p className="font-semibold text-green-900 dark:text-green-100">Device validated successfully!</p>
+                    <div className="p-2 bg-white dark:bg-slate-800 rounded border border-green-200 dark:border-green-700">
+                      <span className="text-xs font-bold">UID: {fullDeviceId}</span><br />
+                      {deviceInfo.productId && <span className="text-xs">Product: {deviceInfo.productId}</span>}
+                    </div>
+                  </div>
+                </AlertDescription>
+              </Alert>
+            )}
+            {deviceValid === false && (
+              <Alert className="bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800 mt-4" variant="destructive">
+                <AlertTriangle className="h-4 w-4 text-red-600" />
+                <AlertDescription>
+                  <span className="font-semibold text-red-900 dark:text-red-100">Device validation failed. Please check the UID or scan again.</span>
+                </AlertDescription>
+              </Alert>
+            )}
           </CardContent>
         </Card>
 
