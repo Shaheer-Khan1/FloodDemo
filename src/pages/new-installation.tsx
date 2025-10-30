@@ -59,13 +59,15 @@ export default function NewInstallation() {
               qrbox: { width: 300, height: 300 }, // Larger scanning area
             },
             (decodedText, decodedResult) => {
-              // QR mode: Set only the scanned UID, clear manual entry
-              setQrScannedUid(decodedText.trim().toUpperCase());
+              // QR mode: Extract after last '-' or fallback to full
+              const scanned = decodedText.trim();
+              const justUid = scanned.includes("-") ? scanned.split("-").pop()?.toUpperCase() : scanned.toUpperCase();
+              setQrScannedUid(justUid || "");
               setDeviceId("");
               setDeviceValidationMode('qr');
               setShowScanner(false);
               scanner.stop().then(() => { scannerRef.current = null; }).catch(console.error);
-              toast({ title: "QR Code Scanned", description: `Full UID: ${decodedText}` });
+              toast({ title: "QR Code Scanned", description: `UID: ${justUid}` });
             },
             (error) => {
               // Error callback - can be ignored for continuous scanning
