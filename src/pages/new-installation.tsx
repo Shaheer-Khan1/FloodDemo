@@ -468,9 +468,14 @@ export default function NewInstallation() {
               <Label htmlFor="deviceId">Or enter full Device UID:</Label>
               <Input id="deviceId" value={deviceId} onChange={e => { setDeviceId(e.target.value.toUpperCase()); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); setQrScannedUid(""); setDeviceInputMethod('manual'); }} placeholder="Full UID (e.g., 6461561B7911ED6E)" disabled={submitting} className="font-mono uppercase w-64" />
             </div>
-            <Button type="button" onClick={validateDeviceId} disabled={validatingDevice || submitting || (!qrScannedUid && !deviceId)} variant="outline" className="mt-2">
-              {validatingDevice ? (<Loader2 className="h-4 w-4 animate-spin" />) : ("Validate Device")}
-            </Button>
+            <div className="flex items-center gap-2 mt-2">
+              <Button type="button" onClick={validateDeviceId} disabled={validatingDevice || submitting || (!qrScannedUid && !deviceId)} variant="outline">
+                {validatingDevice ? (<Loader2 className="h-4 w-4 animate-spin" />) : ("Validate Device")}
+              </Button>
+              {deviceValid === true && deviceInfo && (
+                <Badge variant="success" className="bg-green-500 text-white text-xs h-7 ml-2">Device Found</Badge>
+              )}
+            </div>
             {deviceValid === true && deviceInfo && (
               <Alert className="bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800 mt-4">
                 <CheckCircle2 className="h-4 w-4 text-green-600" />
