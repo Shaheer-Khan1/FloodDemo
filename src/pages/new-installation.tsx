@@ -20,6 +20,8 @@ export default function NewInstallation() {
   const [, setLocation] = useLocation();
   
   const [deviceId, setDeviceId] = useState("");
+  const [qrScannedUid, setQrScannedUid] = useState("");
+  const [deviceValidationMode, setDeviceValidationMode] = useState<'manual'|'qr'>('manual');
   const [fullDeviceId, setFullDeviceId] = useState(""); // Store the full UID after validation
   const [validatingDevice, setValidatingDevice] = useState(false);
   const [deviceValid, setDeviceValid] = useState<boolean | null>(null);
@@ -57,14 +59,13 @@ export default function NewInstallation() {
               qrbox: { width: 300, height: 300 }, // Larger scanning area
             },
             (decodedText, decodedResult) => {
-              // QR SCAN MODE: Use full decoded UID (no last4 truncation)
-              setDeviceId(decodedText.trim().toUpperCase()); // Store full or partial scanned UID
+              // QR mode: Set only the scanned UID, clear manual entry
+              setQrScannedUid(decodedText.trim().toUpperCase());
+              setDeviceId("");
+              setDeviceValidationMode('qr');
               setShowScanner(false);
               scanner.stop().then(() => { scannerRef.current = null; }).catch(console.error);
-              toast({
-                title: "QR Code Scanned",
-                description: `Full UID: ${decodedText}`,
-              });
+              toast({ title: "QR Code Scanned", description: `Full UID: ${decodedText}` });
             },
             (error) => {
               // Error callback - can be ignored for continuous scanning
@@ -152,8 +153,8 @@ export default function NewInstallation() {
     );
   };
 
-  const validateDeviceId = async () => {
-    const entered = deviceId.trim().toUpperCase();
+  const validateDeviceId = async (overrideId?: string) => {
+    const entered = (overrideId ? overrideId : deviceId).trim().toUpperCase();
     // If QR code was used (not 4 chars), do full/partial match; else fallback to last4 logic
     if (!entered) {
       toast({
@@ -480,56 +481,58 @@ export default function NewInstallation() {
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Device ID Validation */}
+        <div className="flex gap-2 mb-2">
+          <Button type="button" onClick={() => { setDeviceValidationMode('manual'); setQrScannedUid(""); setDeviceId(""); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); }} variant={deviceValidationMode==='manual'?'default':'outline'}>Manual Entry</Button>
+          <Button type="button" onClick={() => { setDeviceValidationMode('qr'); setQrScannedUid(""); setDeviceId(""); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); }} variant={deviceValidationMode==='qr'?'default':'outline'}>QR Code</Button>
+        </div>
         <Card className="border shadow-sm">
           <CardHeader>
             <CardTitle>Step 1: Validate Device</CardTitle>
-            <CardDescription>Enter the last 4 digits of the Device UID to verify it exists</CardDescription>
+            {deviceValidationMode==='manual' && <CardDescription>Enter the last 4 digits of the Device UID to verify it exists</CardDescription>}
+            {deviceValidationMode==='qr' && <CardDescription>Scan the QR code to use the full Device UID</CardDescription>}
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex gap-2">
-              <div className="flex-1">
-                <Label htmlFor="deviceId">Last 4 Digits of Device UID</Label>
-                <Input
-                  id="deviceId"
-                  value={deviceId}
-                  onChange={(e) => {
-                    setDeviceId(e.target.value.toUpperCase());
-                    setDeviceValid(null);
-                    setDeviceInfo(null);
-                    setFullDeviceId("");
-                  }}
-                  placeholder="Enter last 4 digits (e.g., A3D5)"
-                  maxLength={4}
-                  disabled={submitting}
-                  className="font-mono uppercase"
-                />
+            {deviceValidationMode==='manual' && (
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <Label htmlFor="deviceId">Last 4 Digits of Device UID</Label>
+                  <Input
+                    id="deviceId"
+                    value={deviceId}
+                    onChange={(e) => { setDeviceId(e.target.value.toUpperCase()); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); setQrScannedUid(""); setDeviceValidationMode('manual'); }}
+                    placeholder="Enter last 4 digits (e.g., A3D5)"
+                    maxLength={4}
+                    disabled={submitting}
+                    className="font-mono uppercase"
+                  />
+                </div>
+                <div className="flex items-end gap-2">
+                  <Button
+                    type="button"
+                    onClick={validateDeviceId}
+                    disabled={validatingDevice || submitting || !deviceId}
+                    variant="outline"
+                  >
+                    {validatingDevice ? (<Loader2 className="h-4 w-4 animate-spin" />) : ("Validate")}
+                  </Button>
+                </div>
               </div>
-              <div className="flex items-end gap-2">
-                <Button
-                  type="button"
-                  onClick={validateDeviceId}
-                  disabled={validatingDevice || submitting}
-                  variant="outline"
-                >
-                  {validatingDevice ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    "Validate"
-                  )}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  onClick={() => setShowScanner(true)}
-                  disabled={submitting}
-                  title="Scan QR Code"
-                >
-                  <QrCode className="h-4 w-4" />
-                </Button>
+            )}
+            {deviceValidationMode==='qr' && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-4">
+                  <Button type="button" onClick={() => setShowScanner(true)} variant="outline" disabled={showScanner || submitting}>
+                    {showScanner ? (<Loader2 className="h-4 w-4 animate-spin" />) : (<><QrCode className="h-4 w-4 mr-1" /> Scan QR Code</>)}
+                  </Button>
+                  {qrScannedUid && (<div className="font-mono bg-muted px-3 py-2 rounded text-xs">{qrScannedUid}</div>)}
+                </div>
+                {qrScannedUid && (
+                  <Button type="button" onClick={() => qrScannedUid && validateDeviceId(qrScannedUid)} variant="outline" disabled={validatingDevice || submitting}>
+                    {validatingDevice ? (<Loader2 className="h-4 w-4 animate-spin" />) : ("Validate QR")}
+                  </Button>
+                )}
               </div>
-            </div>
-
+            )}
             {deviceValid === true && deviceInfo && (
               <Alert className="bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800">
                 <CheckCircle2 className="h-4 w-4 text-green-600" />
