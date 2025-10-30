@@ -241,10 +241,9 @@ export default function Verification() {
 
   const fetchLatestServerReadings = async (installation: Installation) => {
     if (!installation?.deviceId) return;
-    const last4 = installation.deviceId.slice(-4).toUpperCase();
     setFetchingMap(prev => ({ ...prev, [installation.id]: true }));
     try {
-      const apiResponse = await fetch(`https://op1.smarttive.com/device/${last4}`, {
+      const apiResponse = await fetch(`https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`, {
         method: 'GET',
         headers: {
           'X-API-KEY': import.meta.env.VITE_API_KEY || ''
@@ -412,6 +411,7 @@ export default function Verification() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Device ID</TableHead>
+                    <TableHead>Input Method</TableHead>
                     <TableHead>Installer</TableHead>
                     <TableHead>Location</TableHead>
                     <TableHead>Installer Reading</TableHead>
@@ -428,6 +428,11 @@ export default function Verification() {
                     return (
                       <TableRow key={item.installation.id} className={hasHighVariance ? "bg-red-50 dark:bg-red-950/10" : ""}>
                         <TableCell className="font-mono font-medium">{item.installation.deviceId}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className="capitalize text-xs">
+                            {item.installation.deviceInputMethod ? (item.installation.deviceInputMethod === 'qr' ? 'QR' : 'Manual') : 'Legacy'}
+                          </Badge>
+                        </TableCell>
                         <TableCell>{item.installation.installedByName}</TableCell>
                         <TableCell>
                           <div className="flex flex-col">
@@ -652,6 +657,11 @@ export default function Verification() {
                     <CardTitle className="text-lg">Installer Data</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3">
+                    <div>
+                      <Badge variant="outline" className="capitalize text-xs">
+                        {selectedItem.installation.deviceInputMethod ? (selectedItem.installation.deviceInputMethod === 'qr' ? 'QR' : 'Manual') : 'Legacy'}
+                      </Badge>
+                    </div>
                     <div>
                       <p className="text-sm text-muted-foreground">Installer</p>
                       <p className="text-base font-medium">{selectedItem.installation.installedByName}</p>

@@ -84,6 +84,7 @@ export interface Installation {
   systemPreVerifiedAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;
+  deviceInputMethod?: "qr" | "manual";
 }
 
 export interface ServerData {

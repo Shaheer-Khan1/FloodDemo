@@ -75,9 +75,8 @@ export default function MySubmissions() {
           const fresh = await getDoc(d.ref);
           if (!fresh.exists() || fresh.data().latestDisCm !== null) return;
           const deviceId: string = fresh.data().deviceId;
-          const last4 = deviceId.slice(-4).toUpperCase();
           try {
-            const res = await fetch(`https://op1.smarttive.com/device/${last4}`, {
+            const res = await fetch(`https://op1.smarttive.com/device/${deviceId.toUpperCase()}`, {
               headers: { "X-API-KEY": import.meta.env.VITE_API_KEY ?? "" }
             });
             if (!res.ok) throw new Error(`API ${res.status}`);

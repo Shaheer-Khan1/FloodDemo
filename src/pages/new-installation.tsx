@@ -452,82 +452,25 @@ export default function NewInstallation() {
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Device ID Validation */}
-        <div className="flex gap-2 mb-2">
-          <Button type="button" onClick={() => { setDeviceValidationMode('manual'); setQrScannedUid(""); setDeviceId(""); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); }} variant={deviceValidationMode==='manual'?'default':'outline'}>Manual Entry</Button>
-          <Button type="button" onClick={() => { setDeviceValidationMode('qr'); setQrScannedUid(""); setDeviceId(""); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); }} variant={deviceValidationMode==='qr'?'default':'outline'}>QR Code</Button>
-        </div>
         <Card className="border shadow-sm">
           <CardHeader>
             <CardTitle>Step 1: Validate Device</CardTitle>
-            {deviceValidationMode==='manual' && <CardDescription>Enter the last 4 digits of the Device UID to verify it exists</CardDescription>}
-            {deviceValidationMode==='qr' && <CardDescription>Scan the QR code to use the full Device UID</CardDescription>}
+            <CardDescription>Scan QR code or enter the full Device UID if scanning does not work.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {deviceValidationMode==='manual' && (
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <Label htmlFor="deviceId">Last 4 Digits of Device UID</Label>
-                  <Input
-                    id="deviceId"
-                    value={deviceId}
-                    onChange={(e) => { setDeviceId(e.target.value.toUpperCase()); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); setQrScannedUid(""); setDeviceInputMethod('manual'); }}
-                    placeholder="Enter last 4 digits (e.g., A3D5)"
-                    maxLength={4}
-                    disabled={submitting}
-                    className="font-mono uppercase"
-                  />
-                </div>
-                <div className="flex items-end gap-2">
-                  <Button
-                    type="button"
-                    onClick={validateDeviceId}
-                    disabled={validatingDevice || submitting || !deviceId}
-                    variant="outline"
-                  >
-                    {validatingDevice ? (<Loader2 className="h-4 w-4 animate-spin" />) : ("Validate")}
-                  </Button>
-                </div>
-              </div>
-            )}
-            {deviceValidationMode==='qr' && (
-              <div className="space-y-4">
-                <div className="flex items-center gap-4">
-                  <Button type="button" onClick={() => setShowScanner(true)} variant="outline" disabled={showScanner || submitting}>
-                    {showScanner ? (<Loader2 className="h-4 w-4 animate-spin" />) : (<><QrCode className="h-4 w-4 mr-1" /> Scan QR Code</>)}
-                  </Button>
-                  {qrScannedUid && (<div className="font-mono bg-muted px-3 py-2 rounded text-xs">{qrScannedUid}</div>)}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Label htmlFor="deviceId">Or enter full Device UID:</Label>
-                  <Input id="deviceId" value={deviceId} onChange={e => { setDeviceId(e.target.value.toUpperCase()); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); setQrScannedUid(""); setDeviceInputMethod('manual'); }} placeholder="Full UID (e.g., 6461561B7911ED6E)" disabled={submitting} className="font-mono uppercase w-64" />
-                </div>
-                <Button type="button" onClick={validateDeviceId} disabled={validatingDevice || submitting || (!qrScannedUid && !deviceId)} variant="outline" className="mt-2">
-                  {validatingDevice ? (<Loader2 className="h-4 w-4 animate-spin" />) : ("Validate Device")}
-                </Button>
-              </div>
-            )}
-            {deviceValid === true && deviceInfo && (
-              <Alert className="bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800">
-                <CheckCircle2 className="h-4 w-4 text-green-600" />
-                <AlertDescription>
-                  <div className="space-y-2">
-                    <p className="font-semibold text-green-900 dark:text-green-100">Device Validated Successfully</p>
-                    <div className="p-2 bg-white dark:bg-slate-800 rounded border border-green-200 dark:border-green-700">
-                      <p className="text-xs font-medium text-green-900 dark:text-green-100 mb-1">Full Device UID:</p>
-                      <p className="font-mono text-xs text-green-800 dark:text-green-200 break-all">{fullDeviceId}</p>
-                    </div>
-                  </div>
-                </AlertDescription>
-              </Alert>
-            )}
-
-            {deviceValid === false && (
-              <Alert variant="destructive">
-                <AlertDescription>
-                  Device validation failed. Please check the Device ID and try again.
-                </AlertDescription>
-              </Alert>
-            )}
+            <div className="flex items-center gap-4">
+              <Button type="button" onClick={() => setShowScanner(true)} variant="outline" disabled={showScanner || submitting}>
+                {showScanner ? (<Loader2 className="h-4 w-4 animate-spin" />) : (<><QrCode className="h-4 w-4 mr-1" /> Scan QR Code</>)}
+              </Button>
+              {qrScannedUid && (<div className="font-mono bg-muted px-3 py-2 rounded text-xs">{qrScannedUid}</div>)}
+            </div>
+            <div className="flex items-center gap-2">
+              <Label htmlFor="deviceId">Or enter full Device UID:</Label>
+              <Input id="deviceId" value={deviceId} onChange={e => { setDeviceId(e.target.value.toUpperCase()); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); setQrScannedUid(""); setDeviceInputMethod('manual'); }} placeholder="Full UID (e.g., 6461561B7911ED6E)" disabled={submitting} className="font-mono uppercase w-64" />
+            </div>
+            <Button type="button" onClick={validateDeviceId} disabled={validatingDevice || submitting || (!qrScannedUid && !deviceId)} variant="outline" className="mt-2">
+              {validatingDevice ? (<Loader2 className="h-4 w-4 animate-spin" />) : ("Validate Device")}
+            </Button>
           </CardContent>
         </Card>
 
