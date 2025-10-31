@@ -67,6 +67,7 @@ export default function Verification() {
           ...doc.data(),
           createdAt: doc.data().createdAt?.toDate(),
           updatedAt: doc.data().updatedAt?.toDate(),
+          serverRefreshedAt: doc.data().serverRefreshedAt?.toDate(),
         })) as Installation[];
         setAllInstallations(installationsData);
         setLoading(false);
