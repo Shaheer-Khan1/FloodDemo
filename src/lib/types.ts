@@ -85,6 +85,7 @@ export interface Installation {
   createdAt?: Date;
   updatedAt?: Date;
   deviceInputMethod?: "qr" | "manual";
+  serverRefreshedAt?: Date; // last time we attempted a server fetch
 }
 
 export interface ServerData {

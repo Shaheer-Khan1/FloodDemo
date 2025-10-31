@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
@@ -271,6 +271,10 @@ export default function Verification() {
       });
       // If server hasn't ingested data yet, the API may return 404. Show a friendly message instead of an error.
       if (apiResponse.status === 404) {
+        await updateDoc(doc(db, "installations", installation.id), {
+          serverRefreshedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
         toast({
           title: "Data not available yet, please try later.",
         });
@@ -299,6 +303,7 @@ export default function Verification() {
           verifiedAt: serverTimestamp(),
           systemPreVerified: false,
           systemPreVerifiedAt: null,
+          serverRefreshedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
         await updateDoc(doc(db, "devices", installation.deviceId), {
@@ -310,6 +315,13 @@ export default function Verification() {
           latestDisCm: latestDistance,
           systemPreVerified: preVerified,
           systemPreVerifiedAt: preVerified ? serverTimestamp() : null,
+          serverRefreshedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        // No valid server data, still mark refresh attempt
+        await updateDoc(doc(db, "installations", installation.id), {
+          serverRefreshedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
       }
@@ -330,6 +342,25 @@ export default function Verification() {
       setFetchingMap(prev => ({ ...prev, [installation.id]: false }));
     }
   };
+
+  // Auto-refresh every 24h for high variance and no-data items (best-effort while page is open)
+  const inFlightAuto = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const now = Date.now();
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    verificationItems.forEach(item => {
+      const inst = item.installation;
+      const isHighVariance = !!(item.percentageDifference && item.percentageDifference > 5);
+      const hasNoData = inst.latestDisCm == null;
+      if (!(isHighVariance || hasNoData)) return;
+      const last = inst.serverRefreshedAt ? inst.serverRefreshedAt.getTime() : 0;
+      const due = (now - last) > DAY_MS;
+      if (!due) return;
+      if (inFlightAuto.current.has(inst.id)) return;
+      inFlightAuto.current.add(inst.id);
+      fetchLatestServerReadings(inst).finally(() => inFlightAuto.current.delete(inst.id));
+    });
+  }, [verificationItems]);
 
   if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") {
     return (
