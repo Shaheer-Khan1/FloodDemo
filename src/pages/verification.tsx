@@ -47,6 +47,7 @@ export default function Verification() {
   const [rejectReason, setRejectReason] = useState("");
   const [processing, setProcessing] = useState(false);
   const [fetchingMap, setFetchingMap] = useState<Record<string, boolean>>({});
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
 
   // Real-time installations listener (pending verification)
   useEffect(() => {
@@ -106,7 +107,7 @@ export default function Verification() {
 
   // Separate pending and verified installations
   const pendingInstallations = useMemo(() => {
-    return allInstallations.filter(inst => {
+    const filtered = allInstallations.filter(inst => {
       const isPending = inst.status === "pending";
       const isAutoFlagged = inst.status === "flagged" && (
         (inst.verifiedBy && inst.verifiedBy.startsWith("System")) ||
@@ -114,10 +115,20 @@ export default function Verification() {
       );
       return isPending || isAutoFlagged;
     });
+    return filtered.slice().sort((a, b) => {
+      const at = a.createdAt ? a.createdAt.getTime() : 0;
+      const bt = b.createdAt ? b.createdAt.getTime() : 0;
+      return bt - at; // newest first
+    });
   }, [allInstallations]);
 
   const verifiedInstallations = useMemo(() => {
-    return allInstallations.filter(inst => inst.status === "verified");
+    const filtered = allInstallations.filter(inst => inst.status === "verified");
+    return filtered.slice().sort((a, b) => {
+      const at = a.createdAt ? a.createdAt.getTime() : 0;
+      const bt = b.createdAt ? b.createdAt.getTime() : 0;
+      return bt - at; // newest first
+    });
   }, [allInstallations]);
 
   // Create verification items for pending installations
@@ -779,7 +790,8 @@ export default function Verification() {
                         key={index}
                         src={url}
                         alt={`Installation photo ${index + 1}`}
-                        className="w-full h-48 object-cover rounded-lg border"
+                        className="w-full h-48 object-cover rounded-lg border cursor-zoom-in"
+                        onClick={() => setImagePreviewUrl(url)}
                       />
                     ))}
                   </div>
@@ -851,6 +863,19 @@ export default function Verification() {
               </>
             )}
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Image Preview Lightbox */}
+      <Dialog open={!!imagePreviewUrl} onOpenChange={(open) => !open && setImagePreviewUrl(null)}>
+        <DialogContent className="max-w-[95vw] p-0">
+          {imagePreviewUrl && (
+            <img
+              src={imagePreviewUrl}
+              alt="Preview"
+              className="max-w-[95vw] max-h-[90vh] object-contain mx-auto"
+            />
+          )}
         </DialogContent>
       </Dialog>
     </div>
