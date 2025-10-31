@@ -48,6 +48,7 @@ export default function Verification() {
   const [processing, setProcessing] = useState(false);
   const [fetchingMap, setFetchingMap] = useState<Record<string, boolean>>({});
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
+  const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'highVariance' | 'withServerData'>('all');
 
   // Real-time installations listener (pending verification)
   useEffect(() => {
@@ -157,6 +158,14 @@ export default function Verification() {
       } as VerificationItem;
     }).filter(item => item.device); // Filter out items without device info
   }, [pendingInstallations, devices]);
+
+  // Apply UI filter to items shown in the table
+  const displayedItems = useMemo(() => {
+    if (activeFilter === 'pending') return verificationItems;
+    if (activeFilter === 'highVariance') return verificationItems.filter(i => i.percentageDifference && i.percentageDifference > 5);
+    if (activeFilter === 'withServerData') return verificationItems.filter(i => i.serverData);
+    return verificationItems;
+  }, [verificationItems, activeFilter]);
 
   // No auto-approval. We only mark system pre-verified for variance < 5% and keep status pending.
 
@@ -355,7 +364,7 @@ export default function Verification() {
 
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card className="border shadow-sm hover:shadow-md transition-shadow">
+        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='pending' ? 'ring-2 ring-yellow-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='pending' ? 'all' : 'pending')}>
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -369,7 +378,7 @@ export default function Verification() {
           </CardContent>
         </Card>
 
-        <Card className="border shadow-sm hover:shadow-md transition-shadow">
+        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='highVariance' ? 'ring-2 ring-red-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='highVariance' ? 'all' : 'highVariance')}>
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -385,7 +394,7 @@ export default function Verification() {
           </CardContent>
         </Card>
 
-        <Card className="border shadow-sm hover:shadow-md transition-shadow">
+        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='withServerData' ? 'ring-2 ring-green-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='withServerData' ? 'all' : 'withServerData')}>
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -402,13 +411,20 @@ export default function Verification() {
         </Card>
       </div>
 
+      {activeFilter !== 'all' && (
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="text-xs">Filter: {activeFilter === 'pending' ? 'Pending' : activeFilter === 'highVariance' ? 'High Variance' : 'With Server Data'}</Badge>
+          <Button variant="ghost" size="sm" onClick={() => setActiveFilter('all')}>Clear filter</Button>
+        </div>
+      )}
+
       {/* Verification Table */}
       <Card className="border shadow-sm">
         <CardHeader>
-          <CardTitle className="text-2xl font-bold">Pending Installations ({verificationItems.length})</CardTitle>
+          <CardTitle className="text-2xl font-bold">Pending Installations ({displayedItems.length})</CardTitle>
         </CardHeader>
         <CardContent>
-          {verificationItems.length === 0 ? (
+          {displayedItems.length === 0 ? (
             <div className="text-center py-12">
               <CheckCircle2 className="h-12 w-12 mx-auto mb-4 text-green-500" />
               <h3 className="text-lg font-semibold mb-2">All Caught Up!</h3>
@@ -433,7 +449,7 @@ export default function Verification() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {verificationItems.map((item) => {
+                  {displayedItems.map((item) => {
                     const hasHighVariance = item.percentageDifference && item.percentageDifference > 5;
                     
                     return (
