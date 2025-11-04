@@ -298,6 +298,7 @@ export default function Verification() {
         // Auto-reject due to high variance
         await updateDoc(doc(db, "installations", installation.id), {
           latestDisCm: latestDistance,
+          latestDisTimestamp: latestRecord?.timestamp ?? null,
           status: "flagged",
           flaggedReason: `Auto-rejected: variance ${variancePct.toFixed(2)}% > 10%`,
           verifiedBy: "System (Auto-rejected)",
@@ -314,6 +315,7 @@ export default function Verification() {
       } else if (hasServerData) {
         await updateDoc(doc(db, "installations", installation.id), {
           latestDisCm: latestDistance,
+          latestDisTimestamp: latestRecord?.timestamp ?? null,
           systemPreVerified: preVerified,
           systemPreVerifiedAt: preVerified ? serverTimestamp() : null,
           serverRefreshedAt: serverTimestamp(),
@@ -514,6 +516,9 @@ export default function Verification() {
                             <div className="flex items-center gap-1">
                               <Gauge className="h-3 w-3 text-green-600" />
                               {item.serverData.sensorData}
+                              {item.installation.latestDisTimestamp && (
+                                <div className="text-[10px] text-muted-foreground ml-2">{item.installation.latestDisTimestamp}</div>
+                              )}
                             </div>
                           ) : (
                             <Badge variant="outline" className="text-xs">
@@ -769,14 +774,19 @@ export default function Verification() {
                             <Gauge className="h-5 w-5 text-green-600" />
                             {selectedItem.serverData.sensorData}
                           </p>
+                          {selectedItem.installation.latestDisTimestamp && (
+                            <p className="text-xs text-muted-foreground mt-1">{selectedItem.installation.latestDisTimestamp}</p>
+                          )}
                         </div>
                         <div>
                           <p className="text-sm text-muted-foreground">Received At</p>
                           <p className="text-base font-medium flex items-center gap-1">
                             <Calendar className="h-4 w-4 text-muted-foreground" />
-                            {selectedItem.serverData.receivedAt 
-                              ? format(selectedItem.serverData.receivedAt, "MMM d, yyyy HH:mm")
-                              : "-"}
+                            {selectedItem.installation.latestDisTimestamp
+                              ? selectedItem.installation.latestDisTimestamp
+                              : (selectedItem.serverData.receivedAt
+                                  ? format(selectedItem.serverData.receivedAt, "MMM d, yyyy HH:mm")
+                                  : "-")}
                           </p>
                         </div>
                         {selectedItem.percentageDifference !== undefined && (

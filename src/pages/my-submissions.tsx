@@ -81,7 +81,8 @@ export default function MySubmissions() {
             });
             if (!res.ok) throw new Error(`API ${res.status}`);
             const data = await res.json();
-            const latest = data?.records?.[0]?.dis_cm ?? null;
+            const latestRecord = data?.records?.[0];
+            const latest = latestRecord?.dis_cm ?? null;
             // Treat null or zero as "no server data yet"; skip variance/flagging until real data exists
             const hasServerData = latest !== null && Number(latest) > 0;
             if (hasServerData) {
@@ -91,6 +92,7 @@ export default function MySubmissions() {
               if (variancePct !== undefined && variancePct > 10) {
                 await updateDoc(d.ref, {
                   latestDisCm: latest,
+                  latestDisTimestamp: latestRecord?.timestamp ?? null,
                   status: "flagged",
                   flaggedReason: `Auto-rejected: variance ${variancePct.toFixed(2)}% > 10%`,
                   verifiedBy: "System (Auto-rejected)",
@@ -102,6 +104,7 @@ export default function MySubmissions() {
               } else {
                 await updateDoc(d.ref, {
                   latestDisCm: latest,
+                  latestDisTimestamp: latestRecord?.timestamp ?? null,
                   systemPreVerified: preVerified,
                   systemPreVerifiedAt: preVerified ? serverTimestamp() : null,
                   updatedAt: serverTimestamp(),

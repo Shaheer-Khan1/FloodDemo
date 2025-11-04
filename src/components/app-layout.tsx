@@ -43,8 +43,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     // Dashboard, Teams - Not for installers
     ...(userProfile?.role !== "installer" ? [
       { title: "Dashboard", icon: LayoutDashboard, url: "/dashboard" },
-      { title: "Teams", icon: Users, url: "/teams" },
-    ] : []),
+      // Hide Teams for ministry role
+      ...(userProfile?.role !== "ministry" ? [{ title: "Teams", icon: Users, url: "/teams" }] : [] as any),
+    ].flat() : []),
     // Admin menu items
     ...(userProfile?.isAdmin ? [
       { title: "Admin", icon: Shield, url: "/admin" },
@@ -70,6 +71,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     ...(userProfile?.role === "manager" && !userProfile?.isAdmin ? [
       { title: "Create Installer", icon: UserPlus, url: "/create-user" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
+    ] : []),
+    // Ministry-specific menu items
+    ...(userProfile?.role === "ministry" && !userProfile?.isAdmin ? [
+      { title: "All Devices", icon: Package, url: "/ministry-devices" },
+      { title: "Installation Stats", icon: LayoutDashboard, url: "/ministry-stats" },
     ] : []),
   ];
 

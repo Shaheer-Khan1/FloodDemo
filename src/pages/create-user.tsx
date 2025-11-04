@@ -181,7 +181,7 @@ export default function CreateUser() {
       }
     }
 
-    if (!formData.teamId) {
+    if (!formData.teamId && formData.role !== "ministry") {
       toast({
         variant: "destructive",
         title: "Team Required",
@@ -209,7 +209,7 @@ export default function CreateUser() {
         email: formData.email.trim(),
         displayName: formData.displayName.trim(),
         role: formData.role,
-        teamId: formData.teamId,
+        teamId: formData.role === "ministry" ? null : formData.teamId,
         location: formData.location || "",
         isAdmin: false,
         createdAt: serverTimestamp(),
@@ -222,14 +222,16 @@ export default function CreateUser() {
       // Also save to users (for auth-context compatibility)
       await setDoc(doc(db, "users", newUser.uid), userData);
 
-      // Add user to team members
-      await setDoc(doc(db, "teams", formData.teamId, "members", newUser.uid), {
-        userId: newUser.uid,
-        displayName: formData.displayName.trim(),
-        email: formData.email.trim(),
-        role: formData.role,
-        addedAt: serverTimestamp(),
-      });
+      // Add user to team members (skip for ministry accounts)
+      if (formData.role !== "ministry") {
+        await setDoc(doc(db, "teams", formData.teamId, "members", newUser.uid), {
+          userId: newUser.uid,
+          displayName: formData.displayName.trim(),
+          email: formData.email.trim(),
+          role: formData.role,
+          addedAt: serverTimestamp(),
+        });
+      }
 
       // Sign out immediately after creating the user
       await signOut(auth);
@@ -405,6 +407,7 @@ export default function CreateUser() {
                     <SelectItem value="installer">Installer</SelectItem>
                     <SelectItem value="verifier">Verifier</SelectItem>
                     <SelectItem value="manager">Manager</SelectItem>
+                    <SelectItem value="ministry">Ministry</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

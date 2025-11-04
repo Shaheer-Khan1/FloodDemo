@@ -309,15 +309,7 @@ export default function NewInstallation() {
       return;
     }
 
-    if (!latitude || !longitude) {
-      toast({
-        variant: "destructive",
-        title: "GPS Location Required",
-        description: "Please capture GPS coordinates before submitting.",
-      });
-      return;
-    }
-
+    // GPS is optional now; proceed even if missing
     if (!locationId.trim()) {
       toast({
         variant: "destructive",
@@ -386,8 +378,8 @@ export default function NewInstallation() {
         id: installationId,
         deviceId: fullDeviceId,
         locationId: locationId.trim(),
-        latitude: latitude,
-        longitude: longitude,
+        latitude: latitude || null, // Save null if not available
+        longitude: longitude || null, // Save null if not available
         sensorReading: sensorReadingCm,
         latestDisCm: null,
         imageUrls: imageUrls,
@@ -525,7 +517,7 @@ export default function NewInstallation() {
                 ) : (
                   <>
                     <MapPin className="h-4 w-4 mr-2" />
-                    Capture GPS Coordinates
+                    Capture GPS Coordinates (Optional)
                   </>
                 )}
               </Button>

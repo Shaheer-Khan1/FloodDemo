@@ -22,6 +22,8 @@ import NewInstallation from "@/pages/new-installation";
 import MySubmissions from "@/pages/my-submissions";
 import Verification from "@/pages/verification";
 import CreateUser from "@/pages/create-user";
+import MinistryDevices from "@/pages/ministry-devices";
+import MinistryStats from "@/pages/ministry-stats";
 
 function Router() {
   return (
@@ -114,6 +116,22 @@ function Router() {
         <ProtectedRoute>
           <AppLayout>
             <CreateUser />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/ministry-devices">
+        <ProtectedRoute>
+          <AppLayout>
+            <MinistryDevices />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/ministry-stats">
+        <ProtectedRoute>
+          <AppLayout>
+            <MinistryStats />
           </AppLayout>
         </ProtectedRoute>
       </Route>

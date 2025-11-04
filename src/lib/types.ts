@@ -10,7 +10,7 @@ export interface UserProfile {
   height: number;
   heightUnit: "cm" | "ft";
   isAdmin: boolean;
-  role?: "admin" | "installer" | "verifier" | "manager"; // FlowSet roles
+  role?: "admin" | "installer" | "verifier" | "manager" | "ministry"; // FlowSet roles
   teamId?: string; // For installers/verifiers
   createdAt?: Date;
   updatedAt?: Date;
@@ -71,6 +71,7 @@ export interface Installation {
   longitude?: number; // GPS longitude
   sensorReading: number;
   latestDisCm?: number; // Latest sensor reading from API
+  latestDisTimestamp?: string; // ISO or server timestamp string of latest reading
   imageUrls: string[]; // Array of installation images (up to 4)
   videoUrl?: string; // Optional 360 video
   installedBy: string; // userId
