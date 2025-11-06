@@ -14,7 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, FileUp, Plus, List, CheckSquare, Box, UserPlus } from "lucide-react";
+import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, FileUp, Plus, List, CheckSquare, Box, UserPlus, MapPin } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
@@ -54,6 +54,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       { title: "Import Devices", icon: FileUp, url: "/device-import" },
       { title: "Import Box Numbers", icon: Box, url: "/box-import" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
+      { title: "Installations Map", icon: MapPin, url: "/installations-map" },
       { title: "New Installation", icon: Plus, url: "/new-installation" },
       { title: "My Submissions", icon: List, url: "/my-submissions" },
     ] : []),
@@ -66,16 +67,19 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     ...(userProfile?.role === "verifier" && !userProfile?.isAdmin ? [
       { title: "Create Installer", icon: UserPlus, url: "/create-user" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
+      { title: "Installations Map", icon: MapPin, url: "/installations-map" },
     ] : []),
     // Manager-specific menu items
     ...(userProfile?.role === "manager" && !userProfile?.isAdmin ? [
       { title: "Create Installer", icon: UserPlus, url: "/create-user" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
+      { title: "Installations Map", icon: MapPin, url: "/installations-map" },
     ] : []),
     // Ministry-specific menu items
     ...(userProfile?.role === "ministry" && !userProfile?.isAdmin ? [
       { title: "All Devices", icon: Package, url: "/ministry-devices" },
       { title: "Installation Stats", icon: LayoutDashboard, url: "/ministry-stats" },
+      { title: "Installations Map", icon: MapPin, url: "/installations-map" },
     ] : []),
   ];
 

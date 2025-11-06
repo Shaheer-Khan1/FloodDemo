@@ -1,17 +1,19 @@
 import { useState, useEffect, useMemo } from "react";
-import { collection, onSnapshot, query, orderBy, where } from "firebase/firestore";
+import { collection, onSnapshot, query, orderBy, where, doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Search, Loader2, Shield, MapPin, Smartphone, Ruler, Users, Filter, X } from "lucide-react";
+import { Search, Loader2, Shield, MapPin, Smartphone, Ruler, Users, Filter, X, Upload, Download, CheckCircle2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import type { UserProfile, Team, TeamMember } from "@/lib/types";
+import * as XLSX from 'xlsx';
 
 export default function Admin() {
   const { userProfile } = useAuth();
@@ -26,6 +28,10 @@ export default function Admin() {
   const [searchTerm, setSearchTerm] = useState("");
   const [locationFilter, setLocationFilter] = useState<string>("all");
   const [teamFilter, setTeamFilter] = useState<string>("all");
+  const [locationFile, setLocationFile] = useState<File | null>(null);
+  const [uploadingLocations, setUploadingLocations] = useState(false);
+  const [locationProgress, setLocationProgress] = useState(0);
+  const [locationResult, setLocationResult] = useState<{ success: number; failed: number; errors: string[] } | null>(null);
 
   // Real-time users listener
   useEffect(() => {
@@ -204,6 +210,183 @@ export default function Admin() {
 
   const hasActiveFilters = searchTerm !== "" || locationFilter !== "all" || teamFilter !== "all";
 
+  // Location coordinates upload functions
+  const downloadLocationTemplate = () => {
+    const csvContent = `LocationID,Latitude,Longitude
+5246,21.354801,39.873021
+5348,21.460524,39.854247
+5250,21.354617,39.874891`;
+
+    const blob = new Blob([csvContent], { type: "text/csv" });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "location_coordinates_template.csv";
+    a.click();
+    window.URL.revokeObjectURL(url);
+
+    toast({
+      title: "Template Downloaded",
+      description: "Use this template to format your location coordinates data.",
+    });
+  };
+
+  const handleLocationFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0];
+    if (selectedFile) {
+      const validTypes = ["text/csv", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"];
+      const isValidExtension = selectedFile.name.endsWith(".csv") || selectedFile.name.endsWith(".xlsx") || selectedFile.name.endsWith(".xls");
+      
+      if (!validTypes.includes(selectedFile.type) && !isValidExtension) {
+        toast({
+          variant: "destructive",
+          title: "Invalid File Type",
+          description: "Please upload a CSV or Excel (.xlsx) file.",
+        });
+        return;
+      }
+      setLocationFile(selectedFile);
+      setLocationResult(null);
+    }
+  };
+
+  const parseLocationCSV = (text: string): string[][] => {
+    const lines = text.split("\n").filter(line => line.trim());
+    return lines.map(line => {
+      const matches = line.match(/(".*?"|[^,]+)(?=\s*,|\s*$)/g);
+      return matches ? matches.map(cell => cell.replace(/^"|"$/g, "").trim()) : [];
+    });
+  };
+
+  const parseLocationExcel = async (file: File): Promise<string[][]> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      
+      reader.onload = (e) => {
+        try {
+          const data = e.target?.result;
+          const workbook = XLSX.read(data, { type: 'binary' });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as string[][];
+          resolve(jsonData);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsBinaryString(file);
+    });
+  };
+
+  const handleLocationUpload = async () => {
+    if (!locationFile || !userProfile) return;
+
+    setUploadingLocations(true);
+    setLocationProgress(0);
+    const result = { success: 0, failed: 0, errors: [] as string[] };
+
+    try {
+      let rows: string[][];
+      
+      if (locationFile.name.endsWith('.xlsx') || locationFile.name.endsWith('.xls')) {
+        rows = await parseLocationExcel(locationFile);
+      } else {
+        const text = await locationFile.text();
+        rows = parseLocationCSV(text);
+      }
+
+      if (rows.length < 2) {
+        toast({
+          variant: "destructive",
+          title: "Import Failed",
+          description: "File must contain at least a header row and one data row.",
+        });
+        setUploadingLocations(false);
+        return;
+      }
+
+      // Skip header row
+      const dataRows = rows.slice(1);
+      const totalRows = dataRows.length;
+
+      // Find column indices
+      const headerRow = rows[0].map(h => h.toString().toLowerCase().trim());
+      const locationIdIdx = headerRow.findIndex(h => h.includes('location') && h.includes('id'));
+      const latIdx = headerRow.findIndex(h => h.includes('lat'));
+      const lonIdx = headerRow.findIndex(h => h.includes('lon') || h.includes('lng'));
+
+      if (locationIdIdx === -1 || latIdx === -1 || lonIdx === -1) {
+        toast({
+          variant: "destructive",
+          title: "Invalid Format",
+          description: "File must contain LocationID, Latitude, and Longitude columns.",
+        });
+        setUploadingLocations(false);
+        return;
+      }
+
+      for (let i = 0; i < dataRows.length; i++) {
+        const row = dataRows[i];
+        const locationId = row[locationIdIdx]?.toString().trim();
+        const latStr = row[latIdx]?.toString().trim();
+        const lonStr = row[lonIdx]?.toString().trim();
+
+        if (!locationId || !latStr || !lonStr) {
+          result.failed++;
+          result.errors.push(`Row ${i + 2}: Missing required fields`);
+          continue;
+        }
+
+        const lat = parseFloat(latStr);
+        const lon = parseFloat(lonStr);
+
+        if (isNaN(lat) || isNaN(lon)) {
+          result.failed++;
+          result.errors.push(`Row ${i + 2}: Invalid coordinates for ${locationId}`);
+          continue;
+        }
+
+        if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+          result.failed++;
+          result.errors.push(`Row ${i + 2}: Coordinates out of range for ${locationId}`);
+          continue;
+        }
+
+        try {
+          await setDoc(doc(db, "locations", locationId), {
+            locationId,
+            latitude: lat,
+            longitude: lon,
+            updatedAt: serverTimestamp(),
+          });
+          result.success++;
+        } catch (error: any) {
+          result.failed++;
+          result.errors.push(`Row ${i + 2}: ${error.message || 'Failed to save'}`);
+        }
+
+        setLocationProgress(Math.round(((i + 1) / totalRows) * 100));
+      }
+
+      setLocationResult(result);
+      toast({
+        title: "Upload Complete",
+        description: `Successfully uploaded ${result.success} locations. ${result.failed > 0 ? `${result.failed} failed.` : ''}`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Upload Failed",
+        description: error.message || "An error occurred during upload.",
+      });
+    } finally {
+      setUploadingLocations(false);
+      setLocationProgress(0);
+    }
+  };
+
   if (!userProfile?.isAdmin) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -293,6 +476,95 @@ export default function Admin() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Location Coordinates Upload */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle>Upload Location Coordinates</CardTitle>
+          <CardDescription>Upload a CSV or Excel file with LocationID, Latitude, and Longitude columns</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-col sm:flex-row gap-4 items-start">
+            <div className="flex-1 space-y-2">
+              <Input
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                onChange={handleLocationFileChange}
+                disabled={uploadingLocations}
+                className="cursor-pointer"
+              />
+              <p className="text-xs text-muted-foreground">
+                Accepted formats: CSV, Excel (.xlsx, .xls)
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={downloadLocationTemplate}
+                disabled={uploadingLocations}
+              >
+                <Download className="h-4 w-4 mr-2" />
+                Download Template
+              </Button>
+              <Button
+                onClick={handleLocationUpload}
+                disabled={!locationFile || uploadingLocations}
+              >
+                {uploadingLocations ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Uploading...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-4 w-4 mr-2" />
+                    Upload Locations
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+
+          {uploadingLocations && (
+            <div className="space-y-2">
+              <Progress value={locationProgress} />
+              <p className="text-sm text-muted-foreground text-center">
+                {locationProgress}% complete
+              </p>
+            </div>
+          )}
+
+          {locationResult && (
+            <div className="space-y-2 p-4 rounded-lg border">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-green-600" />
+                  <span className="font-semibold text-green-600">{locationResult.success} successful</span>
+                </div>
+                {locationResult.failed > 0 && (
+                  <div className="flex items-center gap-2">
+                    <XCircle className="h-5 w-5 text-red-600" />
+                    <span className="font-semibold text-red-600">{locationResult.failed} failed</span>
+                  </div>
+                )}
+              </div>
+              {locationResult.errors.length > 0 && (
+                <div className="mt-2 max-h-32 overflow-y-auto">
+                  <p className="text-xs font-semibold text-muted-foreground mb-1">Errors:</p>
+                  <ul className="text-xs text-muted-foreground space-y-1">
+                    {locationResult.errors.slice(0, 10).map((error, idx) => (
+                      <li key={idx}>{error}</li>
+                    ))}
+                    {locationResult.errors.length > 10 && (
+                      <li className="text-muted-foreground">... and {locationResult.errors.length - 10} more</li>
+                    )}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Search & Filters */}
       <Card className="border shadow-sm">

@@ -70,24 +70,24 @@ export default function MinistryDevices() {
   const teamNames = Array.from(new Set(teams.map((t) => (t as any).name))).sort();
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">All Devices</h1>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
+    <div className="space-y-6 p-4 md:p-6">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <h1 className="text-2xl md:text-3xl font-bold">All Devices</h1>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-4">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
             <span className="text-sm text-muted-foreground">Filter by Amanah:</span>
             <Select value={teamFilter} onValueChange={setTeamFilter}>
-              <SelectTrigger className="w-[220px]"><SelectValue placeholder="All" /></SelectTrigger>
+              <SelectTrigger className="w-full sm:w-[220px]"><SelectValue placeholder="All" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
                 {teamNames.map((n) => (<SelectItem key={n} value={n}>{n}</SelectItem>))}
               </SelectContent>
             </Select>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
             <span className="text-sm text-muted-foreground">Status:</span>
             <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
-              <SelectTrigger className="w-[180px]"><SelectValue placeholder="All" /></SelectTrigger>
+              <SelectTrigger className="w-full sm:w-[180px]"><SelectValue placeholder="All" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
                 <SelectItem value="pending">Pending</SelectItem>
@@ -101,27 +101,27 @@ export default function MinistryDevices() {
 
       <Card className="border shadow-sm">
         <CardHeader>
-          <CardTitle className="text-2xl font-bold">Devices ({rows.length})</CardTitle>
+          <CardTitle className="text-xl md:text-2xl font-bold">Devices ({rows.length})</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="rounded-md border overflow-x-auto">
+          <div className="rounded-md border overflow-x-auto -mx-4 md:mx-0 px-4 md:px-0">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Device ID</TableHead>
-                  <TableHead>Amanah</TableHead>
-                  <TableHead>Location ID</TableHead>
-                  <TableHead>Server Reading</TableHead>
-                  <TableHead>Installation Status</TableHead>
+                  <TableHead className="min-w-[140px]">Device ID</TableHead>
+                  <TableHead className="min-w-[120px]">Amanah</TableHead>
+                  <TableHead className="min-w-[100px]">Location ID</TableHead>
+                  <TableHead className="min-w-[120px]">Server Reading</TableHead>
+                  <TableHead className="min-w-[140px]">Installation Status</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {rows.map(({ device, inst, amanah }) => (
                   <TableRow key={device.id}>
-                    <TableCell className="font-mono">{device.id}</TableCell>
-                    <TableCell>{amanah}</TableCell>
-                    <TableCell>{inst?.locationId || "-"}</TableCell>
-                    <TableCell>{inst?.latestDisCm ?? "-"}</TableCell>
+                    <TableCell className="font-mono text-xs md:text-sm">{device.id}</TableCell>
+                    <TableCell className="text-xs md:text-sm">{amanah}</TableCell>
+                    <TableCell className="text-xs md:text-sm">{inst?.locationId || "-"}</TableCell>
+                    <TableCell className="text-xs md:text-sm">{inst?.latestDisCm ?? "-"}</TableCell>
                     <TableCell>
                       {inst?.status ? (
                         <Badge variant="outline" className="text-xs capitalize">{inst.status}</Badge>

@@ -24,6 +24,7 @@ import Verification from "@/pages/verification";
 import CreateUser from "@/pages/create-user";
 import MinistryDevices from "@/pages/ministry-devices";
 import MinistryStats from "@/pages/ministry-stats";
+import InstallationsMap from "@/pages/installations-map";
 
 function Router() {
   return (
@@ -132,6 +133,14 @@ function Router() {
         <ProtectedRoute>
           <AppLayout>
             <MinistryStats />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/installations-map">
+        <ProtectedRoute>
+          <AppLayout>
+            <InstallationsMap />
           </AppLayout>
         </ProtectedRoute>
       </Route>
