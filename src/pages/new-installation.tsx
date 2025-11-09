@@ -604,7 +604,7 @@ export default function NewInstallation() {
               <Label className="flex items-center gap-2 mb-3">
                 <Camera className="h-4 w-4" />
                 Installation Photos (up to 4) - Camera Capture Only
-                <Badge variant="secondary">At least 1 required</Badge>
+                <Badge variant="secondary">At least 2 required</Badge>
               </Label>
               <p className="text-sm text-muted-foreground mb-3">
                 Take photos directly using your device camera. Uploads from gallery are not allowed.
