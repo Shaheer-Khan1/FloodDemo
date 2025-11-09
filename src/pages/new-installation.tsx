@@ -328,13 +328,13 @@ export default function NewInstallation() {
       return;
     }
 
-    // Check if at least one image is uploaded
+    // Check if at least two images are uploaded
     const uploadedImages = images.filter(img => img !== null);
-    if (uploadedImages.length === 0) {
+    if (uploadedImages.length < 2) {
       toast({
         variant: "destructive",
-        title: "Image Required",
-        description: "Please capture at least one installation photo.",
+        title: "Images Required",
+        description: "Please capture at least two installation photos.",
       });
       return;
     }
@@ -596,7 +596,7 @@ export default function NewInstallation() {
         <Card className={`border shadow-sm ${!deviceValid ? "opacity-50" : ""}`}>
           <CardHeader>
             <CardTitle>Step 3: Capture Media</CardTitle>
-            <CardDescription>Take up to 4 installation photos (at least 1 required) and optionally upload a 360° video</CardDescription>
+            <CardDescription>Take up to 4 installation photos (at least 2 required) and optionally upload a 360° video</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
             {/* Images Grid */}
