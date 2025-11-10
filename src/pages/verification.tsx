@@ -30,17 +30,26 @@ import {
   TrendingDown,
   Minus,
   AlertCircle,
+  Filter,
+  X,
+  Database,
+  CloudOff,
+  CircleCheck,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import type { Installation, Device, ServerData, VerificationItem } from "@/lib/types";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import type { Installation, Device, ServerData, VerificationItem, Team } from "@/lib/types";
 import { format } from "date-fns";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Input } from "@/components/ui/input";
 
 export default function Verification() {
   const { userProfile } = useAuth();
   const { toast } = useToast();
   const [allInstallations, setAllInstallations] = useState<Installation[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState<VerificationItem | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -48,7 +57,11 @@ export default function Verification() {
   const [processing, setProcessing] = useState(false);
   const [fetchingMap, setFetchingMap] = useState<Record<string, boolean>>({});
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
-  const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'highVariance' | 'withServerData'>('all');
+  const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'highVariance' | 'withServerData' | 'noServerData' | 'preVerified' | 'verified'>('all');
+  
+  // Filter states
+  const [installerNameFilter, setInstallerNameFilter] = useState<string>("");
+  const [teamIdFilter, setTeamIdFilter] = useState<string>("");
 
   // Real-time installations listener (pending verification)
   useEffect(() => {
@@ -62,13 +75,45 @@ export default function Verification() {
     const unsubscribe = onSnapshot(
       installationsQuery as any,
       (snapshot: any) => {
-        const installationsData = snapshot.docs.map((doc: any) => ({
-          id: doc.id,
-          ...doc.data(),
-          createdAt: doc.data().createdAt?.toDate(),
-          updatedAt: doc.data().updatedAt?.toDate(),
-          serverRefreshedAt: doc.data().serverRefreshedAt?.toDate(),
-        })) as Installation[];
+        const installationsData = snapshot.docs.map((doc: any) => {
+          const data = doc.data();
+          
+          // Helper to safely convert Firestore timestamps to Date
+          const convertToDate = (value: any): Date | null => {
+            if (!value) return null;
+            if (value instanceof Date) {
+              return isNaN(value.getTime()) ? null : value;
+            }
+            if (typeof value.toDate === 'function') {
+              try {
+                const date = value.toDate();
+                return isNaN(date.getTime()) ? null : date;
+              } catch {
+                return null;
+              }
+            }
+            // If it's a string or number, try to parse it
+            if (typeof value === 'string' || typeof value === 'number') {
+              try {
+                const date = new Date(value);
+                return isNaN(date.getTime()) ? null : date;
+              } catch {
+                return null;
+              }
+            }
+            return null;
+          };
+          
+          return {
+            id: doc.id,
+            ...data,
+            createdAt: convertToDate(data.createdAt),
+            updatedAt: convertToDate(data.updatedAt),
+            serverRefreshedAt: convertToDate(data.serverRefreshedAt),
+            verifiedAt: convertToDate(data.verifiedAt),
+            systemPreVerifiedAt: convertToDate(data.systemPreVerifiedAt),
+          } as Installation;
+        });
         setAllInstallations(installationsData);
         setLoading(false);
       },
@@ -101,6 +146,30 @@ export default function Verification() {
       },
       (error) => {
         console.error("Failed to load devices:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [userProfile]);
+
+  // Real-time teams listener (for admin, verifier, and manager to display team names)
+  useEffect(() => {
+    if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
+
+    const unsubscribe = onSnapshot(
+      collection(db, "teams"),
+      (snapshot) => {
+        const teamsData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+          createdAt: doc.data().createdAt?.toDate(),
+          updatedAt: doc.data().updatedAt?.toDate(),
+        })) as Team[];
+        teamsData.sort((a, b) => a.name.localeCompare(b.name));
+        setTeams(teamsData);
+      },
+      (error) => {
+        console.error("Failed to load teams:", error);
       }
     );
 
@@ -160,13 +229,133 @@ export default function Verification() {
     }).filter(item => item.device); // Filter out items without device info
   }, [pendingInstallations, devices]);
 
-  // Apply UI filter to items shown in the table
+  // Extract unique installer names
+  const installerNames = useMemo(() => {
+    const names = new Set<string>();
+    allInstallations.forEach(inst => {
+      if (inst.installedByName) {
+        names.add(inst.installedByName);
+      }
+    });
+    return Array.from(names).sort();
+  }, [allInstallations]);
+
+  // Helper function to get team name from teamId
+  const getTeamName = (teamId?: string): string | null => {
+    if (!teamId) return null;
+    const team = teams.find(t => t.id === teamId);
+    return team?.name || null;
+  };
+
+  // Helper function to safely format dates
+  const formatDateSafe = (date: Date | null | undefined, formatStr: string): string | null => {
+    if (!date) return null;
+    if (!(date instanceof Date)) return null;
+    if (isNaN(date.getTime())) return null;
+    try {
+      return format(date, formatStr);
+    } catch (error) {
+      console.error("Error formatting date:", error, date);
+      return null;
+    }
+  };
+
+  // Calculate filter counts
+  const noServerDataCount = useMemo(() => {
+    return verificationItems.filter(i => !i.serverData || i.installation.latestDisCm == null).length;
+  }, [verificationItems]);
+
+  const preVerifiedCount = useMemo(() => {
+    return verificationItems.filter(i => i.installation.systemPreVerified === true).length;
+  }, [verificationItems]);
+
+  const verifiedCount = useMemo(() => {
+    return verifiedInstallations.length;
+  }, [verifiedInstallations]);
+
+  // Apply all filters to items shown in the table
   const displayedItems = useMemo(() => {
-    if (activeFilter === 'pending') return verificationItems;
-    if (activeFilter === 'highVariance') return verificationItems.filter(i => i.percentageDifference && i.percentageDifference > 5);
-    if (activeFilter === 'withServerData') return verificationItems.filter(i => i.serverData);
-    return verificationItems;
-  }, [verificationItems, activeFilter]);
+    let filtered = verificationItems;
+
+    // Apply active filter (only one can be active at a time)
+    if (activeFilter === 'pending') {
+      filtered = verificationItems;
+    } else if (activeFilter === 'highVariance') {
+      filtered = verificationItems.filter(i => i.percentageDifference && i.percentageDifference > 5);
+    } else if (activeFilter === 'withServerData') {
+      filtered = verificationItems.filter(i => i.serverData);
+    } else if (activeFilter === 'noServerData') {
+      filtered = verificationItems.filter(i => !i.serverData || i.installation.latestDisCm == null);
+    } else if (activeFilter === 'preVerified') {
+      filtered = verificationItems.filter(i => i.installation.systemPreVerified === true);
+    } else if (activeFilter === 'verified') {
+      // For verified filter, return empty array for pending items (verified items shown in separate table)
+      filtered = [];
+    }
+
+    // Apply installer name filter
+    if (installerNameFilter) {
+      filtered = filtered.filter(i => 
+        i.installation.installedByName?.toLowerCase().includes(installerNameFilter.toLowerCase())
+      );
+    }
+
+    // Apply team filter (admin only)
+    if (teamIdFilter && userProfile?.isAdmin) {
+      filtered = filtered.filter(i => i.installation.teamId === teamIdFilter);
+    }
+
+    return filtered;
+  }, [verificationItems, activeFilter, installerNameFilter, teamIdFilter, userProfile?.isAdmin]);
+
+  // Apply filters to verified installations
+  const displayedVerifiedItems = useMemo(() => {
+    // Only show verified items if 'verified' filter is active, or if no filter is active and we want to show verified table
+    if (activeFilter !== 'verified' && activeFilter !== 'all') {
+      return [];
+    }
+
+    let filtered = verifiedInstallations.map(installation => {
+      const device = devices.find(d => d.id === installation.deviceId);
+      const serverValue = installation.latestDisCm;
+      
+      let percentageDifference: number | undefined;
+      if (serverValue != null && installation.sensorReading != null) {
+        const diff = Math.abs(serverValue - installation.sensorReading);
+        percentageDifference = (diff / installation.sensorReading) * 100;
+      }
+
+      return {
+        installation,
+        device: device!,
+        serverData: serverValue != null ? {
+          id: `${installation.id}_server`,
+          deviceId: installation.deviceId,
+          sensorData: serverValue,
+        } : undefined,
+        percentageDifference,
+      } as VerificationItem;
+    }).filter(item => item.device);
+
+    // Apply installer name filter
+    if (installerNameFilter) {
+      filtered = filtered.filter(i => 
+        i.installation.installedByName?.toLowerCase().includes(installerNameFilter.toLowerCase())
+      );
+    }
+
+    // Apply team filter (admin only)
+    if (teamIdFilter && userProfile?.isAdmin) {
+      filtered = filtered.filter(i => i.installation.teamId === teamIdFilter);
+    }
+
+    // Apply no server data filter if active
+    if (activeFilter === 'noServerData') {
+      filtered = filtered.filter(i => !i.serverData || i.installation.latestDisCm == null);
+    }
+
+    return filtered;
+  }, [verifiedInstallations, devices, installerNameFilter, teamIdFilter, activeFilter, userProfile?.isAdmin]);
 
   // No auto-approval. We only mark system pre-verified for variance < 5% and keep status pending.
 
@@ -397,7 +586,7 @@ export default function Verification() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='pending' ? 'ring-2 ring-yellow-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='pending' ? 'all' : 'pending')}>
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
@@ -443,30 +632,157 @@ export default function Verification() {
             </div>
           </CardContent>
         </Card>
+
+        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='noServerData' ? 'ring-2 ring-orange-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='noServerData' ? 'all' : 'noServerData')}>
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">No Server Data</p>
+                <p className="text-3xl font-bold mt-1 text-orange-600">
+                  {noServerDataCount}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-orange-100 dark:bg-orange-950 flex items-center justify-center">
+                <CloudOff className="h-6 w-6 text-orange-600 dark:text-orange-500" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='preVerified' ? 'ring-2 ring-blue-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='preVerified' ? 'all' : 'preVerified')}>
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Pre-verified</p>
+                <p className="text-3xl font-bold mt-1 text-blue-600">
+                  {preVerifiedCount}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-blue-100 dark:bg-blue-950 flex items-center justify-center">
+                <CircleCheck className="h-6 w-6 text-blue-600 dark:text-blue-500" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='verified' ? 'ring-2 ring-purple-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='verified' ? 'all' : 'verified')}>
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Verified</p>
+                <p className="text-3xl font-bold mt-1 text-purple-600">
+                  {verifiedCount}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-purple-100 dark:bg-purple-950 flex items-center justify-center">
+                <Database className="h-6 w-6 text-purple-600 dark:text-purple-500" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
-      {activeFilter !== 'all' && (
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="text-xs">Filter: {activeFilter === 'pending' ? 'Pending' : activeFilter === 'highVariance' ? 'High Variance' : 'With Server Data'}</Badge>
-          <Button variant="ghost" size="sm" onClick={() => setActiveFilter('all')}>Clear filter</Button>
-        </div>
-      )}
-
-      {/* Verification Table */}
+      {/* Filters Section */}
       <Card className="border shadow-sm">
         <CardHeader>
-          <CardTitle className="text-2xl font-bold">Pending Installations ({displayedItems.length})</CardTitle>
+          <CardTitle className="text-lg font-semibold flex items-center gap-2">
+            <Filter className="h-5 w-5" />
+            Filters
+          </CardTitle>
         </CardHeader>
         <CardContent>
-          {displayedItems.length === 0 ? (
-            <div className="text-center py-12">
-              <CheckCircle2 className="h-12 w-12 mx-auto mb-4 text-green-500" />
-              <h3 className="text-lg font-semibold mb-2">All Caught Up!</h3>
-              <p className="text-muted-foreground">
-                There are no installations pending verification at the moment.
-              </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Installer Name Filter */}
+            <div className="space-y-2">
+              <Label htmlFor="installer-filter">Installer Name</Label>
+              <Input
+                id="installer-filter"
+                placeholder="Search installer..."
+                value={installerNameFilter}
+                onChange={(e) => setInstallerNameFilter(e.target.value)}
+              />
             </div>
-          ) : (
+
+            {/* Team Filter (Admin Only) */}
+            {userProfile?.isAdmin && (
+              <div className="space-y-2">
+                <Label htmlFor="team-filter">Team Name</Label>
+                <Select value={teamIdFilter || "all"} onValueChange={(value) => setTeamIdFilter(value === "all" ? "" : value)}>
+                  <SelectTrigger id="team-filter">
+                    <SelectValue placeholder="All Teams" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Teams</SelectItem>
+                    {teams.map(team => (
+                      <SelectItem key={team.id} value={team.id}>
+                        {team.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+
+          {/* Clear Filters Button */}
+          {(installerNameFilter || teamIdFilter || activeFilter !== 'all') && (
+            <div className="mt-4 flex items-center gap-2 flex-wrap">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setInstallerNameFilter("");
+                  setTeamIdFilter("");
+                  setActiveFilter('all');
+                }}
+              >
+                <X className="h-4 w-4 mr-2" />
+                Clear All Filters
+              </Button>
+              <div className="flex flex-wrap gap-2">
+                {installerNameFilter && (
+                  <Badge variant="secondary" className="text-xs">
+                    Installer: {installerNameFilter}
+                  </Badge>
+                )}
+                {teamIdFilter && (
+                  <Badge variant="secondary" className="text-xs">
+                    Team: {teams.find(t => t.id === teamIdFilter)?.name || teamIdFilter}
+                  </Badge>
+                )}
+                {activeFilter !== 'all' && (
+                  <Badge variant="secondary" className="text-xs">
+                    {activeFilter === 'pending' ? 'Pending' : 
+                     activeFilter === 'highVariance' ? 'High Variance' : 
+                     activeFilter === 'withServerData' ? 'With Server Data' :
+                     activeFilter === 'noServerData' ? 'No Server Data' :
+                     activeFilter === 'preVerified' ? 'Pre-verified' :
+                     activeFilter === 'verified' ? 'Verified' : ''}
+                  </Badge>
+                )}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+
+      {/* Verification Table - Hide if verified filter is active */}
+      {activeFilter !== 'verified' && (
+        <Card className="border shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-2xl font-bold">Pending Installations ({displayedItems.length})</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {displayedItems.length === 0 ? (
+              <div className="text-center py-12">
+                <CheckCircle2 className="h-12 w-12 mx-auto mb-4 text-green-500" />
+                <h3 className="text-lg font-semibold mb-2">All Caught Up!</h3>
+                <p className="text-muted-foreground">
+                  There are no installations pending verification at the moment.
+                </p>
+              </div>
+            ) : (
             <div className="rounded-md border">
               <Table>
                 <TableHeader>
@@ -494,7 +810,16 @@ export default function Verification() {
                             {item.installation.deviceInputMethod ? (item.installation.deviceInputMethod === 'qr' ? 'QR' : 'Manual') : 'Legacy'}
                           </Badge>
                         </TableCell>
-                        <TableCell>{item.installation.installedByName}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-col gap-1">
+                            <span>{item.installation.installedByName}</span>
+                            {item.installation.teamId && getTeamName(item.installation.teamId) && (
+                              <Badge variant="outline" className="text-[10px] w-fit">
+                                {getTeamName(item.installation.teamId)}
+                              </Badge>
+                            )}
+                          </div>
+                        </TableCell>
                         <TableCell>
                           <div className="flex flex-col">
                             <span>{item.installation.locationId || "-"}</span>
@@ -588,107 +913,154 @@ export default function Verification() {
           )}
         </CardContent>
       </Card>
+      )}
 
-      {/* Verified Installations Table */}
-      {verifiedInstallations.length > 0 && (
+      {/* Verified Installations Table - Show if verified filter is active or if no filter is active and there are verified installations */}
+      {(activeFilter === 'verified' || (activeFilter === 'all' && verifiedInstallations.length > 0)) && (
         <Card className="border shadow-sm">
           <CardHeader>
-            <CardTitle className="text-2xl font-bold">Verified Installations ({verifiedInstallations.length})</CardTitle>
+            <CardTitle className="text-2xl font-bold">
+              Verified Installations ({displayedVerifiedItems.length})
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Device ID</TableHead>
-                    <TableHead>Installer</TableHead>
-                    <TableHead>Location</TableHead>
-                    <TableHead>Installer Reading</TableHead>
-                    <TableHead>Server Data</TableHead>
-                    <TableHead>Variance</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Verified By</TableHead>
-                    <TableHead>Submitted</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {verifiedInstallations.map((installation) => {
-                    const device = devices.find(d => d.id === installation.deviceId);
-                    const serverValue = installation.latestDisCm;
-                    
-                    let percentageDifference: number | undefined;
-                    if (serverValue != null && installation.sensorReading != null) {
-                      const diff = Math.abs(serverValue - installation.sensorReading);
-                      percentageDifference = (diff / installation.sensorReading) * 100;
-                    }
+            {displayedVerifiedItems.length === 0 ? (
+              <div className="text-center py-12">
+                <CheckCircle2 className="h-12 w-12 mx-auto mb-4 text-green-500" />
+                <h3 className="text-lg font-semibold mb-2">No Verified Installations Match Filters</h3>
+                <p className="text-muted-foreground">
+                  Try adjusting your filters to see more results.
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Device ID</TableHead>
+                      <TableHead>Input Method</TableHead>
+                      <TableHead>Installer</TableHead>
+                      <TableHead>Location</TableHead>
+                      <TableHead>Installer Reading</TableHead>
+                      <TableHead>Server Data</TableHead>
+                      <TableHead>Variance</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Verified By</TableHead>
+                      <TableHead>Submitted</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {displayedVerifiedItems.map((item) => {
+                      const installation = item.installation;
+                      const serverValue = installation.latestDisCm;
+                      
+                      let percentageDifference: number | undefined;
+                      if (serverValue != null && installation.sensorReading != null) {
+                        const diff = Math.abs(serverValue - installation.sensorReading);
+                        percentageDifference = (diff / installation.sensorReading) * 100;
+                      }
 
-                    return (
-                      <TableRow key={installation.id}>
-                        <TableCell className="font-mono font-medium">{installation.deviceId}</TableCell>
-                        <TableCell>{installation.installedByName}</TableCell>
-                        <TableCell>
-                          <div className="flex flex-col">
-                            <span>{installation.locationId || "-"}</span>
-                            {(installation.latitude !== undefined && installation.longitude !== undefined) && (
-                              <span className="text-xs text-muted-foreground">
-                                {installation.latitude?.toFixed(6)}, {installation.longitude?.toFixed(6)}
-                              </span>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-1">
-                            <Gauge className="h-3 w-3 text-muted-foreground" />
-                            {installation.sensorReading}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          {serverValue !== undefined ? (
-                            <div className="flex items-center gap-1">
-                              <Gauge className="h-3 w-3 text-green-600" />
-                              {serverValue}
+                      return (
+                        <TableRow key={installation.id}>
+                          <TableCell className="font-mono font-medium">{installation.deviceId}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className="capitalize text-xs">
+                              {installation.deviceInputMethod ? (installation.deviceInputMethod === 'qr' ? 'QR' : 'Manual') : 'Legacy'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-col gap-1">
+                              <span>{installation.installedByName}</span>
+                              {installation.teamId && getTeamName(installation.teamId) && (
+                                <Badge variant="outline" className="text-[10px] w-fit">
+                                  {getTeamName(installation.teamId)}
+                                </Badge>
+                              )}
                             </div>
-                          ) : (
-                            <Badge variant="outline" className="text-xs">
-                              <Minus className="h-3 w-3 mr-1" />
-                              No Data
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-col">
+                              <span>{installation.locationId || "-"}</span>
+                              {(installation.latitude !== undefined && installation.longitude !== undefined) && (
+                                <span className="text-xs text-muted-foreground">
+                                  {installation.latitude?.toFixed(6)}, {installation.longitude?.toFixed(6)}
+                                </span>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-1">
+                              <Gauge className="h-3 w-3 text-muted-foreground" />
+                              {installation.sensorReading}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            {serverValue !== undefined && serverValue !== null ? (
+                              <div className="flex items-center gap-1">
+                                <Gauge className="h-3 w-3 text-green-600" />
+                                {serverValue}
+                                {installation.latestDisTimestamp && (
+                                  <div className="text-[10px] text-muted-foreground ml-2">{installation.latestDisTimestamp}</div>
+                                )}
+                              </div>
+                            ) : (
+                              <Badge variant="outline" className="text-xs">
+                                <Minus className="h-3 w-3 mr-1" />
+                                No Data
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {percentageDifference !== undefined ? (
+                              <Badge 
+                                variant="outline" 
+                                className={percentageDifference > 5
+                                  ? "text-red-600 bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800" 
+                                  : "text-green-600 bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800"}
+                              >
+                                {percentageDifference.toFixed(2)}%
+                              </Badge>
+                            ) : (
+                              "-"
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="default" className="bg-green-600">
+                              <CheckCircle2 className="h-3 w-3 mr-1" />
+                              Verified
                             </Badge>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {percentageDifference !== undefined ? (
-                            <Badge 
-                              variant="outline" 
-                              className={percentageDifference > 5
-                                ? "text-red-600 bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800" 
-                                : "text-green-600 bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800"}
-                            >
-                              {percentageDifference.toFixed(2)}%
-                            </Badge>
-                          ) : (
-                            "-"
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="default" className="bg-green-600">
-                            <CheckCircle2 className="h-3 w-3 mr-1" />
-                            Verified
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {installation.verifiedBy || "-"}
-                        </TableCell>
-                        <TableCell>
-                          {installation.createdAt 
-                            ? format(installation.createdAt, "MMM d, HH:mm")
-                            : "-"}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-col gap-1">
+                              <span className="text-sm text-muted-foreground">{installation.verifiedBy || "-"}</span>
+                              {installation.verifiedBy && !installation.verifiedBy.startsWith("System") && (
+                                (() => {
+                                  const formattedDate = formatDateSafe(installation.verifiedAt, "MMM d, HH:mm");
+                                  return formattedDate ? (
+                                    <Badge variant="outline" className="text-[10px] w-fit">
+                                      {formattedDate}
+                                    </Badge>
+                                  ) : (
+                                    <Badge variant="outline" className="text-[10px] w-fit">
+                                      Legacy
+                                    </Badge>
+                                  );
+                                })()
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            {installation.createdAt 
+                              ? format(installation.createdAt, "MMM d, HH:mm")
+                              : "-"}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -728,7 +1100,14 @@ export default function Verification() {
                     </div>
                     <div>
                       <p className="text-sm text-muted-foreground">Installer</p>
-                      <p className="text-base font-medium">{selectedItem.installation.installedByName}</p>
+                      <div className="flex flex-col gap-1 mt-1">
+                        <p className="text-base font-medium">{selectedItem.installation.installedByName}</p>
+                        {selectedItem.installation.teamId && getTeamName(selectedItem.installation.teamId) && (
+                          <Badge variant="outline" className="text-xs w-fit">
+                            {getTeamName(selectedItem.installation.teamId)}
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                     <div>
                       <p className="text-sm text-muted-foreground">Location ID</p>
