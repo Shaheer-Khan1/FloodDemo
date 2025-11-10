@@ -22,8 +22,14 @@ import {
   Loader2
 } from "lucide-react";
 import jsPDF from "jspdf";
+import { getStorage, ref, getDownloadURL } from "firebase/storage";
 import type { Device, Installation } from "@/lib/types";
 import { format } from "date-fns";
+
+const storage = getStorage();
+const PRIMARY_COLOR: [number, number, number] = [12, 91, 211];
+const TEXT_COLOR: [number, number, number] = [33, 33, 33];
+const LABEL_COLOR: [number, number, number] = [100, 106, 125];
 
 const statusConfig = {
   pending: { 
@@ -242,107 +248,43 @@ export default function MinistryDevices() {
 
   const teamNames = Array.from(new Set(teams.map((t) => (t as any).name))).sort();
 
-  // Helper function to load image from URL and convert to base64
-  const loadImageAsBase64 = async (url: string): Promise<{ data: string; format: string } | null> => {
+  const extractStoragePath = (url: string): string | null => {
+    if (!url) return null;
+    if (!url.startsWith("http")) return url;
+    const oIndex = url.indexOf("/o/");
+    if (oIndex === -1) return null;
+    const qIndex = url.indexOf("?", oIndex);
+    const encodedPath = qIndex === -1 ? url.substring(oIndex + 3) : url.substring(oIndex + 3, qIndex);
     try {
-      console.log("Loading image from URL:", url);
-      
-      // Method 1: Try direct fetch first (works for most Firebase Storage URLs)
-      try {
-        const response = await fetch(url);
-        if (response.ok) {
-          const blob = await response.blob();
-          const format = blob.type.includes('png') || url.toLowerCase().includes('.png') ? 'PNG' : 'JPEG';
-          
-          return new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              const result = reader.result as string;
-              console.log("Successfully loaded image via fetch");
-              resolve({ data: result, format });
-            };
-            reader.onerror = () => {
-              console.error("Error reading image blob");
-              resolve(null);
-            };
-            reader.readAsDataURL(blob);
-          });
-        } else {
-          console.warn("Fetch response not OK:", response.status, response.statusText, "- trying Image element");
-        }
-      } catch (fetchError) {
-        console.warn("Fetch failed, trying Image element approach:", fetchError);
-      }
-      
-      // Method 2: Use Image element + Canvas (for CORS-restricted images)
-      return new Promise((resolve) => {
-        let resolved = false;
-        
-        const tryImageLoad = (useCors: boolean) => {
-          const img = new Image();
-          if (useCors) {
-            img.crossOrigin = 'anonymous';
-          }
-          
-          img.onload = () => {
-            if (resolved) return;
-            try {
-              const canvas = document.createElement('canvas');
-              canvas.width = img.width;
-              canvas.height = img.height;
-              const ctx = canvas.getContext('2d');
-              
-              if (!ctx) {
-                console.error("Could not get canvas context");
-                if (!resolved) {
-                  resolved = true;
-                  resolve(null);
-                }
-                return;
-              }
-              
-              ctx.drawImage(img, 0, 0);
-              const base64 = canvas.toDataURL('image/jpeg', 0.95);
-              const format = url.toLowerCase().includes('.png') ? 'PNG' : 'JPEG';
-              console.log(`Successfully loaded image via Image element${useCors ? ' with CORS' : ''}`);
-              if (!resolved) {
-                resolved = true;
-                resolve({ data: base64, format });
-              }
-            } catch (error) {
-              console.error("Error converting image to base64:", error);
-              if (!resolved) {
-                resolved = true;
-                resolve(null);
-              }
-            }
-          };
-          
-          img.onerror = () => {
-            if (!useCors) {
-              // Try with CORS if first attempt failed
-              console.log("Image load failed without CORS, trying with CORS...");
-              tryImageLoad(true);
-            } else {
-              console.error("All image loading methods failed for URL:", url);
-              if (!resolved) {
-                resolved = true;
-                resolve(null);
-              }
-            }
-          };
-          
-          img.src = url;
-        };
-        
-        // Start with non-CORS attempt
-        tryImageLoad(false);
-      });
+      return decodeURIComponent(encodedPath);
     } catch (error) {
-      console.error("Error loading image:", error, url);
+      console.error("Failed to decode storage path from URL:", url, error);
       return null;
     }
   };
+
+  const getFreshDownloadURL = async (url: string): Promise<string> => {
+    const path = extractStoragePath(url);
+    if (!path) {
+      return url;
+    }
+    try {
+      const storageRef = ref(storage, path);
+      return await getDownloadURL(storageRef);
+    } catch (error) {
+      console.error("Error retrieving download URL for", path, error);
+      return url;
+    }
+  };
+
+  const loadImageElement = (url: string): Promise<HTMLImageElement> =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(`Image failed to load: ${url}`));
+      img.src = url;
+    });
 
   // Generate PDF report for a specific Amanah
   const generateReportForAmanah = async (amanahName: string, amanahRows: typeof rows, locationMapRef: Map<string, Location>) => {
@@ -374,127 +316,189 @@ export default function MinistryDevices() {
       const longitude = location?.longitude ?? (inst?.longitude ?? null);
       const sensorReading = inst?.sensorReading ?? null;
 
-      // Header: "LOCATION {locationId} - DEVICE {last4}"
-      const deviceLast4 = device.id.slice(-4);
-      doc.setFontSize(16);
+      // Header matching the report layout
+      doc.setFontSize(18);
       doc.setFont("helvetica", "bold");
-      doc.text(`LOCATION ${locationId} - DEVICE ${deviceLast4}`, leftPanelX, yPos);
+      doc.setTextColor(...TEXT_COLOR);
+      doc.text(`LOCATION ${locationId}`, leftPanelX, yPos);
+      yPos += 8;
+      doc.setDrawColor(...PRIMARY_COLOR);
+      doc.setLineWidth(1.2);
+      doc.line(margin, yPos, pageWidth - margin, yPos);
       yPos += 12;
 
       // Left Panel - Top Box (Location Details)
       const boxY = yPos;
-      const boxHeight = 35;
+      const boxHeight = 40;
       
       // Draw box border
-      doc.setDrawColor(0, 0, 0);
-      doc.setLineWidth(0.5);
+      doc.setDrawColor(...PRIMARY_COLOR);
+      doc.setLineWidth(0.8);
       doc.rect(leftPanelX, boxY, leftPanelWidth, boxHeight);
 
       // Box content
-      let textY = boxY + 7;
+      let textY = boxY + 9;
       doc.setFontSize(10);
       doc.setFont("helvetica", "bold");
-      doc.text("LOCATION NO.:", leftPanelX + 3, textY);
+      doc.setTextColor(...LABEL_COLOR);
+      doc.text("LOCATION NO.", leftPanelX + 6, textY);
       doc.setFont("helvetica", "normal");
-      doc.text(locationId, leftPanelX + 45, textY);
-      textY += 6;
+      doc.setTextColor(...TEXT_COLOR);
+      doc.text(locationId, leftPanelX + 55, textY);
+      textY += 8;
 
       doc.setFont("helvetica", "bold");
-      doc.text("LATITUDE:", leftPanelX + 3, textY);
+      doc.setTextColor(...LABEL_COLOR);
+      doc.text("LATITUDE", leftPanelX + 6, textY);
       doc.setFont("helvetica", "normal");
-      doc.text(latitude !== null ? latitude.toFixed(4) : "N/A", leftPanelX + 45, textY);
-      textY += 6;
+      doc.setTextColor(...TEXT_COLOR);
+      doc.text(latitude !== null ? latitude.toFixed(4) : "N/A", leftPanelX + 55, textY);
+      textY += 8;
 
       doc.setFont("helvetica", "bold");
-      doc.text("LONGITUDE:", leftPanelX + 3, textY);
+      doc.setTextColor(...LABEL_COLOR);
+      doc.text("LONGITUDE", leftPanelX + 6, textY);
       doc.setFont("helvetica", "normal");
-      doc.text(longitude !== null ? longitude.toFixed(4) : "N/A", leftPanelX + 45, textY);
-      textY += 6;
+      doc.setTextColor(...TEXT_COLOR);
+      doc.text(longitude !== null ? longitude.toFixed(4) : "N/A", leftPanelX + 55, textY);
+      textY += 8;
 
       doc.setFont("helvetica", "bold");
-      doc.text("SENSOR READING:", leftPanelX + 3, textY);
+      doc.setTextColor(...LABEL_COLOR);
+      doc.text("SENSOR READING", leftPanelX + 6, textY);
       doc.setFont("helvetica", "normal");
-      doc.text(sensorReading !== null ? `${sensorReading} cm` : "N/A", leftPanelX + 45, textY);
+      doc.setTextColor(...TEXT_COLOR);
+      doc.text(sensorReading !== null ? `${sensorReading} cm` : "N/A", leftPanelX + 55, textY);
 
       // Left Panel - Bottom Box (Device Code)
-      const bottomBoxY = boxY + boxHeight + 8;
-      const bottomBoxHeight = 20;
+      const bottomBoxY = boxY + boxHeight + 12;
+      const bottomBoxHeight = 24;
       
       // Draw box border
+      doc.setDrawColor(...PRIMARY_COLOR);
+      doc.setLineWidth(0.8);
       doc.rect(leftPanelX, bottomBoxY, leftPanelWidth, bottomBoxHeight);
 
       // Box content
       doc.setFontSize(10);
       doc.setFont("helvetica", "bold");
-      doc.text("DEVICE CODE:", leftPanelX + 3, bottomBoxY + 7);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(9);
-      doc.text(device.id, leftPanelX + 3, bottomBoxY + 14);
+      doc.setTextColor(...LABEL_COLOR);
+      doc.text("DEVICE CODE", leftPanelX + 6, bottomBoxY + 10);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.setTextColor(...PRIMARY_COLOR);
+      doc.text(device.id, leftPanelX + 6, bottomBoxY + 18);
+      doc.setTextColor(...TEXT_COLOR);
 
       // Right Panel - Device Image(s)
-      const imageY = yPos;
-      const imageHeight = 60;
+      const imageHeight = 140;
       const imageUrls = inst?.imageUrls || [];
-      console.log(`Device ${device.id} has ${imageUrls.length} images:`, imageUrls);
       const imagesToInclude = imageUrls.length > 1 ? imageUrls.slice(0, 2) : imageUrls.slice(0, 1);
 
-      if (imagesToInclude.length > 0) {
-        const imageWidth = imagesToInclude.length === 2 
-          ? (rightPanelWidth - 5) / 2 
-          : rightPanelWidth;
-        let xPos = rightPanelX;
+      const framePadding = 18;
+      const imageFrameY = yPos;
+      const isSingle = imagesToInclude.length === 1;
+      const slotWidth = rightPanelWidth - framePadding * 2;
+      const slotHeight = slotWidth * 0.75; // maintain 4:3 style box
+      const slotGap = isSingle ? 0 : 18;
+      const frameHeight = isSingle
+        ? slotHeight + framePadding * 2
+        : slotHeight * 2 + slotGap + framePadding * 2;
+      const availableHeight = isSingle ? slotHeight : slotHeight * 2 + slotGap;
+      const availableWidth = slotWidth;
 
-        for (const imageUrl of imagesToInclude) {
+      doc.setDrawColor(...PRIMARY_COLOR);
+      doc.setLineWidth(0.8);
+      doc.rect(rightPanelX, imageFrameY, rightPanelWidth, frameHeight);
+
+      const imageAreaY = imageFrameY + framePadding;
+
+      if (imagesToInclude.length > 0) {
+        const multiple = !isSingle;
+
+        for (let index = 0; index < imagesToInclude.length; index++) {
+          const imageUrl = imagesToInclude[index];
           try {
-            const imageData = await loadImageAsBase64(imageUrl);
-            if (imageData) {
-              // Calculate aspect ratio to maintain image proportions
-              const img = new Image();
-              img.src = imageData.data;
-              await new Promise((resolve) => {
-                img.onload = resolve;
-                img.onerror = resolve; // Continue even if image fails to load
-              });
-              
-              let finalWidth = imageWidth;
-              let finalHeight = imageHeight;
-              
-              if (img.width && img.height) {
-                const aspectRatio = img.width / img.height;
-                if (aspectRatio > imageWidth / imageHeight) {
-                  finalHeight = imageWidth / aspectRatio;
-                } else {
-                  finalWidth = imageHeight * aspectRatio;
-                }
-              }
-              
-              doc.addImage(imageData.data, imageData.format, xPos, imageY, finalWidth, finalHeight);
-            } else {
-              // Placeholder if image fails
-              doc.setFontSize(8);
-              doc.setFont("helvetica", "italic");
-              doc.text("Image not available", xPos, imageY + imageHeight / 2);
-              doc.setFont("helvetica", "normal");
+            const freshUrl = await getFreshDownloadURL(imageUrl);
+            const imgEl = await loadImageElement(freshUrl);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = imgEl.naturalWidth;
+            canvas.height = imgEl.naturalHeight;
+            const ctx = canvas.getContext('2d');
+
+            if (!ctx) {
+              throw new Error('Could not get canvas context');
             }
+
+            ctx.drawImage(imgEl, 0, 0);
+
+            const format = freshUrl.toLowerCase().includes('.png') ? 'PNG' : 'JPEG';
+            const base64 = canvas.toDataURL(format === 'PNG' ? 'image/png' : 'image/jpeg', 0.95);
+
+            let targetWidth = slotWidth;
+            let targetHeight = slotHeight;
+            const aspectRatio = imgEl.naturalWidth / imgEl.naturalHeight;
+
+            if (aspectRatio >= slotWidth / slotHeight) {
+              targetHeight = slotWidth / aspectRatio;
+            } else {
+              targetWidth = slotHeight * aspectRatio;
+            }
+
+            const slotX = rightPanelX + framePadding;
+            const slotY = multiple
+              ? imageAreaY + index * (slotHeight + slotGap)
+              : imageAreaY;
+
+            const offsetX = slotX + (slotWidth - targetWidth) / 2;
+            const offsetY = slotY + (slotHeight - targetHeight) / 2;
+
+            doc.addImage(base64, format, offsetX, offsetY, targetWidth, targetHeight);
           } catch (error) {
             console.error(`Error loading image for device ${device.id}:`, error);
-            doc.setFontSize(8);
-            doc.setFont("helvetica", "italic");
-            doc.text("Image not available", xPos, imageY + imageHeight / 2);
-            doc.setFont("helvetica", "normal");
-          }
-
-          if (imagesToInclude.length === 2) {
-            xPos += imageWidth + 5;
+            // Try jsPDF's direct URL loading as last resort
+            try {
+              const fallbackUrl = await getFreshDownloadURL(imageUrl);
+              const format = fallbackUrl.toLowerCase().includes('.png') ? 'PNG' : 'JPEG';
+              const slotX = rightPanelX + framePadding;
+              const slotY = multiple ? imageAreaY + index * (slotHeight + slotGap) : imageAreaY;
+              doc.addImage(
+                fallbackUrl,
+                format,
+                slotX,
+                slotY,
+                slotWidth,
+                slotHeight
+              );
+            } catch (pdfError) {
+              // Placeholder if all methods fail
+              doc.setFontSize(8);
+              doc.setFont("helvetica", "italic");
+              doc.text(
+                "Image not available",
+                rightPanelX + rightPanelWidth / 2,
+                slotY + slotHeight / 2,
+                { align: "center" }
+              );
+              doc.setFont("helvetica", "normal");
+            }
           }
         }
       } else {
         // No images available
-        doc.setFontSize(8);
+        doc.setFontSize(9);
         doc.setFont("helvetica", "italic");
-        doc.text("No images available", rightPanelX, imageY + imageHeight / 2);
+        doc.text(
+          "No images available",
+          rightPanelX + rightPanelWidth / 2,
+          imageAreaY + availableHeight / 2,
+          { align: "center" }
+        );
         doc.setFont("helvetica", "normal");
       }
+
+      yPos = imageFrameY + frameHeight + 20;
     }
 
     // Save PDF
