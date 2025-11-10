@@ -7,6 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/hooks/use-toast";
 import { 
   Clock, 
   AlertTriangle, 
@@ -16,9 +17,13 @@ import {
   CircleCheck, 
   Database,
   X,
-  Filter
+  Filter,
+  FileText,
+  Loader2
 } from "lucide-react";
+import jsPDF from "jspdf";
 import type { Device, Installation } from "@/lib/types";
+import { format } from "date-fns";
 
 const statusConfig = {
   pending: { 
@@ -47,12 +52,14 @@ interface Location {
 
 export default function MinistryDevices() {
   const { userProfile } = useAuth();
+  const { toast } = useToast();
   const [devices, setDevices] = useState<Device[]>([]);
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [teams, setTeams] = useState<{ id: string; name: string }[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
   const [teamFilter, setTeamFilter] = useState<string>("all");
   const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'withServerData' | 'noServerData' | 'preVerified' | 'verified'>('all');
+  const [generatingReport, setGeneratingReport] = useState(false);
 
   useEffect(() => {
     const unsubD = onSnapshot(collection(db, "devices"), (snap) => {
@@ -235,6 +242,315 @@ export default function MinistryDevices() {
 
   const teamNames = Array.from(new Set(teams.map((t) => (t as any).name))).sort();
 
+  // Helper function to load image from URL and convert to base64
+  const loadImageAsBase64 = async (url: string): Promise<{ data: string; format: string } | null> => {
+    try {
+      console.log("Loading image from URL:", url);
+      
+      // Method 1: Try direct fetch first (works for most Firebase Storage URLs)
+      try {
+        const response = await fetch(url);
+        if (response.ok) {
+          const blob = await response.blob();
+          const format = blob.type.includes('png') || url.toLowerCase().includes('.png') ? 'PNG' : 'JPEG';
+          
+          return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const result = reader.result as string;
+              console.log("Successfully loaded image via fetch");
+              resolve({ data: result, format });
+            };
+            reader.onerror = () => {
+              console.error("Error reading image blob");
+              resolve(null);
+            };
+            reader.readAsDataURL(blob);
+          });
+        } else {
+          console.warn("Fetch response not OK:", response.status, response.statusText, "- trying Image element");
+        }
+      } catch (fetchError) {
+        console.warn("Fetch failed, trying Image element approach:", fetchError);
+      }
+      
+      // Method 2: Use Image element + Canvas (for CORS-restricted images)
+      return new Promise((resolve) => {
+        let resolved = false;
+        
+        const tryImageLoad = (useCors: boolean) => {
+          const img = new Image();
+          if (useCors) {
+            img.crossOrigin = 'anonymous';
+          }
+          
+          img.onload = () => {
+            if (resolved) return;
+            try {
+              const canvas = document.createElement('canvas');
+              canvas.width = img.width;
+              canvas.height = img.height;
+              const ctx = canvas.getContext('2d');
+              
+              if (!ctx) {
+                console.error("Could not get canvas context");
+                if (!resolved) {
+                  resolved = true;
+                  resolve(null);
+                }
+                return;
+              }
+              
+              ctx.drawImage(img, 0, 0);
+              const base64 = canvas.toDataURL('image/jpeg', 0.95);
+              const format = url.toLowerCase().includes('.png') ? 'PNG' : 'JPEG';
+              console.log(`Successfully loaded image via Image element${useCors ? ' with CORS' : ''}`);
+              if (!resolved) {
+                resolved = true;
+                resolve({ data: base64, format });
+              }
+            } catch (error) {
+              console.error("Error converting image to base64:", error);
+              if (!resolved) {
+                resolved = true;
+                resolve(null);
+              }
+            }
+          };
+          
+          img.onerror = () => {
+            if (!useCors) {
+              // Try with CORS if first attempt failed
+              console.log("Image load failed without CORS, trying with CORS...");
+              tryImageLoad(true);
+            } else {
+              console.error("All image loading methods failed for URL:", url);
+              if (!resolved) {
+                resolved = true;
+                resolve(null);
+              }
+            }
+          };
+          
+          img.src = url;
+        };
+        
+        // Start with non-CORS attempt
+        tryImageLoad(false);
+      });
+    } catch (error) {
+      console.error("Error loading image:", error, url);
+      return null;
+    }
+  };
+
+  // Generate PDF report for a specific Amanah
+  const generateReportForAmanah = async (amanahName: string, amanahRows: typeof rows, locationMapRef: Map<string, Location>) => {
+    const doc = new jsPDF();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 15;
+    const leftPanelWidth = 85; // Width for left panel (text boxes)
+    const rightPanelWidth = pageWidth - leftPanelWidth - margin * 2 - 10; // Width for right panel (images)
+    const leftPanelX = margin;
+    const rightPanelX = leftPanelX + leftPanelWidth + 10;
+
+    // Generate one page per device
+    for (let i = 0; i < amanahRows.length; i++) {
+      const row = amanahRows[i];
+      const { device, inst } = row;
+
+      // Add new page for each device (except first)
+      if (i > 0) {
+        doc.addPage();
+      }
+
+      let yPos = margin;
+
+      // Get location data
+      const locationId = inst?.locationId ? String(inst.locationId).trim() : "N/A";
+      const location = locationMapRef.get(locationId);
+      const latitude = location?.latitude ?? (inst?.latitude ?? null);
+      const longitude = location?.longitude ?? (inst?.longitude ?? null);
+      const sensorReading = inst?.sensorReading ?? null;
+
+      // Header: "LOCATION {locationId} - DEVICE {last4}"
+      const deviceLast4 = device.id.slice(-4);
+      doc.setFontSize(16);
+      doc.setFont("helvetica", "bold");
+      doc.text(`LOCATION ${locationId} - DEVICE ${deviceLast4}`, leftPanelX, yPos);
+      yPos += 12;
+
+      // Left Panel - Top Box (Location Details)
+      const boxY = yPos;
+      const boxHeight = 35;
+      
+      // Draw box border
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.5);
+      doc.rect(leftPanelX, boxY, leftPanelWidth, boxHeight);
+
+      // Box content
+      let textY = boxY + 7;
+      doc.setFontSize(10);
+      doc.setFont("helvetica", "bold");
+      doc.text("LOCATION NO.:", leftPanelX + 3, textY);
+      doc.setFont("helvetica", "normal");
+      doc.text(locationId, leftPanelX + 45, textY);
+      textY += 6;
+
+      doc.setFont("helvetica", "bold");
+      doc.text("LATITUDE:", leftPanelX + 3, textY);
+      doc.setFont("helvetica", "normal");
+      doc.text(latitude !== null ? latitude.toFixed(4) : "N/A", leftPanelX + 45, textY);
+      textY += 6;
+
+      doc.setFont("helvetica", "bold");
+      doc.text("LONGITUDE:", leftPanelX + 3, textY);
+      doc.setFont("helvetica", "normal");
+      doc.text(longitude !== null ? longitude.toFixed(4) : "N/A", leftPanelX + 45, textY);
+      textY += 6;
+
+      doc.setFont("helvetica", "bold");
+      doc.text("SENSOR READING:", leftPanelX + 3, textY);
+      doc.setFont("helvetica", "normal");
+      doc.text(sensorReading !== null ? `${sensorReading} cm` : "N/A", leftPanelX + 45, textY);
+
+      // Left Panel - Bottom Box (Device Code)
+      const bottomBoxY = boxY + boxHeight + 8;
+      const bottomBoxHeight = 20;
+      
+      // Draw box border
+      doc.rect(leftPanelX, bottomBoxY, leftPanelWidth, bottomBoxHeight);
+
+      // Box content
+      doc.setFontSize(10);
+      doc.setFont("helvetica", "bold");
+      doc.text("DEVICE CODE:", leftPanelX + 3, bottomBoxY + 7);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.text(device.id, leftPanelX + 3, bottomBoxY + 14);
+
+      // Right Panel - Device Image(s)
+      const imageY = yPos;
+      const imageHeight = 60;
+      const imageUrls = inst?.imageUrls || [];
+      console.log(`Device ${device.id} has ${imageUrls.length} images:`, imageUrls);
+      const imagesToInclude = imageUrls.length > 1 ? imageUrls.slice(0, 2) : imageUrls.slice(0, 1);
+
+      if (imagesToInclude.length > 0) {
+        const imageWidth = imagesToInclude.length === 2 
+          ? (rightPanelWidth - 5) / 2 
+          : rightPanelWidth;
+        let xPos = rightPanelX;
+
+        for (const imageUrl of imagesToInclude) {
+          try {
+            const imageData = await loadImageAsBase64(imageUrl);
+            if (imageData) {
+              // Calculate aspect ratio to maintain image proportions
+              const img = new Image();
+              img.src = imageData.data;
+              await new Promise((resolve) => {
+                img.onload = resolve;
+                img.onerror = resolve; // Continue even if image fails to load
+              });
+              
+              let finalWidth = imageWidth;
+              let finalHeight = imageHeight;
+              
+              if (img.width && img.height) {
+                const aspectRatio = img.width / img.height;
+                if (aspectRatio > imageWidth / imageHeight) {
+                  finalHeight = imageWidth / aspectRatio;
+                } else {
+                  finalWidth = imageHeight * aspectRatio;
+                }
+              }
+              
+              doc.addImage(imageData.data, imageData.format, xPos, imageY, finalWidth, finalHeight);
+            } else {
+              // Placeholder if image fails
+              doc.setFontSize(8);
+              doc.setFont("helvetica", "italic");
+              doc.text("Image not available", xPos, imageY + imageHeight / 2);
+              doc.setFont("helvetica", "normal");
+            }
+          } catch (error) {
+            console.error(`Error loading image for device ${device.id}:`, error);
+            doc.setFontSize(8);
+            doc.setFont("helvetica", "italic");
+            doc.text("Image not available", xPos, imageY + imageHeight / 2);
+            doc.setFont("helvetica", "normal");
+          }
+
+          if (imagesToInclude.length === 2) {
+            xPos += imageWidth + 5;
+          }
+        }
+      } else {
+        // No images available
+        doc.setFontSize(8);
+        doc.setFont("helvetica", "italic");
+        doc.text("No images available", rightPanelX, imageY + imageHeight / 2);
+        doc.setFont("helvetica", "normal");
+      }
+    }
+
+    // Save PDF
+    const fileName = `${amanahName.replace(/[^a-z0-9]/gi, "_")}_Report.pdf`;
+    doc.save(fileName);
+  };
+
+  // Generate reports for all filtered Amanahs
+  const generateReports = async () => {
+    if (rows.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No Data",
+        description: "No devices match the current filters to generate a report.",
+      });
+      return;
+    }
+
+    setGeneratingReport(true);
+
+    try {
+      // Group rows by Amanah
+      const groupedByAmanah = rows.reduce((acc, row) => {
+        const amanah = row.amanah || "Unknown";
+        if (!acc[amanah]) {
+          acc[amanah] = [];
+        }
+        acc[amanah].push(row);
+        return acc;
+      }, {} as Record<string, typeof rows>);
+
+      // Generate report for each Amanah
+      const amanahNames = Object.keys(groupedByAmanah);
+      
+      for (const amanahName of amanahNames) {
+        await generateReportForAmanah(amanahName, groupedByAmanah[amanahName], locationMap);
+        // Small delay between reports to avoid browser blocking
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      toast({
+        title: "Reports Generated",
+        description: `Successfully generated ${amanahNames.length} report(s).`,
+      });
+    } catch (error: any) {
+      console.error("Error generating reports:", error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: error.message || "Failed to generate reports.",
+      });
+    } finally {
+      setGeneratingReport(false);
+    }
+  };
+
   return (
     <div className="space-y-6 p-4 md:p-6">
       <div>
@@ -383,7 +699,26 @@ export default function MinistryDevices() {
 
       <Card className="border shadow-sm">
         <CardHeader>
-          <CardTitle className="text-xl md:text-2xl font-bold">Devices ({rows.length})</CardTitle>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <CardTitle className="text-xl md:text-2xl font-bold">Devices ({rows.length})</CardTitle>
+            <Button
+              onClick={generateReports}
+              disabled={generatingReport || rows.length === 0}
+              className="flex items-center gap-2 w-full sm:w-auto"
+            >
+              {generatingReport ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Generating...
+                </>
+              ) : (
+                <>
+                  <FileText className="h-4 w-4" />
+                  Generate Report(s)
+                </>
+              )}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {rows.length === 0 ? (
@@ -400,6 +735,7 @@ export default function MinistryDevices() {
                     <TableHead className="min-w-[100px]">Location ID</TableHead>
                     <TableHead className="min-w-[120px]">Sensor Reading</TableHead>
                     <TableHead className="min-w-[140px]">Installation Status</TableHead>
+                    <TableHead className="min-w-[100px]">Installation Time</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -474,6 +810,9 @@ export default function MinistryDevices() {
                               </Badge>
                             )}
                           </div>
+                        </TableCell>
+                        <TableCell className="text-xs md:text-sm">
+                          {inst?.createdAt ? format(inst.createdAt, "HH:mm") : "-"}
                         </TableCell>
                       </TableRow>
                     );
