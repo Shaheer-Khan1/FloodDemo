@@ -64,7 +64,7 @@ export default function MinistryDevices() {
   const [teams, setTeams] = useState<{ id: string; name: string }[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
   const [teamFilter, setTeamFilter] = useState<string>("all");
-  const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'withServerData' | 'noServerData' | 'preVerified' | 'verified'>('all');
+  const [activeFilter, setActiveFilter] = useState<'all' | 'withServerData' | 'noServerData'>('all');
   const [generatingReport, setGeneratingReport] = useState(false);
 
   useEffect(() => {
@@ -563,21 +563,7 @@ export default function MinistryDevices() {
       </div>
 
       {/* Stats - Filter Banners */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='pending' ? 'ring-2 ring-yellow-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='pending' ? 'all' : 'pending')}>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground font-medium">Pending Verification</p>
-                <p className="text-3xl font-bold mt-1">{pendingCount}</p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-yellow-100 dark:bg-yellow-950 flex items-center justify-center">
-                <Clock className="h-6 w-6 text-yellow-600 dark:text-yellow-500" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='withServerData' ? 'ring-2 ring-green-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='withServerData' ? 'all' : 'withServerData')}>
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
@@ -605,38 +591,6 @@ export default function MinistryDevices() {
               </div>
               <div className="h-12 w-12 rounded-xl bg-orange-100 dark:bg-orange-950 flex items-center justify-center">
                 <CloudOff className="h-6 w-6 text-orange-600 dark:text-orange-500" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='preVerified' ? 'ring-2 ring-blue-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='preVerified' ? 'all' : 'preVerified')}>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground font-medium">Pre-verified</p>
-                <p className="text-3xl font-bold mt-1 text-blue-600">
-                  {preVerifiedCount}
-                </p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-blue-100 dark:bg-blue-950 flex items-center justify-center">
-                <CircleCheck className="h-6 w-6 text-blue-600 dark:text-blue-500" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='verified' ? 'ring-2 ring-purple-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='verified' ? 'all' : 'verified')}>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground font-medium">Verified</p>
-                <p className="text-3xl font-bold mt-1 text-purple-600">
-                  {verifiedCount}
-                </p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-purple-100 dark:bg-purple-950 flex items-center justify-center">
-                <Database className="h-6 w-6 text-purple-600 dark:text-purple-500" />
               </div>
             </div>
           </CardContent>
@@ -688,11 +642,7 @@ export default function MinistryDevices() {
                 )}
                 {activeFilter !== 'all' && (
                   <Badge variant="secondary" className="text-xs">
-                    {activeFilter === 'pending' ? 'Pending' : 
-                     activeFilter === 'withServerData' ? 'With Server Data' :
-                     activeFilter === 'noServerData' ? 'No Server Data' :
-                     activeFilter === 'preVerified' ? 'Pre-verified' :
-                     activeFilter === 'verified' ? 'Verified' : ''}
+                    {activeFilter === 'withServerData' ? 'With Server Data' : 'No Server Data'}
                   </Badge>
                 )}
               </div>
@@ -738,7 +688,6 @@ export default function MinistryDevices() {
                     <TableHead className="min-w-[120px]">Amanah</TableHead>
                     <TableHead className="min-w-[100px]">Location ID</TableHead>
                     <TableHead className="min-w-[120px]">Sensor Reading</TableHead>
-                    <TableHead className="min-w-[140px]">Installation Status</TableHead>
                     <TableHead className="min-w-[100px]">Installation Time</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -791,32 +740,8 @@ export default function MinistryDevices() {
                           </div>
                         </TableCell>
                         <TableCell className="text-xs md:text-sm">{inst?.latestDisCm ?? "-"}</TableCell>
-                        <TableCell>
-                          <div className="flex flex-col gap-1">
-                            {inst?.status ? (() => {
-                              const config = statusConfig[inst.status as keyof typeof statusConfig];
-                              if (!config) {
-                                return <Badge variant="outline" className="text-xs capitalize w-fit">{inst.status}</Badge>;
-                              }
-                              const Icon = config.icon;
-                              return (
-                                <Badge variant="outline" className={`${config.color} text-xs w-fit`}>
-                                  <Icon className="h-3 w-3 mr-1" />
-                                  {config.label}
-                                </Badge>
-                              );
-                            })() : (
-                              <span className="text-muted-foreground">-</span>
-                            )}
-                            {inst?.status === "pending" && inst?.systemPreVerified && (
-                              <Badge variant="outline" className="text-[9px] w-fit bg-green-50 text-green-600 border-green-200 dark:bg-green-950/20 dark:text-green-400 dark:border-green-800">
-                                Pre-verified
-                              </Badge>
-                            )}
-                          </div>
-                        </TableCell>
                         <TableCell className="text-xs md:text-sm">
-                          {inst?.createdAt ? format(inst.createdAt, "HH:mm") : "-"}
+                          {inst?.createdAt ? format(inst.createdAt, "MMM d, yyyy HH:mm") : "-"}
                         </TableCell>
                       </TableRow>
                     );
