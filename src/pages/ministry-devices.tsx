@@ -18,6 +18,7 @@ import {
   Database,
   X,
   Filter,
+  FileDown,
   FileText,
   Loader2
 } from "lucide-react";
@@ -232,6 +233,83 @@ export default function MinistryDevices() {
 
     return filtered;
   }, [allRows, activeFilter, teamFilter]);
+
+  const downloadCsv = (rowsData: string[][], filename: string) => {
+    const headers = ["Device ID", "Amanah", "Location ID", "Coordinates"];
+    const csvRows = [headers, ...rowsData];
+    const csvContent = csvRows
+      .map((row) =>
+        row
+          .map((value) => {
+            const safeValue = value ?? "";
+            return `"${safeValue.replace(/"/g, '""')}"`;
+          })
+          .join(",")
+      )
+      .join("\r\n");
+
+    const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleCsvExport = () => {
+    if (rows.length === 0) {
+      toast({
+        title: "No devices found",
+        description: "There are no devices in the current view to export.",
+      });
+      return;
+    }
+
+    const csvRows = rows.map((row) => {
+      const { device, inst, amanah } = row;
+      const rawLocationId = inst?.locationId ? String(inst.locationId).trim() : "";
+
+      let location: Location | null = null;
+      if (rawLocationId) {
+        location = locationMap.get(rawLocationId) ?? null;
+        if (!location && locations.length > 0) {
+          location =
+            locations.find(
+              (loc) =>
+                String(loc.id).trim() === rawLocationId ||
+                String(loc.locationId).trim() === rawLocationId
+            ) ?? null;
+        }
+      }
+
+      // Only use coordinates from Firestore locations; do not fall back to installer-provided ones
+      const latitude = location?.latitude ?? null;
+      const longitude = location?.longitude ?? null;
+      const coordinates =
+        latitude != null && longitude != null
+          ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
+          : "-";
+
+      return [
+        device.id,
+        amanah ?? "-",
+        rawLocationId || "-",
+        coordinates,
+      ];
+    });
+
+    downloadCsv(csvRows, "ministry-devices.csv");
+
+    toast({
+      title: "CSV downloaded",
+      description: `Exported ${rows.length} device${
+        rows.length === 1 ? "" : "s"
+      }.`,
+    });
+  };
 
   if (!userProfile?.isAdmin && userProfile?.role !== "ministry") {
     return (
@@ -655,23 +733,33 @@ export default function MinistryDevices() {
         <CardHeader>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <CardTitle className="text-xl md:text-2xl font-bold">Devices ({rows.length})</CardTitle>
-            <Button
-              onClick={generateReports}
-              disabled={generatingReport || rows.length === 0}
-              className="flex items-center gap-2 w-full sm:w-auto"
-            >
-              {generatingReport ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Generating...
-                </>
-              ) : (
-                <>
-                  <FileText className="h-4 w-4" />
-                  Generate Report(s)
-                </>
-              )}
-            </Button>
+            <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto sm:justify-end">
+              <Button
+                variant="outline"
+                className="flex items-center gap-2 w-full sm:w-auto"
+                onClick={handleCsvExport}
+              >
+                <FileDown className="h-4 w-4" />
+                Download CSV
+              </Button>
+              <Button
+                onClick={generateReports}
+                disabled={generatingReport || rows.length === 0}
+                className="flex items-center gap-2 w-full sm:w-auto"
+              >
+                {generatingReport ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <FileText className="h-4 w-4" />
+                    Generate Report(s)
+                  </>
+                )}
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>

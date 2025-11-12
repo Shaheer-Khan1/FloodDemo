@@ -299,16 +299,23 @@ export default function MySubmissions() {
                           </div>
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline" className={config.color}>
-                            <Icon className="h-3 w-3 mr-1" />
-                            {config.label}
-                          </Badge>
-                          {submission.status === "pending" && submission.systemPreVerified && (
-                            <div className="text-[10px] text-green-600 mt-1 font-medium">Pre-verified by system</div>
-                          )}
-                          {submission.status === "pending" && !submission.systemPreVerified && submission.latestDisCm != null && (
-                            <div className="text-[10px] text-yellow-600 mt-1 font-medium">Needs manual review</div>
-                          )}
+                          <div className="flex flex-col gap-1">
+                            <Badge variant="outline" className={config.color}>
+                              <Icon className="h-3 w-3 mr-1" />
+                              {config.label}
+                            </Badge>
+                            {submission.tags?.includes("edited by verifier") && (
+                              <Badge variant="secondary" className="text-[10px] w-fit mt-1">
+                                Edited by Verifier
+                              </Badge>
+                            )}
+                            {submission.status === "pending" && submission.systemPreVerified && (
+                              <div className="text-[10px] text-green-600 mt-1 font-medium">Pre-verified by system</div>
+                            )}
+                            {submission.status === "pending" && !submission.systemPreVerified && submission.latestDisCm != null && (
+                              <div className="text-[10px] text-yellow-600 mt-1 font-medium">Needs manual review</div>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell>
                           {submission.createdAt 
@@ -344,7 +351,14 @@ export default function MySubmissions() {
             <div className="space-y-6">
               {/* Status */}
               <div>
-                <p className="text-sm text-muted-foreground mb-2">Status</p>
+                <div className="flex items-center gap-2 mb-2">
+                  <p className="text-sm text-muted-foreground">Status</p>
+                  {selectedSubmission.tags?.includes("edited by verifier") && (
+                    <Badge variant="secondary" className="text-xs">
+                      Edited by Verifier
+                    </Badge>
+                  )}
+                </div>
                 <Badge 
                   variant="outline" 
                   className={`${statusConfig[selectedSubmission.status].color} text-base py-2 px-4`}

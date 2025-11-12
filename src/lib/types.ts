@@ -87,6 +87,7 @@ export interface Installation {
   updatedAt?: Date;
   deviceInputMethod?: "qr" | "manual";
   serverRefreshedAt?: Date; // last time we attempted a server fetch
+  tags?: string[]; // Tags for tracking special states (e.g., "edited by verifier")
 }
 
 export interface ServerData {

@@ -35,6 +35,8 @@ import {
   Database,
   CloudOff,
   CircleCheck,
+  Edit,
+  Save,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -62,6 +64,13 @@ export default function Verification() {
   // Filter states
   const [installerNameFilter, setInstallerNameFilter] = useState<string>("");
   const [teamIdFilter, setTeamIdFilter] = useState<string>("");
+  
+  // Edit mode states
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editedSensorReading, setEditedSensorReading] = useState<string>("");
+  const [editedLocationId, setEditedLocationId] = useState<string>("");
+  const [editedLatitude, setEditedLatitude] = useState<string>("");
+  const [editedLongitude, setEditedLongitude] = useState<string>("");
 
   // Real-time installations listener (pending verification)
   useEffect(() => {
@@ -363,6 +372,12 @@ export default function Verification() {
     setSelectedItem(item);
     setDialogOpen(true);
     setRejectReason("");
+    setIsEditMode(false);
+    // Initialize edit values with current values
+    setEditedSensorReading(item.installation.sensorReading.toString());
+    setEditedLocationId(item.installation.locationId || "");
+    setEditedLatitude(item.installation.latitude?.toString() || "");
+    setEditedLongitude(item.installation.longitude?.toString() || "");
   };
 
   const handleApprove = async () => {
@@ -395,6 +410,97 @@ export default function Verification() {
       toast({
         variant: "destructive",
         title: "Approval Failed",
+        description: error instanceof Error ? error.message : "An error occurred.",
+      });
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleEdit = async () => {
+    if (!selectedItem || !userProfile) return;
+
+    // Validate inputs
+    const sensorReading = parseFloat(editedSensorReading);
+    if (isNaN(sensorReading) || sensorReading <= 0) {
+      toast({
+        variant: "destructive",
+        title: "Invalid Sensor Reading",
+        description: "Please enter a valid positive number for sensor reading.",
+      });
+      return;
+    }
+
+    if (!editedLocationId.trim()) {
+      toast({
+        variant: "destructive",
+        title: "Location ID Required",
+        description: "Please enter a location ID.",
+      });
+      return;
+    }
+
+    const latitude = editedLatitude ? parseFloat(editedLatitude) : null;
+    const longitude = editedLongitude ? parseFloat(editedLongitude) : null;
+
+    if ((latitude !== null && (isNaN(latitude) || latitude < -90 || latitude > 90)) ||
+        (longitude !== null && (isNaN(longitude) || longitude < -180 || longitude > 180))) {
+      toast({
+        variant: "destructive",
+        title: "Invalid Coordinates",
+        description: "Please enter valid latitude (-90 to 90) and longitude (-180 to 180).",
+      });
+      return;
+    }
+
+    setProcessing(true);
+    try {
+      const originalInstallation = selectedItem.installation;
+      const hasChanges = 
+        sensorReading !== originalInstallation.sensorReading ||
+        editedLocationId.trim() !== originalInstallation.locationId ||
+        latitude !== originalInstallation.latitude ||
+        longitude !== originalInstallation.longitude;
+
+      if (!hasChanges) {
+        toast({
+          title: "No Changes",
+          description: "No changes were made to the installation.",
+        });
+        setIsEditMode(false);
+        setProcessing(false);
+        return;
+      }
+
+      // Get existing tags or initialize empty array
+      const existingTags = originalInstallation.tags || [];
+      const tagsToUpdate = [...existingTags];
+      
+      // Add "edited by verifier" tag if not already present
+      if (!tagsToUpdate.includes("edited by verifier")) {
+        tagsToUpdate.push("edited by verifier");
+      }
+
+      // Update installation with edited values and tag
+      await updateDoc(doc(db, "installations", selectedItem.installation.id), {
+        sensorReading: sensorReading,
+        locationId: editedLocationId.trim(),
+        latitude: latitude !== null ? latitude : null,
+        longitude: longitude !== null ? longitude : null,
+        tags: tagsToUpdate,
+        updatedAt: serverTimestamp(),
+      });
+
+      toast({
+        title: "Installation Updated",
+        description: "The installation has been successfully updated.",
+      });
+
+      setIsEditMode(false);
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Update Failed",
         description: error instanceof Error ? error.message : "An error occurred.",
       });
     } finally {
@@ -438,6 +544,7 @@ export default function Verification() {
       setDialogOpen(false);
       setSelectedItem(null);
       setRejectReason("");
+      setIsEditMode(false);
     } catch (error) {
       toast({
         variant: "destructive",
@@ -1066,10 +1173,35 @@ export default function Verification() {
       )}
 
       {/* Verification Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog open={dialogOpen} onOpenChange={(open) => {
+        setDialogOpen(open);
+        if (!open) {
+          setIsEditMode(false);
+          setSelectedItem(null);
+          setRejectReason("");
+        }
+      }}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Verify Installation</DialogTitle>
+            <div className="flex items-center justify-between">
+              <DialogTitle>Verify Installation</DialogTitle>
+              {(userProfile?.isAdmin || userProfile?.role === "verifier") && !isEditMode && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsEditMode(true)}
+                  disabled={processing}
+                >
+                  <Edit className="h-4 w-4 mr-2" />
+                  Edit
+                </Button>
+              )}
+            </div>
+            {selectedItem?.installation.tags?.includes("edited by verifier") && (
+              <Badge variant="secondary" className="mt-2 w-fit">
+                Edited by Verifier
+              </Badge>
+            )}
           </DialogHeader>
           {selectedItem && (
             <div className="space-y-6">
@@ -1111,18 +1243,75 @@ export default function Verification() {
                     </div>
                     <div>
                       <p className="text-sm text-muted-foreground">Location ID</p>
-                      <p className="text-base font-medium flex items-center gap-1">
-                        <MapPin className="h-4 w-4 text-muted-foreground" />
-                        {selectedItem.installation.locationId}
-                      </p>
+                      {isEditMode ? (
+                        <Input
+                          value={editedLocationId}
+                          onChange={(e) => setEditedLocationId(e.target.value)}
+                          className="mt-1"
+                          placeholder="Enter location ID"
+                        />
+                      ) : (
+                        <p className="text-base font-medium flex items-center gap-1">
+                          <MapPin className="h-4 w-4 text-muted-foreground" />
+                          {selectedItem.installation.locationId}
+                        </p>
+                      )}
                     </div>
                     <div>
                       <p className="text-sm text-muted-foreground">Sensor Reading</p>
-                      <p className="text-2xl font-bold flex items-center gap-2">
-                        <Gauge className="h-5 w-5 text-blue-600" />
-                        {selectedItem.installation.sensorReading}
-                      </p>
+                      {isEditMode ? (
+                        <Input
+                          type="number"
+                          step="0.01"
+                          value={editedSensorReading}
+                          onChange={(e) => setEditedSensorReading(e.target.value)}
+                          className="mt-1 text-2xl font-bold"
+                          placeholder="Enter sensor reading"
+                        />
+                      ) : (
+                        <p className="text-2xl font-bold flex items-center gap-2">
+                          <Gauge className="h-5 w-5 text-blue-600" />
+                          {selectedItem.installation.sensorReading}
+                        </p>
+                      )}
                     </div>
+                    {(selectedItem.installation.latitude !== undefined || selectedItem.installation.longitude !== undefined || isEditMode) && (
+                      <div>
+                        <p className="text-sm text-muted-foreground">Coordinates</p>
+                        {isEditMode ? (
+                          <div className="grid grid-cols-2 gap-2 mt-1">
+                            <div>
+                              <Label htmlFor="latitude" className="text-xs">Latitude</Label>
+                              <Input
+                                id="latitude"
+                                type="number"
+                                step="0.000001"
+                                value={editedLatitude}
+                                onChange={(e) => setEditedLatitude(e.target.value)}
+                                placeholder="Latitude"
+                              />
+                            </div>
+                            <div>
+                              <Label htmlFor="longitude" className="text-xs">Longitude</Label>
+                              <Input
+                                id="longitude"
+                                type="number"
+                                step="0.000001"
+                                value={editedLongitude}
+                                onChange={(e) => setEditedLongitude(e.target.value)}
+                                placeholder="Longitude"
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-base font-medium">
+                            {selectedItem.installation.latitude !== undefined && selectedItem.installation.longitude !== undefined
+                              ? `${selectedItem.installation.latitude.toFixed(6)}, ${selectedItem.installation.longitude.toFixed(6)}`
+                              : "-"}
+                          </p>
+                        )}
+                      </div>
+                    )}
                     <div>
                       <p className="text-sm text-muted-foreground">Submitted</p>
                       <p className="text-base font-medium flex items-center gap-1">
@@ -1264,39 +1453,74 @@ export default function Verification() {
             </div>
           )}
           <DialogFooter className="gap-2">
-            <Button
-              variant="outline"
-              onClick={() => setDialogOpen(false)}
-              disabled={processing}
-            >
-              {userProfile?.role === "manager" ? "Close" : "Cancel"}
-            </Button>
-            {(userProfile?.isAdmin || userProfile?.role === "verifier") && (
+            {isEditMode ? (
               <>
                 <Button
-                  variant="destructive"
-                  onClick={handleReject}
+                  variant="outline"
+                  onClick={() => {
+                    setIsEditMode(false);
+                    // Reset to original values
+                    if (selectedItem) {
+                      setEditedSensorReading(selectedItem.installation.sensorReading.toString());
+                      setEditedLocationId(selectedItem.installation.locationId || "");
+                      setEditedLatitude(selectedItem.installation.latitude?.toString() || "");
+                      setEditedLongitude(selectedItem.installation.longitude?.toString() || "");
+                    }
+                  }}
                   disabled={processing}
                 >
-                  {processing ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <XCircle className="h-4 w-4 mr-2" />
-                  )}
-                  Flag Installation
+                  Cancel
                 </Button>
                 <Button
-                  onClick={handleApprove}
+                  onClick={handleEdit}
                   disabled={processing}
-                  className="bg-green-600 hover:bg-green-700"
+                  className="bg-blue-600 hover:bg-blue-700"
                 >
                   {processing ? (
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   ) : (
-                    <CheckCircle2 className="h-4 w-4 mr-2" />
+                    <Save className="h-4 w-4 mr-2" />
                   )}
-                  Approve Installation
+                  Save Changes
                 </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => setDialogOpen(false)}
+                  disabled={processing}
+                >
+                  {userProfile?.role === "manager" ? "Close" : "Cancel"}
+                </Button>
+                {(userProfile?.isAdmin || userProfile?.role === "verifier") && (
+                  <>
+                    <Button
+                      variant="destructive"
+                      onClick={handleReject}
+                      disabled={processing}
+                    >
+                      {processing ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <XCircle className="h-4 w-4 mr-2" />
+                      )}
+                      Flag Installation
+                    </Button>
+                    <Button
+                      onClick={handleApprove}
+                      disabled={processing}
+                      className="bg-green-600 hover:bg-green-700"
+                    >
+                      {processing ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="h-4 w-4 mr-2" />
+                      )}
+                      Approve Installation
+                    </Button>
+                  </>
+                )}
               </>
             )}
           </DialogFooter>
