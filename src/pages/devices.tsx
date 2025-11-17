@@ -491,8 +491,12 @@ export default function Devices() {
                           </div>
                         </TableCell>
                         <TableCell className="px-2 py-2 text-muted-foreground">
-                          <div className="truncate max-w-[100px]" title={device.timestamp || "-"}>
-                            {device.timestamp ? device.timestamp.split(' ')[0] : "-"}
+                          <div className="truncate max-w-[100px]" title={device.timestamp ? (typeof device.timestamp === 'string' ? device.timestamp : format(device.timestamp instanceof Date ? device.timestamp : new Date(device.timestamp), "MMM d, yyyy")) : "-"}>
+                            {device.timestamp 
+                              ? (typeof device.timestamp === 'string' 
+                                  ? device.timestamp.split(' ')[0] 
+                                  : format(device.timestamp instanceof Date ? device.timestamp : new Date(device.timestamp), "MMM d, yyyy"))
+                              : "-"}
                           </div>
                         </TableCell>
                         <TableCell className="px-2 py-2">
