@@ -7,6 +7,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { 
   Clock, 
@@ -66,6 +68,7 @@ export default function MinistryDevices() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [teamFilter, setTeamFilter] = useState<string>("all");
   const [activeFilter, setActiveFilter] = useState<'all' | 'withServerData' | 'noServerData'>('all');
+  const [dateFilter, setDateFilter] = useState<string>("");
   const [generatingReport, setGeneratingReport] = useState(false);
 
   useEffect(() => {
@@ -231,6 +234,21 @@ export default function MinistryDevices() {
       filtered = filtered.filter((row) => row.amanah === teamFilter);
     }
 
+    // Apply date filter
+    if (dateFilter) {
+      const filterDate = new Date(dateFilter);
+      filterDate.setHours(0, 0, 0, 0);
+      const nextDay = new Date(filterDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+      
+      filtered = filtered.filter(row => {
+        if (!row.inst.createdAt) return false;
+        const installDate = new Date(row.inst.createdAt);
+        installDate.setHours(0, 0, 0, 0);
+        return installDate >= filterDate && installDate < nextDay;
+      });
+    }
+
     // Sort by installation time, latest on top
     filtered.sort((a, b) => {
       const aTime = a.inst.createdAt?.getTime() || 0;
@@ -239,7 +257,7 @@ export default function MinistryDevices() {
     });
 
     return filtered;
-  }, [allRows, activeFilter, teamFilter]);
+  }, [allRows, activeFilter, teamFilter, dateFilter]);
 
   const downloadCsv = (rowsData: string[][], filename: string) => {
     const headers = ["Device ID", "Amanah", "Location ID", "Coordinates", "Sensor Reading"];
@@ -698,19 +716,30 @@ export default function MinistryDevices() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Team Filter */}
             <div className="space-y-2">
-              <label className="text-sm text-muted-foreground">Filter by Amanah:</label>
+              <Label htmlFor="team-filter">Filter by Amanah</Label>
               <Select value={teamFilter} onValueChange={setTeamFilter}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="All Teams" /></SelectTrigger>
+                <SelectTrigger id="team-filter" className="w-full"><SelectValue placeholder="All Teams" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Teams</SelectItem>
                   {teamNames.map((n) => (<SelectItem key={n} value={n}>{n}</SelectItem>))}
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Date Filter */}
+            <div className="space-y-2">
+              <Label htmlFor="date-filter">Installation Date</Label>
+              <Input
+                id="date-filter"
+                type="date"
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+              />
+            </div>
           </div>
 
           {/* Clear Filters Button */}
-          {(teamFilter !== "all" || activeFilter !== 'all') && (
+          {(teamFilter !== "all" || activeFilter !== 'all' || dateFilter) && (
             <div className="mt-4 flex items-center gap-2 flex-wrap">
               <Button
                 variant="outline"
@@ -718,6 +747,7 @@ export default function MinistryDevices() {
                 onClick={() => {
                   setTeamFilter("all");
                   setActiveFilter('all');
+                  setDateFilter("");
                 }}
               >
                 <X className="h-4 w-4 mr-2" />
@@ -727,6 +757,11 @@ export default function MinistryDevices() {
                 {teamFilter !== "all" && (
                   <Badge variant="secondary" className="text-xs">
                     Team: {teamFilter}
+                  </Badge>
+                )}
+                {dateFilter && (
+                  <Badge variant="secondary" className="text-xs">
+                    Date: {format(new Date(dateFilter), "MMM d, yyyy")}
                   </Badge>
                 )}
                 {activeFilter !== 'all' && (

@@ -37,6 +37,7 @@ import {
   CircleCheck,
   Edit,
   Save,
+  FileDown,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -52,6 +53,7 @@ export default function Verification() {
   const [allInstallations, setAllInstallations] = useState<Installation[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
+  const [locations, setLocations] = useState<{ id: string; locationId: string; latitude: number; longitude: number }[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState<VerificationItem | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -64,6 +66,7 @@ export default function Verification() {
   // Filter states
   const [installerNameFilter, setInstallerNameFilter] = useState<string>("");
   const [teamIdFilter, setTeamIdFilter] = useState<string>("");
+  const [dateFilter, setDateFilter] = useState<string>("");
   
   // Edit mode states
   const [isEditMode, setIsEditMode] = useState(false);
@@ -155,6 +158,40 @@ export default function Verification() {
       },
       (error) => {
         console.error("Failed to load devices:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [userProfile]);
+
+  // Real-time locations listener
+  useEffect(() => {
+    if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
+
+    const unsubscribe = onSnapshot(
+      collection(db, "locations"),
+      (snapshot) => {
+        const locationsData = snapshot.docs.map((d) => {
+          const docData = d.data();
+          const lat = typeof docData.latitude === 'number' 
+            ? docData.latitude 
+            : (docData.latitude ? parseFloat(String(docData.latitude)) : null);
+          const lon = typeof docData.longitude === 'number'
+            ? docData.longitude
+            : (docData.longitude ? parseFloat(String(docData.longitude)) : null);
+          
+          return {
+            id: d.id,
+            locationId: docData.locationId || d.id,
+            latitude: lat,
+            longitude: lon,
+          };
+        }).filter(loc => loc.latitude != null && loc.longitude != null && !isNaN(loc.latitude) && !isNaN(loc.longitude));
+        
+        setLocations(locationsData);
+      },
+      (error) => {
+        console.error("Failed to load locations:", error);
       }
     );
 
@@ -256,6 +293,34 @@ export default function Verification() {
     return team?.name || null;
   };
 
+  // Create a map of locationId -> coordinates
+  const locationMap = useMemo(() => {
+    const map = new Map<string, { id: string; locationId: string; latitude: number; longitude: number }>();
+    locations.forEach((loc) => {
+      if (loc.id) {
+        const idKey = String(loc.id).trim();
+        map.set(idKey, loc);
+        if (/^\d+$/.test(idKey)) {
+          const numKey = String(Number(idKey)).trim();
+          if (numKey !== idKey) {
+            map.set(numKey, loc);
+          }
+        }
+      }
+      if (loc.locationId && String(loc.locationId).trim() !== String(loc.id).trim()) {
+        const locIdKey = String(loc.locationId).trim();
+        map.set(locIdKey, loc);
+        if (/^\d+$/.test(locIdKey)) {
+          const numKey = String(Number(locIdKey)).trim();
+          if (numKey !== locIdKey) {
+            map.set(numKey, loc);
+          }
+        }
+      }
+    });
+    return map;
+  }, [locations]);
+
   // Helper function to safely format dates
   const formatDateSafe = (date: Date | null | undefined, formatStr: string): string | null => {
     if (!date) return null;
@@ -314,6 +379,21 @@ export default function Verification() {
       filtered = filtered.filter(i => i.installation.teamId === teamIdFilter);
     }
 
+    // Apply date filter
+    if (dateFilter) {
+      const filterDate = new Date(dateFilter);
+      filterDate.setHours(0, 0, 0, 0);
+      const nextDay = new Date(filterDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+      
+      filtered = filtered.filter(i => {
+        if (!i.installation.createdAt) return false;
+        const installDate = new Date(i.installation.createdAt);
+        installDate.setHours(0, 0, 0, 0);
+        return installDate >= filterDate && installDate < nextDay;
+      });
+    }
+
     // Sort by installation time, latest on top
     filtered.sort((a, b) => {
       const aTime = a.installation.createdAt?.getTime() || 0;
@@ -322,7 +402,7 @@ export default function Verification() {
     });
 
     return filtered;
-  }, [verificationItems, activeFilter, installerNameFilter, teamIdFilter, userProfile?.isAdmin]);
+  }, [verificationItems, activeFilter, installerNameFilter, teamIdFilter, dateFilter, userProfile?.isAdmin]);
 
   // Apply filters to verified installations
   const displayedVerifiedItems = useMemo(() => {
@@ -370,6 +450,21 @@ export default function Verification() {
       filtered = filtered.filter(i => !i.serverData || i.installation.latestDisCm == null);
     }
 
+    // Apply date filter
+    if (dateFilter) {
+      const filterDate = new Date(dateFilter);
+      filterDate.setHours(0, 0, 0, 0);
+      const nextDay = new Date(filterDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+      
+      filtered = filtered.filter(i => {
+        if (!i.installation.createdAt) return false;
+        const installDate = new Date(i.installation.createdAt);
+        installDate.setHours(0, 0, 0, 0);
+        return installDate >= filterDate && installDate < nextDay;
+      });
+    }
+
     // Sort by installation time, latest on top
     filtered.sort((a, b) => {
       const aTime = a.installation.createdAt?.getTime() || 0;
@@ -378,7 +473,7 @@ export default function Verification() {
     });
 
     return filtered;
-  }, [verifiedInstallations, devices, installerNameFilter, teamIdFilter, activeFilter, userProfile?.isAdmin]);
+  }, [verifiedInstallations, devices, installerNameFilter, teamIdFilter, activeFilter, dateFilter, userProfile?.isAdmin]);
 
   // No auto-approval. We only mark system pre-verified for variance < 5% and keep status pending.
 
@@ -568,6 +663,103 @@ export default function Verification() {
     } finally {
       setProcessing(false);
     }
+  };
+
+  const downloadCsv = (rowsData: string[][], filename: string) => {
+    const headers = ["Device ID", "Amanah", "Location ID", "Coordinates", "Sensor Reading"];
+    const csvRows = [headers, ...rowsData];
+    const csvContent = csvRows
+      .map((row) =>
+        row
+          .map((value) => {
+            const safeValue = value ?? "";
+            return `"${safeValue.replace(/"/g, '""')}"`;
+          })
+          .join(",")
+      )
+      .join("\r\n");
+
+    const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleCsvExport = () => {
+    // Get items to export based on active filter
+    // displayedItems and displayedVerifiedItems already have all filters applied
+    let itemsToExport: VerificationItem[] = [];
+    
+    if (activeFilter === 'verified') {
+      // Only verified items
+      itemsToExport = displayedVerifiedItems;
+    } else if (activeFilter === 'all') {
+      // Both pending and verified items
+      itemsToExport = [...displayedItems, ...displayedVerifiedItems];
+    } else {
+      // Only pending items (with filters applied)
+      itemsToExport = displayedItems;
+    }
+
+    if (itemsToExport.length === 0) {
+      toast({
+        title: "No installations found",
+        description: "There are no installations in the current view to export.",
+      });
+      return;
+    }
+
+    const csvRows = itemsToExport.map((item) => {
+      const { installation } = item;
+      const rawLocationId = installation?.locationId ? String(installation.locationId).trim() : "";
+
+      let location: { id: string; locationId: string; latitude: number; longitude: number } | null = null;
+      if (rawLocationId) {
+        location = locationMap.get(rawLocationId) ?? null;
+        if (!location && locations.length > 0) {
+          location =
+            locations.find(
+              (loc) =>
+                String(loc.id).trim() === rawLocationId ||
+                String(loc.locationId).trim() === rawLocationId
+            ) ?? null;
+        }
+      }
+
+      // Only use coordinates from Firestore locations; do not fall back to installer-provided ones
+      const latitude = location?.latitude ?? null;
+      const longitude = location?.longitude ?? null;
+      const coordinates =
+        latitude != null && longitude != null
+          ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
+          : "-";
+
+      // Get manually entered sensor reading from installation
+      const sensorReadingValue = installation?.sensorReading != null ? String(installation.sensorReading) : "-";
+
+      // Get team name (Amanah)
+      const amanah = installation.teamId ? getTeamName(installation.teamId) || "-" : "-";
+
+      return [
+        installation.deviceId,
+        amanah,
+        rawLocationId || "-",
+        coordinates,
+        sensorReadingValue,
+      ];
+    });
+
+    downloadCsv(csvRows, "verification-installations.csv");
+
+    toast({
+      title: "CSV downloaded",
+      description: `Exported ${itemsToExport.length} installation${itemsToExport.length === 1 ? "" : "s"}.`,
+    });
   };
 
   const fetchLatestServerReadings = async (installation: Installation) => {
@@ -812,7 +1004,7 @@ export default function Verification() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {/* Installer Name Filter */}
             <div className="space-y-2">
               <Label htmlFor="installer-filter">Installer Name</Label>
@@ -843,10 +1035,21 @@ export default function Verification() {
                 </Select>
               </div>
             )}
+
+            {/* Date Filter */}
+            <div className="space-y-2">
+              <Label htmlFor="date-filter">Installation Date</Label>
+              <Input
+                id="date-filter"
+                type="date"
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+              />
+            </div>
           </div>
 
           {/* Clear Filters Button */}
-          {(installerNameFilter || teamIdFilter || activeFilter !== 'all') && (
+          {(installerNameFilter || teamIdFilter || dateFilter || activeFilter !== 'all') && (
             <div className="mt-4 flex items-center gap-2 flex-wrap">
               <Button
                 variant="outline"
@@ -854,6 +1057,7 @@ export default function Verification() {
                 onClick={() => {
                   setInstallerNameFilter("");
                   setTeamIdFilter("");
+                  setDateFilter("");
                   setActiveFilter('all');
                 }}
               >
@@ -869,6 +1073,11 @@ export default function Verification() {
                 {teamIdFilter && (
                   <Badge variant="secondary" className="text-xs">
                     Team: {teams.find(t => t.id === teamIdFilter)?.name || teamIdFilter}
+                  </Badge>
+                )}
+                {dateFilter && (
+                  <Badge variant="secondary" className="text-xs">
+                    Date: {format(new Date(dateFilter), "MMM d, yyyy")}
                   </Badge>
                 )}
                 {activeFilter !== 'all' && (
@@ -892,7 +1101,18 @@ export default function Verification() {
       {activeFilter !== 'verified' && (
         <Card className="border shadow-sm">
           <CardHeader>
-            <CardTitle className="text-2xl font-bold">Pending Installations ({displayedItems.length})</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-2xl font-bold">Pending Installations ({displayedItems.length})</CardTitle>
+              <Button
+                variant="outline"
+                className="flex items-center gap-2"
+                onClick={handleCsvExport}
+                disabled={displayedItems.length === 0}
+              >
+                <FileDown className="h-4 w-4" />
+                Download CSV
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             {displayedItems.length === 0 ? (
@@ -1040,9 +1260,20 @@ export default function Verification() {
       {(activeFilter === 'verified' || (activeFilter === 'all' && verifiedInstallations.length > 0)) && (
         <Card className="border shadow-sm">
           <CardHeader>
-            <CardTitle className="text-2xl font-bold">
-              Verified Installations ({displayedVerifiedItems.length})
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-2xl font-bold">
+                Verified Installations ({displayedVerifiedItems.length})
+              </CardTitle>
+              <Button
+                variant="outline"
+                className="flex items-center gap-2"
+                onClick={handleCsvExport}
+                disabled={displayedVerifiedItems.length === 0 && displayedItems.length === 0}
+              >
+                <FileDown className="h-4 w-4" />
+                Download CSV
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             {displayedVerifiedItems.length === 0 ? (
