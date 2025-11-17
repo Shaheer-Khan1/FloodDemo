@@ -18,6 +18,8 @@ import {
 } from "@/components/ui/table";
 import { Search, Loader2, AlertCircle, Filter, X, FileUp, Package, CheckCircle, Clock, AlertTriangle } from "lucide-react";
 import { useLocation } from "wouter";
+import { Label } from "@/components/ui/label";
+import { format } from "date-fns";
 import type { Device, Installation, ServerData } from "@/lib/types";
 
 interface DeviceWithDetails extends Device {
@@ -43,6 +45,7 @@ export default function Devices() {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [productFilter, setProductFilter] = useState<string>("all");
+  const [dateFilter, setDateFilter] = useState<string>("");
 
   // Real-time devices listener (admin only)
   useEffect(() => {
@@ -155,17 +158,35 @@ export default function Devices() {
       const matchesStatus = statusFilter === "all" || device.status === statusFilter;
       const matchesProduct = productFilter === "all" || device.productId === productFilter;
 
-      return matchesSearch && matchesStatus && matchesProduct;
+      // Apply date filter (filter by installation date)
+      let matchesDate = true;
+      if (dateFilter) {
+        if (!device.installation?.createdAt) {
+          matchesDate = false; // No installation, exclude if date filter is active
+        } else {
+          const filterDate = new Date(dateFilter);
+          filterDate.setHours(0, 0, 0, 0);
+          const nextDay = new Date(filterDate);
+          nextDay.setDate(nextDay.getDate() + 1);
+          
+          const installDate = new Date(device.installation.createdAt);
+          installDate.setHours(0, 0, 0, 0);
+          matchesDate = installDate >= filterDate && installDate < nextDay;
+        }
+      }
+
+      return matchesSearch && matchesStatus && matchesProduct && matchesDate;
     });
-  }, [devicesWithDetails, searchTerm, statusFilter, productFilter]);
+  }, [devicesWithDetails, searchTerm, statusFilter, productFilter, dateFilter]);
 
   const clearFilters = () => {
     setSearchTerm("");
     setStatusFilter("all");
     setProductFilter("all");
+    setDateFilter("");
   };
 
-  const hasActiveFilters = searchTerm !== "" || statusFilter !== "all" || productFilter !== "all";
+  const hasActiveFilters = searchTerm !== "" || statusFilter !== "all" || productFilter !== "all" || dateFilter !== "";
 
   // Stats
   const stats = useMemo(() => {
@@ -343,6 +364,20 @@ export default function Devices() {
                 ))}
               </SelectContent>
             </Select>
+
+            {/* Date Filter */}
+            <div className="flex items-center gap-2">
+              <Label htmlFor="date-filter" className="text-sm font-medium text-muted-foreground whitespace-nowrap">
+                Installation Date:
+              </Label>
+              <Input
+                id="date-filter"
+                type="date"
+                className="w-[180px]"
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+              />
+            </div>
 
             {/* Clear Filters Button */}
             {hasActiveFilters && (
