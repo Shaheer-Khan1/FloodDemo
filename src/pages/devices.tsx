@@ -169,14 +169,23 @@ export default function Devices() {
 
   // Stats
   const stats = useMemo(() => {
+    // Count installations by status
+    const totalInstallations = installations.length;
+    const pendingSubmissions = installations.filter(inst => inst.status === "pending").length;
+    const verifiedSubmissions = installations.filter(inst => inst.status === "verified").length;
+    const flaggedSubmissions = installations.filter(inst => inst.status === "flagged").length;
+    // Remaining Devices = total devices - total installation submissions
+    const remainingDevices = devices.length - totalInstallations;
+    
     return {
       total: devices.length,
-      pending: devices.filter(d => d.status === "pending").length,
-      installed: devices.filter(d => d.status === "installed").length,
-      verified: devices.filter(d => d.status === "verified").length,
-      flagged: devices.filter(d => d.status === "flagged").length,
+      pendingSubmissions,
+      totalInstallations,
+      verifiedSubmissions,
+      flaggedSubmissions,
+      remainingDevices,
     };
-  }, [devices]);
+  }, [devices, installations]);
 
   // Admin-only access gate
   if (!userProfile?.isAdmin) {
@@ -229,7 +238,7 @@ export default function Devices() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <Card className="border shadow-sm hover:shadow-md transition-shadow">
           <CardContent className="p-6">
             <div className="text-center">
@@ -242,8 +251,8 @@ export default function Devices() {
         <Card className="border shadow-sm hover:shadow-md transition-shadow">
           <CardContent className="p-6">
             <div className="text-center">
-              <p className="text-sm text-muted-foreground font-medium">Pending</p>
-              <p className="text-3xl font-bold mt-1 text-yellow-600">{stats.pending}</p>
+              <p className="text-sm text-muted-foreground font-medium">Pending Submissions</p>
+              <p className="text-3xl font-bold mt-1 text-yellow-600">{stats.pendingSubmissions}</p>
             </div>
           </CardContent>
         </Card>
@@ -251,8 +260,8 @@ export default function Devices() {
         <Card className="border shadow-sm hover:shadow-md transition-shadow">
           <CardContent className="p-6">
             <div className="text-center">
-              <p className="text-sm text-muted-foreground font-medium">Installed</p>
-              <p className="text-3xl font-bold mt-1 text-blue-600">{stats.installed}</p>
+              <p className="text-sm text-muted-foreground font-medium">Total Installation Submissions</p>
+              <p className="text-3xl font-bold mt-1 text-blue-600">{stats.totalInstallations}</p>
             </div>
           </CardContent>
         </Card>
@@ -260,8 +269,8 @@ export default function Devices() {
         <Card className="border shadow-sm hover:shadow-md transition-shadow">
           <CardContent className="p-6">
             <div className="text-center">
-              <p className="text-sm text-muted-foreground font-medium">Verified</p>
-              <p className="text-3xl font-bold mt-1 text-green-600">{stats.verified}</p>
+              <p className="text-sm text-muted-foreground font-medium">Verified Submissions</p>
+              <p className="text-3xl font-bold mt-1 text-green-600">{stats.verifiedSubmissions}</p>
             </div>
           </CardContent>
         </Card>
@@ -269,8 +278,17 @@ export default function Devices() {
         <Card className="border shadow-sm hover:shadow-md transition-shadow">
           <CardContent className="p-6">
             <div className="text-center">
-              <p className="text-sm text-muted-foreground font-medium">Flagged</p>
-              <p className="text-3xl font-bold mt-1 text-red-600">{stats.flagged}</p>
+              <p className="text-sm text-muted-foreground font-medium">Flagged Submissions</p>
+              <p className="text-3xl font-bold mt-1 text-red-600">{stats.flaggedSubmissions}</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border shadow-sm hover:shadow-md transition-shadow">
+          <CardContent className="p-6">
+            <div className="text-center">
+              <p className="text-sm text-muted-foreground font-medium">Remaining Devices</p>
+              <p className="text-3xl font-bold mt-1 text-slate-600">{stats.remainingDevices}</p>
             </div>
           </CardContent>
         </Card>

@@ -235,7 +235,7 @@ export default function MinistryDevices() {
   }, [allRows, activeFilter, teamFilter]);
 
   const downloadCsv = (rowsData: string[][], filename: string) => {
-    const headers = ["Device ID", "Amanah", "Location ID", "Coordinates"];
+    const headers = ["Device ID", "Amanah", "Location ID", "Coordinates", "Sensor Reading"];
     const csvRows = [headers, ...rowsData];
     const csvContent = csvRows
       .map((row) =>
@@ -293,11 +293,15 @@ export default function MinistryDevices() {
           ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
           : "-";
 
+      // Get manually entered sensor reading from installation
+      const sensorReadingValue = inst?.sensorReading != null ? String(inst.sensorReading) : "-";
+
       return [
         device.id,
         amanah ?? "-",
         rawLocationId || "-",
         coordinates,
+        sensorReadingValue,
       ];
     });
 
