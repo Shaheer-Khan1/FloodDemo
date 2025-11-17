@@ -231,6 +231,13 @@ export default function MinistryDevices() {
       filtered = filtered.filter((row) => row.amanah === teamFilter);
     }
 
+    // Sort by installation time, latest on top
+    filtered.sort((a, b) => {
+      const aTime = a.inst.createdAt?.getTime() || 0;
+      const bTime = b.inst.createdAt?.getTime() || 0;
+      return bTime - aTime; // newest first
+    });
+
     return filtered;
   }, [allRows, activeFilter, teamFilter]);
 

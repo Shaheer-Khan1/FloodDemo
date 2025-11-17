@@ -314,6 +314,13 @@ export default function Verification() {
       filtered = filtered.filter(i => i.installation.teamId === teamIdFilter);
     }
 
+    // Sort by installation time, latest on top
+    filtered.sort((a, b) => {
+      const aTime = a.installation.createdAt?.getTime() || 0;
+      const bTime = b.installation.createdAt?.getTime() || 0;
+      return bTime - aTime; // newest first
+    });
+
     return filtered;
   }, [verificationItems, activeFilter, installerNameFilter, teamIdFilter, userProfile?.isAdmin]);
 
@@ -362,6 +369,13 @@ export default function Verification() {
     if (activeFilter === 'noServerData') {
       filtered = filtered.filter(i => !i.serverData || i.installation.latestDisCm == null);
     }
+
+    // Sort by installation time, latest on top
+    filtered.sort((a, b) => {
+      const aTime = a.installation.createdAt?.getTime() || 0;
+      const bTime = b.installation.createdAt?.getTime() || 0;
+      return bTime - aTime; // newest first
+    });
 
     return filtered;
   }, [verifiedInstallations, devices, installerNameFilter, teamIdFilter, activeFilter, userProfile?.isAdmin]);
