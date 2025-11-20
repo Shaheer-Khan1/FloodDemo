@@ -70,6 +70,7 @@ export default function Verification() {
   
   // Edit mode states
   const [isEditMode, setIsEditMode] = useState(false);
+  const [editedDeviceId, setEditedDeviceId] = useState<string>("");
   const [editedSensorReading, setEditedSensorReading] = useState<string>("");
   const [editedLocationId, setEditedLocationId] = useState<string>("");
   const [editedLatitude, setEditedLatitude] = useState<string>("");
@@ -483,6 +484,7 @@ export default function Verification() {
     setRejectReason("");
     setIsEditMode(false);
     // Initialize edit values with current values
+    setEditedDeviceId(item.installation.deviceId || "");
     setEditedSensorReading(item.installation.sensorReading.toString());
     setEditedLocationId(item.installation.locationId || "");
     setEditedLatitude(item.installation.latitude?.toString() || "");
@@ -528,6 +530,16 @@ export default function Verification() {
 
   const handleEdit = async () => {
     if (!selectedItem || !userProfile) return;
+
+    // Validate Device ID
+    if (!editedDeviceId.trim()) {
+      toast({
+        variant: "destructive",
+        title: "Device ID Required",
+        description: "Please enter a device ID.",
+      });
+      return;
+    }
 
     // Validate inputs
     const sensorReading = parseFloat(editedSensorReading);
@@ -575,6 +587,7 @@ export default function Verification() {
     try {
       const originalInstallation = selectedItem.installation;
       const hasChanges = 
+        editedDeviceId.trim() !== originalInstallation.deviceId ||
         sensorReading !== originalInstallation.sensorReading ||
         editedLocationId.trim() !== originalInstallation.locationId ||
         latitude !== originalInstallation.latitude ||
@@ -625,6 +638,12 @@ export default function Verification() {
       };
 
       // Store original values with version numbers before updating
+      if (editedDeviceId.trim() !== originalInstallation.deviceId) {
+        const version = getNextVersion('deviceId', originalInstallation);
+        updateData[`original_deviceId_${version}`] = originalInstallation.deviceId;
+        updateData.deviceId = editedDeviceId.trim();
+      }
+
       if (sensorReading !== originalInstallation.sensorReading) {
         const version = getNextVersion('sensorReading', originalInstallation);
         updateData[`original_sensorReading_${version}`] = originalInstallation.sensorReading;
@@ -1528,6 +1547,23 @@ export default function Verification() {
                       </Badge>
                     </div>
                     <div>
+                      <p className="text-sm text-muted-foreground">Device ID</p>
+                      {isEditMode ? (
+                        <Input
+                          value={editedDeviceId}
+                          onChange={(e) => {
+                            const value = e.target.value.toUpperCase();
+                            setEditedDeviceId(value);
+                          }}
+                          className="mt-1 font-mono"
+                          placeholder="Enter device ID"
+                          type="text"
+                        />
+                      ) : (
+                        <p className="text-base font-mono font-medium">{selectedItem.installation.deviceId}</p>
+                      )}
+                    </div>
+                    <div>
                       <p className="text-sm text-muted-foreground">Installer</p>
                       <div className="flex flex-col gap-1 mt-1">
                         <p className="text-base font-medium">{selectedItem.installation.installedByName}</p>
@@ -1767,6 +1803,7 @@ export default function Verification() {
                     setIsEditMode(false);
                     // Reset to original values
                     if (selectedItem) {
+                      setEditedDeviceId(selectedItem.installation.deviceId || "");
                       setEditedSensorReading(selectedItem.installation.sensorReading.toString());
                       setEditedLocationId(selectedItem.installation.locationId || "");
                       setEditedLatitude(selectedItem.installation.latitude?.toString() || "");
