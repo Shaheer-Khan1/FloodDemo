@@ -549,6 +549,15 @@ export default function Verification() {
       return;
     }
 
+    if (!/^\d+$/.test(editedLocationId.trim())) {
+      toast({
+        variant: "destructive",
+        title: "Invalid Location ID",
+        description: "Location ID must contain only numbers.",
+      });
+      return;
+    }
+
     const latitude = editedLatitude ? parseFloat(editedLatitude) : null;
     const longitude = editedLongitude ? parseFloat(editedLongitude) : null;
 
@@ -1534,9 +1543,18 @@ export default function Verification() {
                       {isEditMode ? (
                         <Input
                           value={editedLocationId}
-                          onChange={(e) => setEditedLocationId(e.target.value)}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            // Only allow numbers
+                            if (value === '' || /^\d+$/.test(value)) {
+                              setEditedLocationId(value);
+                            }
+                          }}
                           className="mt-1"
-                          placeholder="Enter location ID"
+                          placeholder="Enter location ID (numbers only)"
+                          type="text"
+                          inputMode="numeric"
+                          pattern="\d*"
                         />
                       ) : (
                         <p className="text-base font-medium flex items-center gap-1">
