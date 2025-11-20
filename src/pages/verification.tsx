@@ -590,19 +590,62 @@ export default function Verification() {
         tagsToUpdate.push("edited by verifier");
       }
 
-      // Update installation with edited values and tag
-      await updateDoc(doc(db, "installations", selectedItem.installation.id), {
-        sensorReading: sensorReading,
-        locationId: editedLocationId.trim(),
-        latitude: latitude !== null ? latitude : null,
-        longitude: longitude !== null ? longitude : null,
+      // Helper function to find the next version number for a field
+      const getNextVersion = (fieldName: string, installationData: any): number => {
+        let maxVersion = 0;
+        const prefix = `original_${fieldName}_`;
+        
+        // Check all keys in the installation document for existing versions
+        Object.keys(installationData).forEach(key => {
+          if (key.startsWith(prefix)) {
+            const versionStr = key.substring(prefix.length);
+            const version = parseInt(versionStr, 10);
+            if (!isNaN(version) && version > maxVersion) {
+              maxVersion = version;
+            }
+          }
+        });
+        
+        return maxVersion + 1;
+      };
+
+      // Prepare update object with versioned original values
+      const updateData: any = {
         tags: tagsToUpdate,
         updatedAt: serverTimestamp(),
-      });
+      };
+
+      // Store original values with version numbers before updating
+      if (sensorReading !== originalInstallation.sensorReading) {
+        const version = getNextVersion('sensorReading', originalInstallation);
+        updateData[`original_sensorReading_${version}`] = originalInstallation.sensorReading;
+        updateData.sensorReading = sensorReading;
+      }
+
+      if (editedLocationId.trim() !== originalInstallation.locationId) {
+        const version = getNextVersion('locationId', originalInstallation);
+        updateData[`original_locationId_${version}`] = originalInstallation.locationId;
+        updateData.locationId = editedLocationId.trim();
+      }
+
+      if (latitude !== originalInstallation.latitude) {
+        const version = getNextVersion('latitude', originalInstallation);
+        updateData[`original_latitude_${version}`] = originalInstallation.latitude;
+        updateData.latitude = latitude !== null ? latitude : null;
+      }
+
+      if (longitude !== originalInstallation.longitude) {
+        const version = getNextVersion('longitude', originalInstallation);
+        updateData[`original_longitude_${version}`] = originalInstallation.longitude;
+        updateData.longitude = longitude !== null ? longitude : null;
+      }
+
+      // Update installation with edited values, versioned originals, and tag
+      await updateDoc(doc(db, "installations", selectedItem.installation.id), updateData);
 
       toast({
         title: "Installation Updated",
-        description: "The installation has been successfully updated.",
+        description: "The installation has been successfully updated with version history.",
       });
 
       setIsEditMode(false);
@@ -1164,9 +1207,9 @@ export default function Verification() {
                         <TableCell>
                           <div className="flex flex-col">
                             <span>{item.installation.locationId || "-"}</span>
-                            {(item.installation.latitude !== undefined && item.installation.longitude !== undefined) && (
+                            {(item.installation.latitude != null && item.installation.longitude != null) && (
                               <span className="text-xs text-muted-foreground">
-                                {item.installation.latitude?.toFixed(6)}, {item.installation.longitude?.toFixed(6)}
+                                {item.installation.latitude.toFixed(6)}, {item.installation.longitude.toFixed(6)}
                               </span>
                             )}
                           </div>
@@ -1333,9 +1376,9 @@ export default function Verification() {
                           <TableCell>
                             <div className="flex flex-col">
                               <span>{installation.locationId || "-"}</span>
-                              {(installation.latitude !== undefined && installation.longitude !== undefined) && (
+                              {(installation.latitude != null && installation.longitude != null) && (
                                 <span className="text-xs text-muted-foreground">
-                                  {installation.latitude?.toFixed(6)}, {installation.longitude?.toFixed(6)}
+                                  {installation.latitude.toFixed(6)}, {installation.longitude.toFixed(6)}
                                 </span>
                               )}
                             </div>
@@ -1550,7 +1593,7 @@ export default function Verification() {
                           </div>
                         ) : (
                           <p className="text-base font-medium">
-                            {selectedItem.installation.latitude !== undefined && selectedItem.installation.longitude !== undefined
+                            {selectedItem.installation.latitude != null && selectedItem.installation.longitude != null
                               ? `${selectedItem.installation.latitude.toFixed(6)}, ${selectedItem.installation.longitude.toFixed(6)}`
                               : "-"}
                           </p>
