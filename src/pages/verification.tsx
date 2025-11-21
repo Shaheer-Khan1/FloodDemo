@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -38,6 +39,7 @@ import {
   Edit,
   Save,
   FileDown,
+  Upload,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -46,6 +48,7 @@ import type { Installation, Device, ServerData, VerificationItem, Team } from "@
 import { format } from "date-fns";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
+import { translateTeamNameToArabic } from "@/lib/amanah-translations";
 
 export default function Verification() {
   const { userProfile } = useAuth();
@@ -75,6 +78,9 @@ export default function Verification() {
   const [editedLocationId, setEditedLocationId] = useState<string>("");
   const [editedLatitude, setEditedLatitude] = useState<string>("");
   const [editedLongitude, setEditedLongitude] = useState<string>("");
+  const [newImageFile, setNewImageFile] = useState<File | null>(null);
+  const [newImagePreview, setNewImagePreview] = useState<string | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
 
   // Real-time installations listener (pending verification)
   useEffect(() => {
@@ -489,6 +495,32 @@ export default function Verification() {
     setEditedLocationId(item.installation.locationId || "");
     setEditedLatitude(item.installation.latitude?.toString() || "");
     setEditedLongitude(item.installation.longitude?.toString() || "");
+    setNewImageFile(null);
+    setNewImagePreview(null);
+  };
+
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 10 * 1024 * 1024) { // 10MB limit
+        toast({
+          variant: "destructive",
+          title: "File too large",
+          description: "Please select an image smaller than 10MB.",
+        });
+        return;
+      }
+      if (!file.type.startsWith('image/')) {
+        toast({
+          variant: "destructive",
+          title: "Invalid file type",
+          description: "Please select an image file.",
+        });
+        return;
+      }
+      setNewImageFile(file);
+      setNewImagePreview(URL.createObjectURL(file));
+    }
   };
 
   const handleApprove = async () => {
@@ -591,7 +623,8 @@ export default function Verification() {
         sensorReading !== originalInstallation.sensorReading ||
         editedLocationId.trim() !== originalInstallation.locationId ||
         latitude !== originalInstallation.latitude ||
-        longitude !== originalInstallation.longitude;
+        longitude !== originalInstallation.longitude ||
+        newImageFile !== null;
 
       if (!hasChanges) {
         toast({
@@ -668,15 +701,46 @@ export default function Verification() {
         updateData.longitude = longitude !== null ? longitude : null;
       }
 
+      // Upload new image if one was selected
+      if (newImageFile) {
+        setUploadingImage(true);
+        try {
+          const storage = getStorage();
+          const timestamp = Date.now();
+          const imageRef = storageRef(storage, `installations/${selectedItem.installation.id}/additional_${timestamp}_${newImageFile.name}`);
+          await uploadBytes(imageRef, newImageFile);
+          const imageUrl = await getDownloadURL(imageRef);
+          
+          // Add new image URL to existing imageUrls array
+          const currentImageUrls = originalInstallation.imageUrls || [];
+          updateData.imageUrls = [...currentImageUrls, imageUrl];
+        } catch (error) {
+          toast({
+            variant: "destructive",
+            title: "Image Upload Failed",
+            description: error instanceof Error ? error.message : "Failed to upload image.",
+          });
+          setUploadingImage(false);
+          setProcessing(false);
+          return;
+        } finally {
+          setUploadingImage(false);
+        }
+      }
+
       // Update installation with edited values, versioned originals, and tag
       await updateDoc(doc(db, "installations", selectedItem.installation.id), updateData);
 
       toast({
         title: "Installation Updated",
-        description: "The installation has been successfully updated with version history.",
+        description: newImageFile 
+          ? "The installation has been successfully updated with version history and new image."
+          : "The installation has been successfully updated with version history.",
       });
 
       setIsEditMode(false);
+      setNewImageFile(null);
+      setNewImagePreview(null);
     } catch (error) {
       toast({
         variant: "destructive",
@@ -813,8 +877,10 @@ export default function Verification() {
       // Get manually entered sensor reading from installation
       const sensorReadingValue = installation?.sensorReading != null ? String(installation.sensorReading) : "-";
 
-      // Get team name (Amanah)
-      const amanah = installation.teamId ? getTeamName(installation.teamId) || "-" : "-";
+      // Get team name (Amanah) and translate to Arabic when exporting
+      const teamName = installation.teamId ? getTeamName(installation.teamId) : null;
+      const translatedAmanah = translateTeamNameToArabic(teamName);
+      const amanah = translatedAmanah ?? teamName ?? "-";
 
       return [
         installation.deviceId,
@@ -1495,6 +1561,8 @@ export default function Verification() {
           setIsEditMode(false);
           setSelectedItem(null);
           setRejectReason("");
+          setNewImageFile(null);
+          setNewImagePreview(null);
         }
       }}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
@@ -1762,6 +1830,37 @@ export default function Verification() {
                         onClick={() => setImagePreviewUrl(url)}
                       />
                     ))}
+                    {isEditMode && (
+                      <div className="w-full h-48 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-lg hover:border-primary transition-colors cursor-pointer">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleImageSelect}
+                          className="hidden"
+                          id="additional-image-upload"
+                          disabled={uploadingImage}
+                        />
+                        <label
+                          htmlFor="additional-image-upload"
+                          className="flex flex-col items-center justify-center w-full h-full cursor-pointer"
+                        >
+                          {newImagePreview ? (
+                            <img
+                              src={newImagePreview}
+                              alt="New preview"
+                              className="w-full h-full object-cover rounded-lg"
+                            />
+                          ) : (
+                            <>
+                              <Upload className="h-8 w-8 text-muted-foreground mb-2" />
+                              <p className="text-sm text-muted-foreground text-center px-2">
+                                {uploadingImage ? "Uploading..." : "Add Photo"}
+                              </p>
+                            </>
+                          )}
+                        </label>
+                      </div>
+                    )}
                   </div>
                 </div>
                 
@@ -1808,6 +1907,8 @@ export default function Verification() {
                       setEditedLocationId(selectedItem.installation.locationId || "");
                       setEditedLatitude(selectedItem.installation.latitude?.toString() || "");
                       setEditedLongitude(selectedItem.installation.longitude?.toString() || "");
+                      setNewImageFile(null);
+                      setNewImagePreview(null);
                     }
                   }}
                   disabled={processing}
@@ -1816,15 +1917,15 @@ export default function Verification() {
                 </Button>
                 <Button
                   onClick={handleEdit}
-                  disabled={processing}
+                  disabled={processing || uploadingImage}
                   className="bg-blue-600 hover:bg-blue-700"
                 >
-                  {processing ? (
+                  {(processing || uploadingImage) ? (
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   ) : (
                     <Save className="h-4 w-4 mr-2" />
                   )}
-                  Save Changes
+                  {uploadingImage ? "Uploading..." : processing ? "Saving..." : "Save Changes"}
                 </Button>
               </>
             ) : (

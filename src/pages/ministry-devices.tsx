@@ -28,11 +28,30 @@ import jsPDF from "jspdf";
 import { getStorage, ref, getDownloadURL } from "firebase/storage";
 import type { Device, Installation } from "@/lib/types";
 import { format } from "date-fns";
+import { translateTeamNameToArabic } from "@/lib/amanah-translations";
 
 const storage = getStorage();
 const PRIMARY_COLOR: [number, number, number] = [12, 91, 211];
 const TEXT_COLOR: [number, number, number] = [33, 33, 33];
 const LABEL_COLOR: [number, number, number] = [100, 106, 125];
+
+const SPECIAL_LOCATION_IDS = new Set(["9999", "999"]);
+const formatCoordinates = (latitude: number, longitude: number): string =>
+  `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+const buildReportFileName = (value: string): string => {
+  const safeName = value
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^\w\u0600-\u06FF_-]/g, "")
+    .replace(/_+/g, "_");
+  const normalizedName = safeName || "Unknown";
+  return `${normalizedName}_List_${format(new Date(), "yyyy-MM-dd")}.csv`;
+};
+const parseCoordinate = (value: number | string | null | undefined): number | null => {
+  if (value == null) return null;
+  const num = typeof value === "number" ? value : parseFloat(String(value));
+  return Number.isNaN(num) ? null : num;
+};
 
 const statusConfig = {
   pending: { 
@@ -57,6 +76,7 @@ interface Location {
   locationId: string;
   latitude: number;
   longitude: number;
+  municipalityName?: string;
 }
 
 export default function MinistryDevices() {
@@ -104,6 +124,7 @@ export default function MinistryDevices() {
           locationId: docData.locationId || d.id, // Use document ID as fallback
           latitude: lat,
           longitude: lon,
+          municipalityName: docData.municipalityName || undefined,
         } as Location;
       }).filter(loc => loc.latitude != null && loc.longitude != null && !isNaN(loc.latitude) && !isNaN(loc.longitude));
       
@@ -260,7 +281,7 @@ export default function MinistryDevices() {
   }, [allRows, activeFilter, teamFilter, dateFilter]);
 
   const downloadCsv = (rowsData: string[][], filename: string) => {
-    const headers = ["Device ID", "Amanah", "Location ID", "Coordinates", "Sensor Reading"];
+    const headers = ["Serial No", "Location ID", "Coordinates", "Device ID", "Amanah", "Municipality", "Sensor Height"];
     const csvRows = [headers, ...rowsData];
     const csvContent = csvRows
       .map((row) =>
@@ -293,10 +314,12 @@ export default function MinistryDevices() {
       return;
     }
 
-    const csvRows = rows.map((row) => {
+    const rowsByAmanah: Record<string, string[][]> = {};
+    let totalRows = 0;
+
+    rows.forEach((row) => {
       const { device, inst, amanah } = row;
       const rawLocationId = inst?.locationId ? String(inst.locationId).trim() : "";
-
       let location: Location | null = null;
       if (rawLocationId) {
         location = locationMap.get(rawLocationId) ?? null;
@@ -310,32 +333,63 @@ export default function MinistryDevices() {
         }
       }
 
-      // Only use coordinates from Firestore locations; do not fall back to installer-provided ones
-      const latitude = location?.latitude ?? null;
-      const longitude = location?.longitude ?? null;
-      const coordinates =
-        latitude != null && longitude != null
-          ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
-          : "-";
+      const instLat = parseCoordinate(inst?.latitude);
+      const instLon = parseCoordinate(inst?.longitude);
 
-      // Get manually entered sensor reading from installation
+      let coordinates = "-";
+      if (SPECIAL_LOCATION_IDS.has(rawLocationId)) {
+        if (instLat != null && instLon != null) {
+          coordinates = formatCoordinates(instLat, instLon);
+        } else if (location?.latitude != null && location?.longitude != null) {
+          coordinates = formatCoordinates(location.latitude, location.longitude);
+        }
+      } else {
+        if (location?.latitude != null && location?.longitude != null) {
+          coordinates = formatCoordinates(location.latitude, location.longitude);
+        } else if (instLat != null && instLon != null) {
+          coordinates = `${formatCoordinates(instLat, instLon)} (user entered)`;
+        }
+      }
+
       const sensorReadingValue = inst?.sensorReading != null ? String(inst.sensorReading) : "-";
+      const englishAmanahName = amanah || "-";
+      const translatedAmanah = translateTeamNameToArabic(
+        englishAmanahName === "-" ? null : englishAmanahName
+      );
+      const amanahForExport = translatedAmanah ?? englishAmanahName;
+      const municipalityName = location?.municipalityName || "-";
 
-      return [
-        device.id,
-        amanah ?? "-",
+      const csvRow = [
+        "", // Serial placeholder
         rawLocationId || "-",
         coordinates,
+        device.id,
+        amanahForExport,
+        municipalityName,
         sensorReadingValue,
       ];
+
+      const groupKey = amanahForExport || "Unknown";
+      if (!rowsByAmanah[groupKey]) {
+        rowsByAmanah[groupKey] = [];
+      }
+      rowsByAmanah[groupKey].push(csvRow);
+      totalRows++;
     });
 
-    downloadCsv(csvRows, "ministry-devices.csv");
+    const amanahCount = Object.keys(rowsByAmanah).length;
+    Object.entries(rowsByAmanah).forEach(([amanahName, csvRows]) => {
+      csvRows.forEach((row, index) => {
+        row[0] = (index + 1).toString();
+      });
+      const filename = buildReportFileName(amanahName);
+      downloadCsv(csvRows, filename);
+    });
 
     toast({
       title: "CSV downloaded",
-      description: `Exported ${rows.length} device${
-        rows.length === 1 ? "" : "s"
+      description: `Exported ${totalRows} row${totalRows === 1 ? "" : "s"} across ${amanahCount} Amanah${
+        amanahCount === 1 ? "" : "s"
       }.`,
     });
   };

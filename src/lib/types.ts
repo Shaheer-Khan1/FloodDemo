@@ -67,6 +67,7 @@ export interface Installation {
   id: string;
   deviceId: string;
   locationId: string;
+  originalLocationId?: string; // Stores the original locationId before bulk updates
   latitude?: number; // GPS latitude
   longitude?: number; // GPS longitude
   sensorReading: number;
