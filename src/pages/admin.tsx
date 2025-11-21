@@ -474,20 +474,26 @@ export default function Admin() {
     setExporting999Report(true);
 
     try {
-      // Query installations where locationId = "9999" AND originalLocationId = "999"
+      // Query installations where locationId = "9999" AND has originalLocationId AND teamId = "ttaMvVwJTIpXIJ5NTmee"
       const installationsRef = collection(db, "installations");
       const q = query(
         installationsRef,
         where("locationId", "==", "9999"),
-        where("originalLocationId", "==", "999")
+        where("teamId", "==", "ttaMvVwJTIpXIJ5NTmee")
       );
       
       const snapshot = await getDocs(q);
       
-      if (snapshot.empty) {
+      // Filter to only include installations with originalLocationId
+      const installationsWithOriginal = snapshot.docs.filter(doc => {
+        const data = doc.data();
+        return data.originalLocationId != null && data.originalLocationId !== "";
+      });
+
+      if (installationsWithOriginal.length === 0) {
         toast({
           title: "No Data",
-          description: "No installations found with locationId 9999 and originalLocationId 999.",
+          description: "No installations found with locationId 9999, an original location ID, and the specified team.",
         });
         setExporting999Report(false);
         return;
@@ -502,7 +508,7 @@ export default function Admin() {
 
       const csvRows: string[][] = [];
       
-      snapshot.docs.forEach((doc, index) => {
+      installationsWithOriginal.forEach((doc, index) => {
         const data = doc.data() as Installation;
         
         // Get coordinates (use installation lat/lng if available)
@@ -520,19 +526,23 @@ export default function Admin() {
         // Original location ID
         const originalLocationId = data.originalLocationId || "-";
 
+        // Installer name
+        const installerName = data.installedByName || "-";
+
         csvRows.push([
           (index + 1).toString(), // Serial No
           data.locationId, // Location ID (9999)
           coordinates, // Coordinates
           data.deviceId, // Device ID
           teamName, // Amanah
+          installerName, // Installer Name
           sensorHeight, // Sensor Height
-          originalLocationId, // Original Location ID (999)
+          originalLocationId, // Original Location ID
         ]);
       });
 
       // Create CSV
-      const headers = ["Serial No", "Location ID", "Coordinates", "Device ID", "Amanah", "Sensor Height", "Original Location ID"];
+      const headers = ["Serial No", "Location ID", "Coordinates", "Device ID", "Amanah", "Installer Name", "Sensor Height", "Original Location ID"];
       const allRows = [headers, ...csvRows];
       const csvContent = allRows
         .map((row) =>
@@ -550,7 +560,7 @@ export default function Admin() {
       const link = document.createElement("a");
       link.href = url;
       const dateStr = new Date().toISOString().split('T')[0];
-      link.setAttribute("download", `999-to-9999-report-${dateStr}.csv`);
+      link.setAttribute("download", `shifted-to-9999-report-${dateStr}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -1425,7 +1435,7 @@ export default function Admin() {
               ) : (
                 <>
                   <FileDown className="h-4 w-4 mr-2" />
-                  Export 999→9999 Report
+                  Export Shifted to 9999
                 </>
               )}
             </Button>
@@ -1446,7 +1456,7 @@ export default function Admin() {
           )}
 
           <div className="text-xs text-muted-foreground">
-            <p><strong>Export Report:</strong> Downloads all installations where originalLocationId = "999" and current locationId = "9999"</p>
+            <p><strong>Export Report:</strong> Downloads all installations where locationId = "9999", has an originalLocationId, and teamId = "ttaMvVwJTIpXIJ5NTmee"</p>
           </div>
         </CardContent>
       </Card>
