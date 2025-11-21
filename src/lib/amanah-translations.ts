@@ -9,6 +9,8 @@ const ENGLISH_TO_ARABIC_AMANAH: Record<string, string> = {
   "hafar": "أمانة محافظة حفر الباطن",
   "hail team": "أمانة منطقة حائل",
   "hail": "أمانة منطقة حائل",
+  "hessa": "أمانة محافظة الاحساء",
+  "hessa team": "أمانة محافظة الاحساء",
   "jazan": "أمانة منطقة جازان",
   "jeddah team": "أمانة محافظة جدة",
   "jeddah": "أمانة محافظة جدة",
@@ -22,6 +24,7 @@ const ENGLISH_TO_ARABIC_AMANAH: Record<string, string> = {
   "qassim": "أمانة منطقة القصيم",
   "taif team": "أمانة محافظة الطائف",
   "taif": "أمانة محافظة الطائف",
+
 };
 
 export function translateTeamNameToArabic(rawName?: string | null): string | null {
