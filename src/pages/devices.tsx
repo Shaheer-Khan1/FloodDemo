@@ -16,7 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Search, Loader2, AlertCircle, Filter, X, FileUp, Package, CheckCircle, Clock, AlertTriangle } from "lucide-react";
+import { Search, Loader2, AlertCircle, Filter, X, FileUp, Package, CheckCircle, Clock, AlertTriangle, Download } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { format } from "date-fns";
@@ -150,10 +150,7 @@ export default function Devices() {
     return devicesWithDetails.filter(device => {
       const matchesSearch = searchTerm === "" ||
         device.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        device.productId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        device.deviceSerialId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        device.deviceImei.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        device.iccid.toLowerCase().includes(searchTerm.toLowerCase());
+        device.productId.toLowerCase().includes(searchTerm.toLowerCase());
 
       const matchesStatus = statusFilter === "all" || device.status === statusFilter;
       const matchesProduct = productFilter === "all" || device.productId === productFilter;
@@ -187,6 +184,56 @@ export default function Devices() {
   };
 
   const hasActiveFilters = searchTerm !== "" || statusFilter !== "all" || productFilter !== "all" || dateFilter !== "";
+
+  const downloadDeviceUidsCSV = () => {
+    try {
+      // Create CSV with only device UIDs
+      const csvRows: string[][] = [];
+      
+      filteredDevices.forEach((device, index) => {
+        csvRows.push([
+          (index + 1).toString(), // Serial No
+          device.id, // Device UID
+        ]);
+      });
+
+      // Create CSV
+      const headers = ["Serial No", "Device UID"];
+      const allRows = [headers, ...csvRows];
+      const csvContent = allRows
+        .map((row) =>
+          row
+            .map((value) => {
+              const safeValue = value ?? "";
+              return `"${safeValue.replace(/"/g, '""')}"`;
+            })
+            .join(",")
+        )
+        .join("\r\n");
+
+      const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const dateStr = new Date().toISOString().split('T')[0];
+      link.setAttribute("download", `device-uids-${dateStr}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Export Complete",
+        description: `Exported ${csvRows.length} device UID(s) successfully.`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error.message || "An error occurred during export.",
+      });
+    }
+  };
 
   // Stats
   const stats = useMemo(() => {
@@ -251,10 +298,20 @@ export default function Devices() {
           <p className="text-muted-foreground mt-2">Manage and track all IoT devices</p>
         </div>
         {userProfile?.isAdmin && (
-          <Button onClick={() => setLocation("/device-import")}>
-            <FileUp className="h-4 w-4 mr-2" />
-            Import Devices
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={downloadDeviceUidsCSV}
+              disabled={filteredDevices.length === 0}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Download Device UIDs CSV
+            </Button>
+            <Button onClick={() => setLocation("/device-import")}>
+              <FileUp className="h-4 w-4 mr-2" />
+              Import Devices
+            </Button>
+          </div>
         )}
       </div>
 
@@ -322,7 +379,7 @@ export default function Devices() {
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search by Device UID, Product ID, Serial ID, IMEI, or ICCID..."
+              placeholder="Search by Device UID or Product ID..."
               className="pl-10 h-12"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -410,7 +467,7 @@ export default function Devices() {
             <Table>
               <TableHeader>
                 <TableRow className="text-xs">
-                  <TableHead className="px-2 py-2 w-[100px]">
+                  <TableHead className="px-2 py-2 w-[200px]">
                     <div className="truncate">Device UID</div>
                   </TableHead>
                   <TableHead className="px-2 py-2 w-[70px]">
@@ -418,15 +475,6 @@ export default function Devices() {
                   </TableHead>
                   <TableHead className="px-2 py-2 w-[80px]">
                     <div className="truncate">Product</div>
-                  </TableHead>
-                  <TableHead className="px-2 py-2 w-[140px]">
-                    <div className="truncate">Serial ID</div>
-                  </TableHead>
-                  <TableHead className="px-2 py-2 w-[110px]">
-                    <div className="truncate">IMEI</div>
-                  </TableHead>
-                  <TableHead className="px-2 py-2 w-[120px]">
-                    <div className="truncate">ICCID</div>
                   </TableHead>
                   <TableHead className="px-2 py-2 w-[100px]">
                     <div className="truncate">Timestamp</div>
@@ -449,7 +497,7 @@ export default function Devices() {
               <TableBody>
                 {filteredDevices.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={12} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
                       No devices found
                     </TableCell>
                   </TableRow>
@@ -461,7 +509,7 @@ export default function Devices() {
                     return (
                       <TableRow key={device.id} className="text-xs">
                         <TableCell className="px-2 py-2 font-mono font-medium">
-                          <div className="truncate max-w-[100px]" title={device.id}>
+                          <div className="whitespace-nowrap">
                             {device.id}
                           </div>
                         </TableCell>
@@ -473,21 +521,6 @@ export default function Devices() {
                         <TableCell className="px-2 py-2">
                           <div className="truncate max-w-[80px]" title={device.productId}>
                             {device.productId}
-                          </div>
-                        </TableCell>
-                        <TableCell className="px-2 py-2 font-mono">
-                          <div className="truncate max-w-[140px]" title={device.deviceSerialId}>
-                            {device.deviceSerialId}
-                          </div>
-                        </TableCell>
-                        <TableCell className="px-2 py-2 font-mono">
-                          <div className="truncate max-w-[110px]" title={device.deviceImei}>
-                            {device.deviceImei}
-                          </div>
-                        </TableCell>
-                        <TableCell className="px-2 py-2 font-mono">
-                          <div className="truncate max-w-[120px]" title={device.iccid}>
-                            {device.iccid}
                           </div>
                         </TableCell>
                         <TableCell className="px-2 py-2 text-muted-foreground">

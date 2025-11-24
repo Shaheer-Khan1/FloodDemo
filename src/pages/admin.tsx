@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Search, Loader2, Shield, MapPin, Smartphone, Ruler, Users, Filter, X, Upload, Download, CheckCircle2, XCircle, Edit, RefreshCw, FileDown } from "lucide-react";
+import { Search, Loader2, Shield, MapPin, Smartphone, Ruler, Users, Filter, X, Upload, Download, CheckCircle2, XCircle, Edit, RefreshCw, FileDown, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -52,6 +52,9 @@ export default function Admin() {
   const [show999UpdateDialog, setShow999UpdateDialog] = useState(false);
   const [found999Installations, setFound999Installations] = useState<Installation[]>([]);
   const [exporting999Report, setExporting999Report] = useState(false);
+
+  // Duplicate Installations Export State
+  const [exportingDuplicates, setExportingDuplicates] = useState(false);
 
   // Real-time users listener
   useEffect(() => {
@@ -848,6 +851,233 @@ export default function Admin() {
     }
   };
 
+  const downloadDeviceUidsCSV = () => {
+    try {
+      // Create CSV with only device UIDs
+      const csvRows: string[][] = [];
+      
+      filteredUsers.forEach((user, index) => {
+        csvRows.push([
+          (index + 1).toString(), // Serial No
+          user.deviceId, // Device UID
+        ]);
+      });
+
+      // Create CSV
+      const headers = ["Serial No", "Device UID"];
+      const allRows = [headers, ...csvRows];
+      const csvContent = allRows
+        .map((row) =>
+          row
+            .map((value) => {
+              const safeValue = value ?? "";
+              return `"${safeValue.replace(/"/g, '""')}"`;
+            })
+            .join(",")
+        )
+        .join("\r\n");
+
+      const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const dateStr = new Date().toISOString().split('T')[0];
+      link.setAttribute("download", `device-uids-${dateStr}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Export Complete",
+        description: `Exported ${csvRows.length} device UID(s) successfully.`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error.message || "An error occurred during export.",
+      });
+    }
+  };
+
+  const exportDuplicateInstallations = async () => {
+    setExportingDuplicates(true);
+
+    try {
+      // Get all installations
+      const installationsRef = collection(db, "installations");
+      const snapshot = await getDocs(installationsRef);
+      
+      const installations: Installation[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        installations.push({
+          ...data,
+          id: doc.id,
+          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : data.createdAt,
+          updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : data.updatedAt,
+          verifiedAt: data.verifiedAt?.toDate ? data.verifiedAt.toDate() : data.verifiedAt,
+          systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate ? data.systemPreVerifiedAt.toDate() : data.systemPreVerifiedAt,
+          serverRefreshedAt: data.serverRefreshedAt?.toDate ? data.serverRefreshedAt.toDate() : data.serverRefreshedAt,
+        } as Installation);
+      });
+
+      // Find duplicates by deviceId
+      const deviceIdCount: Record<string, Installation[]> = {};
+      installations.forEach(installation => {
+        if (!deviceIdCount[installation.deviceId]) {
+          deviceIdCount[installation.deviceId] = [];
+        }
+        deviceIdCount[installation.deviceId].push(installation);
+      });
+
+      // Filter to only duplicates (deviceId with more than 1 installation)
+      const duplicates: Installation[] = [];
+      Object.entries(deviceIdCount).forEach(([deviceId, installs]) => {
+        if (installs.length > 1) {
+          duplicates.push(...installs);
+        }
+      });
+
+      if (duplicates.length === 0) {
+        toast({
+          title: "No Duplicates Found",
+          description: "No duplicate device installations found in the system.",
+        });
+        setExportingDuplicates(false);
+        return;
+      }
+
+      // Sort by deviceId and then by createdAt
+      duplicates.sort((a, b) => {
+        if (a.deviceId !== b.deviceId) {
+          return a.deviceId.localeCompare(b.deviceId);
+        }
+        if (!a.createdAt || !b.createdAt) return 0;
+        return a.createdAt.getTime() - b.createdAt.getTime();
+      });
+
+      // Get teams data for team names
+      const teamsSnapshot = await getDocs(collection(db, "teams"));
+      const teamsMap: Record<string, string> = {};
+      teamsSnapshot.docs.forEach(doc => {
+        teamsMap[doc.id] = doc.data().name || doc.id;
+      });
+
+      const csvRows: string[][] = [];
+      
+      duplicates.forEach((installation, index) => {
+        const coordinates = (installation.latitude != null && installation.longitude != null)
+          ? `${Number(installation.latitude).toFixed(6)}, ${Number(installation.longitude).toFixed(6)}`
+          : "-";
+
+        const teamName = installation.teamId ? teamsMap[installation.teamId] : "-";
+        const createdAtStr = installation.createdAt ? new Date(installation.createdAt).toISOString() : "-";
+        const updatedAtStr = installation.updatedAt ? new Date(installation.updatedAt).toISOString() : "-";
+        const verifiedAtStr = installation.verifiedAt ? new Date(installation.verifiedAt).toISOString() : "-";
+        const systemPreVerifiedAtStr = installation.systemPreVerifiedAt ? new Date(installation.systemPreVerifiedAt).toISOString() : "-";
+        const serverRefreshedAtStr = installation.serverRefreshedAt ? new Date(installation.serverRefreshedAt).toISOString() : "-";
+
+        csvRows.push([
+          (index + 1).toString(), // Serial No
+          installation.id, // Installation ID
+          installation.deviceId, // Device UID
+          installation.locationId, // Location ID
+          installation.originalLocationId || "-", // Original Location ID
+          coordinates, // GPS Coordinates
+          String(installation.sensorReading), // Sensor Reading (cm)
+          String(installation.latestDisCm ?? "-"), // Latest Sensor Reading from Server
+          installation.latestDisTimestamp || "-", // Latest Sensor Timestamp
+          installation.installedByName, // Installed By Name
+          installation.installedBy, // Installed By UID
+          teamName, // Team Name
+          installation.teamId || "-", // Team ID
+          installation.status, // Status
+          installation.flaggedReason || "-", // Flagged Reason
+          installation.verifiedBy || "-", // Verified By
+          verifiedAtStr, // Verified At
+          String(installation.systemPreVerified ?? "-"), // System Pre-Verified
+          systemPreVerifiedAtStr, // System Pre-Verified At
+          createdAtStr, // Created At
+          updatedAtStr, // Updated At
+          installation.deviceInputMethod || "-", // Device Input Method
+          serverRefreshedAtStr, // Server Refreshed At
+          installation.imageUrls?.join("; ") || "-", // Image URLs
+          installation.videoUrl || "-", // Video URL
+          installation.tags?.join(", ") || "-", // Tags
+        ]);
+      });
+
+      // Create CSV with comprehensive headers
+      const headers = [
+        "Serial No",
+        "Installation ID",
+        "Device UID",
+        "Location ID",
+        "Original Location ID",
+        "GPS Coordinates",
+        "Sensor Reading (cm)",
+        "Latest Server Reading (cm)",
+        "Latest Server Timestamp",
+        "Installed By Name",
+        "Installed By UID",
+        "Team Name",
+        "Team ID",
+        "Status",
+        "Flagged Reason",
+        "Verified By",
+        "Verified At",
+        "System Pre-Verified",
+        "System Pre-Verified At",
+        "Created At",
+        "Updated At",
+        "Device Input Method",
+        "Server Refreshed At",
+        "Image URLs",
+        "Video URL",
+        "Tags",
+      ];
+      const allRows = [headers, ...csvRows];
+      const csvContent = allRows
+        .map((row) =>
+          row
+            .map((value) => {
+              const safeValue = value ?? "";
+              return `"${safeValue.replace(/"/g, '""')}"`;
+            })
+            .join(",")
+        )
+        .join("\r\n");
+
+      const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const dateStr = new Date().toISOString().split('T')[0];
+      link.setAttribute("download", `duplicate-installations-${dateStr}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      const uniqueDuplicateDevices = Object.keys(deviceIdCount).filter(deviceId => deviceIdCount[deviceId].length > 1).length;
+      
+      toast({
+        title: "Export Complete",
+        description: `Exported ${duplicates.length} duplicate installation(s) from ${uniqueDuplicateDevices} device(s).`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error.message || "An error occurred during export.",
+      });
+    } finally {
+      setExportingDuplicates(false);
+    }
+  };
+
   const handleLocationUpload = async () => {
     if (!locationFile || !userProfile) return;
 
@@ -1501,6 +1731,50 @@ export default function Admin() {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* Export Duplicate Installations */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <AlertTriangle className="h-5 w-5 text-amber-600" />
+            Export Duplicate Device Installations
+          </CardTitle>
+          <CardDescription>
+            Download a CSV report of all devices that have multiple installations (violations of one-device-one-installation rule)
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-3">
+            <Button
+              variant="default"
+              onClick={exportDuplicateInstallations}
+              disabled={exportingDuplicates}
+            >
+              {exportingDuplicates ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Exporting...
+                </>
+              ) : (
+                <>
+                  <FileDown className="h-4 w-4 mr-2" />
+                  Export Duplicate Installations
+                </>
+              )}
+            </Button>
+          </div>
+
+          <div className="text-xs text-muted-foreground space-y-1">
+            <p><strong>Report includes:</strong></p>
+            <ul className="list-disc list-inside ml-2">
+              <li>All installation records for devices with multiple installations</li>
+              <li>Complete installation data: Device UID, Location ID, GPS, Sensor Reading, Images, Status, etc.</li>
+              <li>Sorted by Device UID for easy identification of duplicates</li>
+              <li>All fields and metadata for comprehensive analysis</li>
+            </ul>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Search & Filters */}
       <Card className="border shadow-sm">
         <CardContent className="p-6 space-y-4">
@@ -1577,7 +1851,17 @@ export default function Admin() {
       {/* Users List */}
       <Card className="border shadow-sm">
         <CardHeader>
-          <CardTitle className="text-2xl font-bold">All Users ({filteredUsers.length})</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-2xl font-bold">All Users ({filteredUsers.length})</CardTitle>
+            <Button
+              variant="outline"
+              onClick={downloadDeviceUidsCSV}
+              disabled={filteredUsers.length === 0}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Download Device UIDs CSV
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <Accordion type="single" collapsible className="space-y-2">

@@ -187,6 +187,24 @@ export default function NewInstallation() {
       }
       const deviceDoc = matchingDevices[0];
       const device = deviceDoc.data();
+      
+      // Check if device already has an installation
+      const installationsQuery = query(
+        collection(db, "installations"),
+        where("deviceId", "==", deviceDoc.id)
+      );
+      const existingInstallations = await getDocs(installationsQuery);
+      
+      if (!existingInstallations.empty) {
+        setDeviceValid(false);
+        toast({
+          variant: "destructive",
+          title: "Device Already Installed",
+          description: `This device (${deviceDoc.id}) already has an installation. Each device can only be installed once.`,
+        });
+        return;
+      }
+      
       setDeviceValid(true);
       setDeviceInfo(device);
       setFullDeviceId(deviceDoc.id);
@@ -351,6 +369,23 @@ export default function NewInstallation() {
     setSubmitting(true);
 
     try {
+      // Check if device already has an installation
+      const installationsQuery = query(
+        collection(db, "installations"),
+        where("deviceId", "==", fullDeviceId)
+      );
+      const existingInstallations = await getDocs(installationsQuery);
+      
+      if (!existingInstallations.empty) {
+        toast({
+          variant: "destructive",
+          title: "Device Already Installed",
+          description: `This device (${fullDeviceId}) already has an installation. Each device can only be installed once.`,
+        });
+        setSubmitting(false);
+        return;
+      }
+
       // Upload all images
       const imageUrls: string[] = [];
       for (let i = 0; i < images.length; i++) {
