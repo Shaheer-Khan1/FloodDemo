@@ -27,6 +27,7 @@ export default function NewInstallation() {
   const [validatingDevice, setValidatingDevice] = useState(false);
   const [deviceValid, setDeviceValid] = useState<boolean | null>(null);
   const [deviceInfo, setDeviceInfo] = useState<any>(null);
+  const [deviceErrorMessage, setDeviceErrorMessage] = useState<{ title: string; description: string } | null>(null);
   const [showScanner, setShowScanner] = useState(false);
   const scannerRef = useRef<Html5Qrcode | null>(null);
   
@@ -66,7 +67,7 @@ export default function NewInstallation() {
               setQrScannedUid(justUid || "");
               setDeviceId("");
               setDeviceInputMethod('qr');
-              setDeviceValid(null); setDeviceInfo(null); setFullDeviceId("");
+              setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); setDeviceErrorMessage(null);
               setShowScanner(false);
               scanner.stop().then(() => { scannerRef.current = null; }).catch(console.error);
               toast({ title: "QR Code Scanned", description: `UID: ${justUid}` });
@@ -172,14 +173,14 @@ export default function NewInstallation() {
     setDeviceValid(null);
     setDeviceInfo(null);
     setFullDeviceId("");
+    setDeviceErrorMessage(null);
     try {
       const devicesRef = collection(db, "devices");
       const querySnapshot = await getDocs(devicesRef);
       const matchingDevices = querySnapshot.docs.filter(doc => doc.id.toUpperCase() === entered);
       if (matchingDevices.length === 0) {
         setDeviceValid(false);
-        toast({
-          variant: "destructive",
+        setDeviceErrorMessage({
           title: "Device Not Found",
           description: "No device found matching this UID in the master database.",
         });
@@ -197,10 +198,9 @@ export default function NewInstallation() {
       
       if (!existingInstallations.empty) {
         setDeviceValid(false);
-        toast({
-          variant: "destructive",
-          title: "Device Already Installed",
-          description: `This device (${deviceDoc.id}) already has an installation. Each device can only be installed once.`,
+        setDeviceErrorMessage({
+          title: "Installation Already Exists",
+          description: `There is already an installation made for this device (${deviceDoc.id}). Each device can only be installed once.`,
         });
         return;
       }
@@ -208,12 +208,12 @@ export default function NewInstallation() {
       setDeviceValid(true);
       setDeviceInfo(device);
       setFullDeviceId(deviceDoc.id);
+      setDeviceErrorMessage(null);
       // Tag input method for save
       setDeviceInputMethod(qrScannedUid ? 'qr' : 'manual');
     } catch (error) {
       setDeviceValid(false);
-      toast({
-        variant: "destructive",
+      setDeviceErrorMessage({
         title: "Validation Error",
         description: error instanceof Error ? error.message : String(error),
       });
@@ -444,6 +444,7 @@ export default function NewInstallation() {
       setFullDeviceId("");
       setDeviceValid(null);
       setDeviceInfo(null);
+      setDeviceErrorMessage(null);
       setLocationId("");
       setLatitude(null);
       setLongitude(null);
@@ -493,7 +494,7 @@ export default function NewInstallation() {
             </div>
             <div className="flex items-center gap-2">
               <Label htmlFor="deviceId">Or enter full Device UID:</Label>
-              <Input id="deviceId" value={deviceId} onChange={e => { setDeviceId(e.target.value.toUpperCase()); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); setQrScannedUid(""); setDeviceInputMethod('manual'); }} placeholder="Full UID (e.g., 6461561B7911ED6E)" disabled={submitting} className="font-mono uppercase w-64" />
+              <Input id="deviceId" value={deviceId} onChange={e => { setDeviceId(e.target.value.toUpperCase()); setDeviceValid(null); setDeviceInfo(null); setFullDeviceId(""); setQrScannedUid(""); setDeviceInputMethod('manual'); setDeviceErrorMessage(null); }} placeholder="Full UID (e.g., 6461561B7911ED6E)" disabled={submitting} className="font-mono uppercase w-64" />
             </div>
             <div className="flex items-center gap-2 mt-2">
               <Button type="button" onClick={validateDeviceId} disabled={validatingDevice || submitting || (!qrScannedUid && !deviceId)} variant="outline">
@@ -517,11 +518,11 @@ export default function NewInstallation() {
                 </AlertDescription>
               </Alert>
             )}
-            {deviceValid === false && (
+            {deviceValid === false && deviceErrorMessage && (
               <Alert className="bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800 mt-4" variant="destructive">
                 <AlertTriangle className="h-4 w-4 text-red-600" />
                 <AlertDescription>
-                  <span className="font-semibold text-red-900 dark:text-red-100">Device validation failed. Please check the UID or scan again.</span>
+                  <p className="font-semibold text-red-900 dark:text-red-100">{deviceErrorMessage.description}</p>
                 </AlertDescription>
               </Alert>
             )}

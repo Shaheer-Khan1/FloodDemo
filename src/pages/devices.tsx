@@ -46,6 +46,7 @@ export default function Devices() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [productFilter, setProductFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<string>("");
+  const [displayLimit, setDisplayLimit] = useState(500);
 
   // Real-time devices listener (admin only)
   useEffect(() => {
@@ -152,7 +153,16 @@ export default function Devices() {
         device.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
         device.productId.toLowerCase().includes(searchTerm.toLowerCase());
 
-      const matchesStatus = statusFilter === "all" || device.status === statusFilter;
+      // Status filter - handle "not_installed" as special case
+      let matchesStatus = true;
+      if (statusFilter === "all") {
+        matchesStatus = true;
+      } else if (statusFilter === "not_installed") {
+        matchesStatus = !device.installation; // No installation exists
+      } else {
+        matchesStatus = device.status === statusFilter;
+      }
+      
       const matchesProduct = productFilter === "all" || device.productId === productFilter;
 
       // Apply date filter (filter by installation date)
@@ -181,9 +191,19 @@ export default function Devices() {
     setStatusFilter("all");
     setProductFilter("all");
     setDateFilter("");
+    setDisplayLimit(500);
   };
 
   const hasActiveFilters = searchTerm !== "" || statusFilter !== "all" || productFilter !== "all" || dateFilter !== "";
+
+  // Limit displayed devices for performance
+  const displayedDevices = useMemo(() => {
+    return filteredDevices.slice(0, displayLimit);
+  }, [filteredDevices, displayLimit]);
+
+  const handleShowMore = () => {
+    setDisplayLimit(prev => prev + 500);
+  };
 
   const downloadDeviceUidsCSV = () => {
     try {
@@ -242,8 +262,13 @@ export default function Devices() {
     const pendingSubmissions = installations.filter(inst => inst.status === "pending").length;
     const verifiedSubmissions = installations.filter(inst => inst.status === "verified").length;
     const flaggedSubmissions = installations.filter(inst => inst.status === "flagged").length;
-    // Remaining Devices = total devices - total installation submissions
-    const remainingDevices = devices.length - totalInstallations;
+    
+    // Get unique device IDs that have installations
+    const deviceIdsWithInstallations = new Set(installations.map(inst => inst.deviceId));
+    const uniqueDevicesInstalled = deviceIdsWithInstallations.size;
+    
+    // Remaining Devices = total devices - unique devices with installations
+    const remainingDevices = devices.length - uniqueDevicesInstalled;
     
     return {
       total: devices.length,
@@ -252,6 +277,7 @@ export default function Devices() {
       verifiedSubmissions,
       flaggedSubmissions,
       remainingDevices,
+      uniqueDevicesInstalled,
     };
   }, [devices, installations]);
 
@@ -340,6 +366,7 @@ export default function Devices() {
             <div className="text-center">
               <p className="text-sm text-muted-foreground font-medium">Total Installation Submissions</p>
               <p className="text-3xl font-bold mt-1 text-blue-600">{stats.totalInstallations}</p>
+              <p className="text-xs text-muted-foreground mt-1">({stats.uniqueDevicesInstalled} unique devices)</p>
             </div>
           </CardContent>
         </Card>
@@ -365,7 +392,7 @@ export default function Devices() {
         <Card className="border shadow-sm hover:shadow-md transition-shadow">
           <CardContent className="p-6">
             <div className="text-center">
-              <p className="text-sm text-muted-foreground font-medium">Remaining Devices</p>
+              <p className="text-sm text-muted-foreground font-medium">Not Installed</p>
               <p className="text-3xl font-bold mt-1 text-slate-600">{stats.remainingDevices}</p>
             </div>
           </CardContent>
@@ -400,6 +427,7 @@ export default function Devices() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Statuses</SelectItem>
+                <SelectItem value="not_installed">Not Installed</SelectItem>
                 <SelectItem value="pending">Pending</SelectItem>
                 <SelectItem value="installed">Installed</SelectItem>
                 <SelectItem value="verified">Verified</SelectItem>
@@ -460,7 +488,9 @@ export default function Devices() {
       {/* Devices Table */}
       <Card className="border shadow-sm">
         <CardHeader>
-          <CardTitle className="text-2xl font-bold">Devices ({filteredDevices.length})</CardTitle>
+          <CardTitle className="text-2xl font-bold">
+            Devices ({displayedDevices.length}{filteredDevices.length > displayLimit ? ` of ${filteredDevices.length}` : ''})
+          </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="rounded-md border overflow-x-auto">
@@ -502,7 +532,9 @@ export default function Devices() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredDevices.map((device) => {
+                  displayedDevices.map((device) => {
+                    // Check if device has an installation
+                    const hasInstallation = !!device.installation;
                     const config = statusConfig[device.status];
                     const Icon = config.icon;
                     
@@ -533,10 +565,17 @@ export default function Devices() {
                           </div>
                         </TableCell>
                         <TableCell className="px-2 py-2">
-                          <Badge variant="outline" className={`${config.color} text-[10px] px-1.5 py-0.5`}>
-                            <Icon className="h-2.5 w-2.5 mr-0.5" />
-                            {config.label}
-                          </Badge>
+                          {!hasInstallation ? (
+                            <Badge variant="outline" className="text-slate-600 bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-[10px] px-1.5 py-0.5">
+                              <Package className="h-2.5 w-2.5 mr-0.5" />
+                              Not Installed
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className={`${config.color} text-[10px] px-1.5 py-0.5`}>
+                              <Icon className="h-2.5 w-2.5 mr-0.5" />
+                              {config.label}
+                            </Badge>
+                          )}
                         </TableCell>
                         <TableCell className="px-2 py-2">
                           <div className="truncate max-w-[100px]" title={device.installation?.installedByName || "-"}>
@@ -565,6 +604,14 @@ export default function Devices() {
               </TableBody>
             </Table>
           </div>
+          
+          {displayedDevices.length < filteredDevices.length && (
+            <div className="mt-6 p-4 text-center border-t bg-muted/30">
+              <Button variant="default" size="lg" onClick={handleShowMore} className="min-w-[200px]">
+                Show More ({filteredDevices.length - displayedDevices.length} remaining)
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

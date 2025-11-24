@@ -4,6 +4,8 @@ import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -15,6 +17,7 @@ import { Progress } from "@/components/ui/progress";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import type { UserProfile, Team, TeamMember, Installation } from "@/lib/types";
 import * as XLSX from 'xlsx';
+import { format } from 'date-fns';
 
 export default function Admin() {
   const { userProfile } = useAuth();
@@ -55,6 +58,21 @@ export default function Admin() {
 
   // Duplicate Installations Export State
   const [exportingDuplicates, setExportingDuplicates] = useState(false);
+
+  // Bulk Team Change State
+  const [deviceIdsInput, setDeviceIdsInput] = useState("");
+  const [bulkChangeSourceTeamId, setBulkChangeSourceTeamId] = useState("");
+  const [bulkChangeTargetTeamId, setBulkChangeTargetTeamId] = useState("");
+  const [matchingTeamInstallations, setMatchingTeamInstallations] = useState<Installation[]>([]);
+  const [loadingTeamMatches, setLoadingTeamMatches] = useState(false);
+  const [updatingTeams, setUpdatingTeams] = useState(false);
+  const [showTeamUpdateDialog, setShowTeamUpdateDialog] = useState(false);
+
+  // Export Installations by UIDs State
+  const [exportDeviceIdsInput, setExportDeviceIdsInput] = useState("");
+  const [exportMatchingInstallations, setExportMatchingInstallations] = useState<Installation[]>([]);
+  const [loadingExportMatches, setLoadingExportMatches] = useState(false);
+  const [exportingSelectedInstallations, setExportingSelectedInstallations] = useState(false);
 
   // Real-time users listener
   useEffect(() => {
@@ -1078,6 +1096,325 @@ export default function Admin() {
     }
   };
 
+  const findInstallationsForTeamChange = async () => {
+    if (!deviceIdsInput.trim()) {
+      toast({
+        variant: "destructive",
+        title: "Device IDs Required",
+        description: "Please enter device IDs (one per line).",
+      });
+      return;
+    }
+
+    if (!bulkChangeSourceTeamId || !bulkChangeTargetTeamId) {
+      toast({
+        variant: "destructive",
+        title: "Teams Required",
+        description: "Please select both source and target teams.",
+      });
+      return;
+    }
+
+    setLoadingTeamMatches(true);
+    setMatchingTeamInstallations([]);
+
+    try {
+      // Parse device IDs from input (one per line)
+      const deviceIds = deviceIdsInput
+        .split('\n')
+        .map(id => id.trim().toUpperCase())
+        .filter(id => id.length > 0);
+
+      if (deviceIds.length === 0) {
+        toast({
+          variant: "destructive",
+          title: "No Valid Device IDs",
+          description: "Please enter at least one device ID.",
+        });
+        setLoadingTeamMatches(false);
+        return;
+      }
+
+      const installationsRef = collection(db, "installations");
+      const snapshot = await getDocs(installationsRef);
+      
+      const matches: Installation[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        const deviceId = data.deviceId?.toUpperCase();
+        
+        // Check if device ID is in the list and team matches source
+        if (deviceIds.includes(deviceId) && data.teamId === bulkChangeSourceTeamId) {
+          matches.push({
+            ...data,
+            id: doc.id,
+            createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : data.createdAt,
+            updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : data.updatedAt,
+            verifiedAt: data.verifiedAt?.toDate ? data.verifiedAt.toDate() : data.verifiedAt,
+            systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate ? data.systemPreVerifiedAt.toDate() : data.systemPreVerifiedAt,
+            serverRefreshedAt: data.serverRefreshedAt?.toDate ? data.serverRefreshedAt.toDate() : data.serverRefreshedAt,
+          } as Installation);
+        }
+      });
+
+      setMatchingTeamInstallations(matches);
+      
+      if (matches.length > 0) {
+        setShowTeamUpdateDialog(true);
+      } else {
+        toast({
+          title: "No Installations Found",
+          description: `No installations found matching the specified device IDs with team ${bulkChangeSourceTeamId}.`,
+        });
+      }
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Search Failed",
+        description: error.message || "An error occurred while searching.",
+      });
+    } finally {
+      setLoadingTeamMatches(false);
+    }
+  };
+
+  const handleBulkTeamUpdate = async () => {
+    if (matchingTeamInstallations.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No Installations",
+        description: "No installations found to update.",
+      });
+      return;
+    }
+
+    setUpdatingTeams(true);
+
+    try {
+      let batch = writeBatch(db);
+      let batchCount = 0;
+
+      for (const installation of matchingTeamInstallations) {
+        const installationRef = doc(db, "installations", installation.id);
+        
+        batch.update(installationRef, {
+          teamId: bulkChangeTargetTeamId,
+          updatedAt: serverTimestamp(),
+        });
+        batchCount++;
+
+        if (batchCount === 500) {
+          await batch.commit();
+          batchCount = 0;
+          batch = writeBatch(db);
+        }
+      }
+
+      if (batchCount > 0) {
+        await batch.commit();
+      }
+
+      toast({
+        title: "Update Complete",
+        description: `Successfully updated ${matchingTeamInstallations.length} installation(s) to new team.`,
+      });
+
+      setMatchingTeamInstallations([]);
+      setShowTeamUpdateDialog(false);
+      setDeviceIdsInput("");
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Update Failed",
+        description: error.message || "An error occurred during update.",
+      });
+    } finally {
+      setUpdatingTeams(false);
+    }
+  };
+
+  const findInstallationsForExport = async () => {
+    if (!exportDeviceIdsInput.trim()) {
+      toast({
+        variant: "destructive",
+        title: "Device IDs Required",
+        description: "Please enter device IDs (one per line).",
+      });
+      return;
+    }
+
+    setLoadingExportMatches(true);
+    setExportMatchingInstallations([]);
+
+    try {
+      // Parse device IDs from input (one per line)
+      const deviceIds = exportDeviceIdsInput
+        .split('\n')
+        .map(id => id.trim().toUpperCase())
+        .filter(id => id.length > 0);
+
+      if (deviceIds.length === 0) {
+        toast({
+          variant: "destructive",
+          title: "No Valid Device IDs",
+          description: "Please enter at least one device ID.",
+        });
+        setLoadingExportMatches(false);
+        return;
+      }
+
+      const installationsRef = collection(db, "installations");
+      const snapshot = await getDocs(installationsRef);
+      
+      const matches: Installation[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        const deviceId = data.deviceId?.toUpperCase();
+        
+        // Check if device ID is in the list
+        if (deviceIds.includes(deviceId)) {
+          matches.push({
+            ...data,
+            id: doc.id,
+            createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : data.createdAt,
+            updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : data.updatedAt,
+            verifiedAt: data.verifiedAt?.toDate ? data.verifiedAt.toDate() : data.verifiedAt,
+            systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate ? data.systemPreVerifiedAt.toDate() : data.systemPreVerifiedAt,
+            serverRefreshedAt: data.serverRefreshedAt?.toDate ? data.serverRefreshedAt.toDate() : data.serverRefreshedAt,
+          } as Installation);
+        }
+      });
+
+      setExportMatchingInstallations(matches);
+      
+      if (matches.length > 0) {
+        toast({
+          title: "Installations Found",
+          description: `Found ${matches.length} installation(s) matching the specified device IDs.`,
+        });
+      } else {
+        toast({
+          title: "No Installations Found",
+          description: "No installations found matching the specified device IDs.",
+        });
+      }
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Search Failed",
+        description: error.message || "An error occurred while searching.",
+      });
+    } finally {
+      setLoadingExportMatches(false);
+    }
+  };
+
+  const exportSelectedInstallations = async () => {
+    if (exportMatchingInstallations.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No Installations",
+        description: "No installations found to export.",
+      });
+      return;
+    }
+
+    setExportingSelectedInstallations(true);
+
+    try {
+      // Fetch all teams to resolve team names
+      const teamsSnapshot = await getDocs(collection(db, "teams"));
+      const teamsMap = new Map<string, string>();
+      teamsSnapshot.docs.forEach(doc => teamsMap.set(doc.id, doc.data().name));
+
+      // Sort by deviceId and then by createdAt
+      const sortedInstallations = [...exportMatchingInstallations].sort((a, b) => {
+        if (a.deviceId < b.deviceId) return -1;
+        if (a.deviceId > b.deviceId) return 1;
+        return (a.createdAt?.getTime() || 0) - (b.createdAt?.getTime() || 0);
+      });
+
+      const headers = [
+        "Serial No", "Installation ID", "Device UID", "Location ID", "Original Location ID",
+        "Latitude", "Longitude", "Sensor Reading (cm)", "Latest Server Reading (cm)", "Latest Server Timestamp",
+        "Installed By Name", "Installed By UID", "Team Name", "Team ID", "Status", "Flagged Reason",
+        "Verified By", "Verified At", "System Pre-Verified", "System Pre-Verified At",
+        "Created At", "Updated At", "Device Input Method", "Server Refreshed At",
+        "Image URLs", "Video URL", "Tags"
+      ];
+
+      const csvRows = sortedInstallations.map((inst, index) => [
+        (index + 1).toString(),
+        inst.id,
+        inst.deviceId,
+        inst.locationId,
+        inst.originalLocationId || "-",
+        inst.latitude != null ? inst.latitude.toFixed(6) : "-",
+        inst.longitude != null ? inst.longitude.toFixed(6) : "-",
+        inst.sensorReading != null ? inst.sensorReading.toString() : "-",
+        inst.latestDisCm != null ? inst.latestDisCm.toString() : "-",
+        inst.latestDisTimestamp || "-",
+        inst.installedByName || "-",
+        inst.installedBy || "-",
+        teamsMap.get(inst.teamId || "") || "-",
+        inst.teamId || "-",
+        inst.status,
+        inst.flaggedReason || "-",
+        inst.verifiedBy || "-",
+        inst.verifiedAt ? format(inst.verifiedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+        inst.systemPreVerified ? "Yes" : "No",
+        inst.systemPreVerifiedAt ? format(inst.systemPreVerifiedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+        inst.createdAt ? format(inst.createdAt, "yyyy-MM-dd HH:mm:ss") : "-",
+        inst.updatedAt ? format(inst.updatedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+        inst.deviceInputMethod || "-",
+        inst.serverRefreshedAt ? format(inst.serverRefreshedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+        inst.imageUrls?.join("; ") || "-",
+        inst.videoUrl || "-",
+        inst.tags?.join("; ") || "-",
+      ]);
+
+      const allRows = [headers, ...csvRows];
+      const csvContent = allRows
+        .map((row) =>
+          row
+            .map((value) => {
+              const safeValue = value ?? "";
+              return `"${safeValue.replace(/"/g, '""')}"`;
+            })
+            .join(",")
+        )
+        .join("\r\n");
+
+      const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const dateStr = new Date().toISOString().split('T')[0];
+      link.setAttribute("download", `selected-installations-${dateStr}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Export Complete",
+        description: `Exported ${sortedInstallations.length} installation(s) successfully.`,
+      });
+
+      // Clear the results after successful export
+      setExportMatchingInstallations([]);
+      setExportDeviceIdsInput("");
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error.message || "An error occurred during export.",
+      });
+    } finally {
+      setExportingSelectedInstallations(false);
+    }
+  };
+
   const handleLocationUpload = async () => {
     if (!locationFile || !userProfile) return;
 
@@ -1772,6 +2109,302 @@ export default function Admin() {
               <li>All fields and metadata for comprehensive analysis</li>
             </ul>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Bulk Team Change */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Users className="h-5 w-5" />
+            Bulk Team Change
+          </CardTitle>
+          <CardDescription>Change team for multiple installations by device IDs</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Source Team (From)</Label>
+              <Select value={bulkChangeSourceTeamId} onValueChange={setBulkChangeSourceTeamId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select source team" />
+                </SelectTrigger>
+                <SelectContent>
+                  {teams.map((team) => (
+                    <SelectItem key={team.id} value={team.id}>
+                      {team.name} ({team.id})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Target Team (To)</Label>
+              <Select value={bulkChangeTargetTeamId} onValueChange={setBulkChangeTargetTeamId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select target team" />
+                </SelectTrigger>
+                <SelectContent>
+                  {teams.map((team) => (
+                    <SelectItem key={team.id} value={team.id}>
+                      {team.name} ({team.id})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="deviceIds">Device IDs (one per line)</Label>
+            <Textarea
+              id="deviceIds"
+              value={deviceIdsInput}
+              onChange={(e) => setDeviceIdsInput(e.target.value)}
+              placeholder="E75832989D048709&#10;434F564A84ADB55F&#10;8E9F81B4EDF9910B&#10;..."
+              className="font-mono h-48"
+              disabled={loadingTeamMatches || updatingTeams}
+            />
+            <p className="text-xs text-muted-foreground">
+              Enter device IDs, one per line. Will only update installations matching these device IDs AND the source team.
+            </p>
+          </div>
+
+          <div className="flex gap-3">
+            <Button
+              onClick={findInstallationsForTeamChange}
+              disabled={!bulkChangeSourceTeamId || !bulkChangeTargetTeamId || !deviceIdsInput.trim() || loadingTeamMatches || updatingTeams}
+            >
+              {loadingTeamMatches ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Searching...
+                </>
+              ) : (
+                <>
+                  <Search className="h-4 w-4 mr-2" />
+                  Find Matching Installations
+                </>
+              )}
+            </Button>
+          </div>
+
+          {matchingTeamInstallations.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-lg bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-blue-600" />
+                  <span className="font-semibold text-blue-600">
+                    Found {matchingTeamInstallations.length} matching installation{matchingTeamInstallations.length !== 1 ? 's' : ''}
+                  </span>
+                </div>
+                <Button
+                  variant="default"
+                  onClick={() => setShowTeamUpdateDialog(true)}
+                  disabled={updatingTeams}
+                >
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Update Teams
+                </Button>
+              </div>
+
+              <div className="border rounded-lg p-4 max-h-96 overflow-y-auto">
+                <p className="text-sm font-semibold mb-3">Preview (showing first 10):</p>
+                <div className="space-y-2">
+                  {matchingTeamInstallations.slice(0, 10).map((installation) => {
+                    const sourceTeam = teams.find(t => t.id === installation.teamId);
+                    const targetTeam = teams.find(t => t.id === bulkChangeTargetTeamId);
+                    return (
+                      <div key={installation.id} className="flex items-center justify-between p-3 rounded-md bg-muted/50 text-sm">
+                        <div className="flex-1 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium font-mono">{installation.deviceId}</span>
+                            <Badge variant="outline" className="text-xs">{installation.locationId}</Badge>
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Installer: {installation.installedByName}
+                          </div>
+                        </div>
+                        <div className="text-right space-y-1">
+                          <div className="text-xs text-muted-foreground">From: {sourceTeam?.name || bulkChangeSourceTeamId}</div>
+                          <div className="text-xs font-medium text-green-600">To: {targetTeam?.name || bulkChangeTargetTeamId}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {matchingTeamInstallations.length > 10 && (
+                    <p className="text-xs text-muted-foreground text-center pt-2">
+                      ... and {matchingTeamInstallations.length - 10} more
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Team Update Confirmation Dialog */}
+      <AlertDialog open={showTeamUpdateDialog} onOpenChange={setShowTeamUpdateDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Bulk Team Change</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <p>You are about to update <strong>{matchingTeamInstallations.length}</strong> installation(s).</p>
+              <p className="font-semibold">Changes:</p>
+              <ul className="list-disc list-inside space-y-1 text-sm">
+                <li>Change team from <strong>{teams.find(t => t.id === bulkChangeSourceTeamId)?.name || bulkChangeSourceTeamId}</strong></li>
+                <li>To <strong>{teams.find(t => t.id === bulkChangeTargetTeamId)?.name || bulkChangeTargetTeamId}</strong></li>
+              </ul>
+              <p className="text-amber-600 dark:text-amber-500 font-medium mt-3">
+                This action cannot be undone. Are you sure you want to continue?
+              </p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={updatingTeams}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleBulkTeamUpdate}
+              disabled={updatingTeams}
+              className="bg-primary"
+            >
+              {updatingTeams ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Updating...
+                </>
+              ) : (
+                <>
+                  Confirm Update
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Export Installations by Device UIDs */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FileDown className="h-5 w-5" />
+            Export Installations by Device UIDs
+          </CardTitle>
+          <CardDescription>Enter device UIDs to get all installation details in CSV format</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="space-y-2">
+            <Label htmlFor="exportDeviceIds">Device UIDs (one per line)</Label>
+            <Textarea
+              id="exportDeviceIds"
+              value={exportDeviceIdsInput}
+              onChange={(e) => setExportDeviceIdsInput(e.target.value)}
+              placeholder="E75832989D048709&#10;434F564A84ADB55F&#10;8E9F81B4EDF9910B&#10;..."
+              className="font-mono h-48"
+              disabled={loadingExportMatches || exportingSelectedInstallations}
+            />
+            <p className="text-xs text-muted-foreground">
+              Enter device UIDs, one per line. Will find all installations for these devices.
+            </p>
+          </div>
+
+          <div className="flex gap-3">
+            <Button
+              onClick={findInstallationsForExport}
+              disabled={!exportDeviceIdsInput.trim() || loadingExportMatches || exportingSelectedInstallations}
+            >
+              {loadingExportMatches ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Searching...
+                </>
+              ) : (
+                <>
+                  <Search className="h-4 w-4 mr-2" />
+                  Find Installations
+                </>
+              )}
+            </Button>
+
+            {exportMatchingInstallations.length > 0 && (
+              <Button
+                variant="default"
+                onClick={exportSelectedInstallations}
+                disabled={exportingSelectedInstallations}
+              >
+                {exportingSelectedInstallations ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Exporting...
+                  </>
+                ) : (
+                  <>
+                    <FileDown className="h-4 w-4 mr-2" />
+                    Export to CSV
+                  </>
+                )}
+              </Button>
+            )}
+          </div>
+
+          {exportMatchingInstallations.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-lg bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-800">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-green-600" />
+                  <span className="font-semibold text-green-600">
+                    Found {exportMatchingInstallations.length} installation{exportMatchingInstallations.length !== 1 ? 's' : ''} ready for export
+                  </span>
+                </div>
+              </div>
+
+              <div className="border rounded-lg p-4 max-h-96 overflow-y-auto">
+                <p className="text-sm font-semibold mb-3">Preview (showing first 10):</p>
+                <div className="space-y-2">
+                  {exportMatchingInstallations.slice(0, 10).map((installation) => {
+                    const team = teams.find(t => t.id === installation.teamId);
+                    return (
+                      <div key={installation.id} className="flex items-center justify-between p-3 rounded-md bg-muted/50 text-sm">
+                        <div className="flex-1 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium font-mono">{installation.deviceId}</span>
+                            <Badge variant="outline" className="text-xs">{installation.locationId}</Badge>
+                            <Badge 
+                              variant={installation.status === "verified" ? "default" : installation.status === "flagged" ? "destructive" : "secondary"}
+                              className="text-xs"
+                            >
+                              {installation.status}
+                            </Badge>
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Installer: {installation.installedByName} • Team: {team?.name || installation.teamId}
+                          </div>
+                        </div>
+                        <div className="text-right text-xs text-muted-foreground">
+                          {installation.createdAt ? format(installation.createdAt, "MMM dd, yyyy") : "-"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {exportMatchingInstallations.length > 10 && (
+                    <p className="text-xs text-muted-foreground text-center pt-2">
+                      ... and {exportMatchingInstallations.length - 10} more
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="text-xs text-muted-foreground space-y-1">
+                <p><strong>CSV will include:</strong></p>
+                <ul className="list-disc list-inside ml-2">
+                  <li>Installation ID, Device UID, Location ID, GPS Coordinates</li>
+                  <li>Sensor readings, server data, timestamps</li>
+                  <li>Installer info, team details, verification status</li>
+                  <li>Images, videos, tags, and all metadata</li>
+                </ul>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

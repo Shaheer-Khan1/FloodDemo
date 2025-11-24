@@ -70,6 +70,7 @@ export default function Verification() {
   const [installerNameFilter, setInstallerNameFilter] = useState<string>("");
   const [teamIdFilter, setTeamIdFilter] = useState<string>("");
   const [dateFilter, setDateFilter] = useState<string>("");
+  const [displayLimit, setDisplayLimit] = useState(500);
   
   // Edit mode states
   const [isEditMode, setIsEditMode] = useState(false);
@@ -411,6 +412,11 @@ export default function Verification() {
     return filtered;
   }, [verificationItems, activeFilter, installerNameFilter, teamIdFilter, dateFilter, userProfile?.isAdmin]);
 
+  // Limit displayed items for performance
+  const paginatedDisplayedItems = useMemo(() => {
+    return displayedItems.slice(0, displayLimit);
+  }, [displayedItems, displayLimit]);
+
   // Apply filters to verified installations
   const displayedVerifiedItems = useMemo(() => {
     // Only show verified items if 'verified' filter is active, or if no filter is active and we want to show verified table
@@ -481,6 +487,15 @@ export default function Verification() {
 
     return filtered;
   }, [verifiedInstallations, devices, installerNameFilter, teamIdFilter, activeFilter, dateFilter, userProfile?.isAdmin]);
+
+  // Limit displayed verified items for performance
+  const paginatedVerifiedItems = useMemo(() => {
+    return displayedVerifiedItems.slice(0, displayLimit);
+  }, [displayedVerifiedItems, displayLimit]);
+
+  const handleShowMore = () => {
+    setDisplayLimit(prev => prev + 500);
+  };
 
   // No auto-approval. We only mark system pre-verified for variance < 5% and keep status pending.
 
@@ -1239,7 +1254,9 @@ export default function Verification() {
         <Card className="border shadow-sm">
           <CardHeader>
             <div className="flex items-center justify-between">
-              <CardTitle className="text-2xl font-bold">Pending Installations ({displayedItems.length})</CardTitle>
+              <CardTitle className="text-2xl font-bold">
+                Pending Installations ({paginatedDisplayedItems.length}{displayedItems.length > displayLimit ? ` of ${displayedItems.length}` : ''})
+              </CardTitle>
               <Button
                 variant="outline"
                 className="flex items-center gap-2"
@@ -1261,6 +1278,7 @@ export default function Verification() {
                 </p>
               </div>
             ) : (
+            <>
             <div className="rounded-md border">
               <Table>
                 <TableHeader>
@@ -1277,7 +1295,7 @@ export default function Verification() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {displayedItems.map((item) => {
+                  {paginatedDisplayedItems.map((item) => {
                     const hasHighVariance = item.percentageDifference && item.percentageDifference > 5;
                     
                     return (
@@ -1388,7 +1406,16 @@ export default function Verification() {
                 </TableBody>
               </Table>
             </div>
-          )}
+            
+            {paginatedDisplayedItems.length < displayedItems.length && (
+              <div className="mt-6 p-4 text-center border-t bg-muted/30">
+                <Button variant="default" size="lg" onClick={handleShowMore} className="min-w-[200px]">
+                  Show More ({displayedItems.length - paginatedDisplayedItems.length} remaining)
+                </Button>
+              </div>
+            )}
+            </>
+            )}
         </CardContent>
       </Card>
       )}
@@ -1399,7 +1426,7 @@ export default function Verification() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle className="text-2xl font-bold">
-                Verified Installations ({displayedVerifiedItems.length})
+                Verified Installations ({paginatedVerifiedItems.length}{displayedVerifiedItems.length > displayLimit ? ` of ${displayedVerifiedItems.length}` : ''})
               </CardTitle>
               <Button
                 variant="outline"
@@ -1422,6 +1449,7 @@ export default function Verification() {
                 </p>
               </div>
             ) : (
+              <>
               <div className="rounded-md border">
                 <Table>
                   <TableHeader>
@@ -1439,7 +1467,7 @@ export default function Verification() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {displayedVerifiedItems.map((item) => {
+                    {paginatedVerifiedItems.map((item) => {
                       const installation = item.installation;
                       const serverValue = installation.latestDisCm;
                       
@@ -1549,6 +1577,15 @@ export default function Verification() {
                   </TableBody>
                 </Table>
               </div>
+              
+              {paginatedVerifiedItems.length < displayedVerifiedItems.length && (
+                <div className="mt-6 p-4 text-center border-t bg-muted/30">
+                  <Button variant="default" size="lg" onClick={handleShowMore} className="min-w-[200px]">
+                    Show More ({displayedVerifiedItems.length - paginatedVerifiedItems.length} remaining)
+                  </Button>
+                </div>
+              )}
+              </>
             )}
           </CardContent>
         </Card>
