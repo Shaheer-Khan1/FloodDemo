@@ -90,6 +90,10 @@ export default function Verification() {
   const [itemToDelete, setItemToDelete] = useState<VerificationItem | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // Edit confirmation states
+  const [editConfirmDialogOpen, setEditConfirmDialogOpen] = useState(false);
+  const [pendingChanges, setPendingChanges] = useState<Array<{field: string, oldValue: string, newValue: string}>>([]);
+
   // Real-time installations listener (pending verification)
   useEffect(() => {
     if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
@@ -656,32 +660,94 @@ export default function Verification() {
       return;
     }
 
+    const originalInstallation = selectedItem.installation;
+    
+    // Normalize coordinates for comparison (treat null and undefined as same)
+    const normalizeCoord = (val: number | null | undefined) => val ?? null;
+    const originalLat = normalizeCoord(originalInstallation.latitude);
+    const originalLon = normalizeCoord(originalInstallation.longitude);
+    
+    // Collect all changes
+    const changes: Array<{field: string, oldValue: string, newValue: string}> = [];
+    
+    if (editedDeviceId.trim() !== originalInstallation.deviceId) {
+      changes.push({
+        field: "Device ID",
+        oldValue: originalInstallation.deviceId,
+        newValue: editedDeviceId.trim()
+      });
+    }
+    
+    if (sensorReading !== originalInstallation.sensorReading) {
+      changes.push({
+        field: "Sensor Reading",
+        oldValue: `${originalInstallation.sensorReading} cm`,
+        newValue: `${sensorReading} cm`
+      });
+    }
+    
+    if (editedLocationId.trim() !== originalInstallation.locationId) {
+      changes.push({
+        field: "Location ID",
+        oldValue: originalInstallation.locationId || "-",
+        newValue: editedLocationId.trim()
+      });
+    }
+    
+    if (latitude !== originalLat) {
+      changes.push({
+        field: "Latitude",
+        oldValue: originalLat !== null ? originalLat.toFixed(6) : "Not set",
+        newValue: latitude !== null ? latitude.toFixed(6) : "Not set"
+      });
+    }
+    
+    if (longitude !== originalLon) {
+      changes.push({
+        field: "Longitude",
+        oldValue: originalLon !== null ? originalLon.toFixed(6) : "Not set",
+        newValue: longitude !== null ? longitude.toFixed(6) : "Not set"
+      });
+    }
+    
+    if (newImageFile) {
+      changes.push({
+        field: "Image",
+        oldValue: "Current images",
+        newValue: `Add new image: ${newImageFile.name}`
+      });
+    }
+
+    if (changes.length === 0) {
+      toast({
+        title: "No Changes",
+        description: "No changes were made to the installation.",
+      });
+      setIsEditMode(false);
+      return;
+    }
+
+    // Show confirmation dialog with changes
+    setPendingChanges(changes);
+    setEditConfirmDialogOpen(true);
+  };
+
+  const handleEditConfirmed = async () => {
+    if (!selectedItem || !userProfile) return;
+
+    setEditConfirmDialogOpen(false);
     setProcessing(true);
     try {
       const originalInstallation = selectedItem.installation;
       
-      // Normalize coordinates for comparison (treat null and undefined as same)
+      // Normalize coordinates for comparison
       const normalizeCoord = (val: number | null | undefined) => val ?? null;
       const originalLat = normalizeCoord(originalInstallation.latitude);
       const originalLon = normalizeCoord(originalInstallation.longitude);
       
-      const hasChanges = 
-        editedDeviceId.trim() !== originalInstallation.deviceId ||
-        sensorReading !== originalInstallation.sensorReading ||
-        editedLocationId.trim() !== originalInstallation.locationId ||
-        latitude !== originalLat ||
-        longitude !== originalLon ||
-        newImageFile !== null;
-
-      if (!hasChanges) {
-        toast({
-          title: "No Changes",
-          description: "No changes were made to the installation.",
-        });
-        setIsEditMode(false);
-        setProcessing(false);
-        return;
-      }
+      const sensorReading = parseFloat(editedSensorReading);
+      const latitude = editedLatitude ? parseFloat(editedLatitude) : null;
+      const longitude = editedLongitude ? parseFloat(editedLongitude) : null;
 
       // Get existing tags or initialize empty array
       const existingTags = originalInstallation.tags || [];
@@ -2188,6 +2254,79 @@ export default function Verification() {
               className="max-w-[95vw] max-h-[90vh] object-contain mx-auto"
             />
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Confirmation Dialog */}
+      <Dialog open={editConfirmDialogOpen} onOpenChange={setEditConfirmDialogOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-blue-600">
+              <AlertCircle className="h-5 w-5" />
+              Confirm Changes
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              You are about to make the following changes to this installation:
+            </p>
+            <div className="border rounded-lg divide-y max-h-[400px] overflow-y-auto">
+              {pendingChanges.map((change, index) => (
+                <div key={index} className="p-4 space-y-2">
+                  <div className="font-semibold text-sm text-foreground">{change.field}</div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <div className="text-xs text-muted-foreground font-medium">Old Value</div>
+                      <div className="text-sm p-2 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded font-mono">
+                        {change.oldValue}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs text-muted-foreground font-medium">New Value</div>
+                      <div className="text-sm p-2 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-800 rounded font-mono">
+                        {change.newValue}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <Alert className="bg-yellow-50 dark:bg-yellow-950/20 border-yellow-200 dark:border-yellow-800">
+              <AlertTriangle className="h-4 w-4 text-yellow-600" />
+              <AlertDescription className="text-yellow-900 dark:text-yellow-100">
+                Original values will be preserved in version history. This action can be tracked but not automatically undone.
+              </AlertDescription>
+            </Alert>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEditConfirmDialogOpen(false);
+                setPendingChanges([]);
+              }}
+              disabled={processing || uploadingImage}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleEditConfirmed}
+              disabled={processing || uploadingImage}
+              className="bg-blue-600 hover:bg-blue-700"
+            >
+              {(processing || uploadingImage) ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  {uploadingImage ? "Uploading..." : "Saving..."}
+                </>
+              ) : (
+                <>
+                  <Save className="h-4 w-4 mr-2" />
+                  Confirm Changes
+                </>
+              )}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
