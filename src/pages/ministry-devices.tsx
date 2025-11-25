@@ -90,6 +90,7 @@ export default function MinistryDevices() {
   const [activeFilter, setActiveFilter] = useState<'all' | 'withServerData' | 'noServerData'>('all');
   const [dateFilter, setDateFilter] = useState<string>("");
   const [generatingReport, setGeneratingReport] = useState(false);
+  const [exporting9999, setExporting9999] = useState(false);
 
   useEffect(() => {
     const unsubD = onSnapshot(collection(db, "devices"), (snap) => {
@@ -303,6 +304,118 @@ export default function MinistryDevices() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const handleLocation9999Export = () => {
+    setExporting9999(true);
+    
+    try {
+      // Filter for location 9999 only from all installations
+      const location9999Installations = allRows.filter(row => {
+        const locationId = row.inst?.locationId ? String(row.inst.locationId).trim() : "";
+        return locationId === "9999";
+      });
+
+      if (location9999Installations.length === 0) {
+        toast({
+          title: "No Location 9999 Found",
+          description: "No installations with location ID 9999 were found.",
+        });
+        setExporting9999(false);
+        return;
+      }
+
+      // Group by Amanah
+      const groupedByAmanah: Record<string, typeof location9999Installations> = {};
+      
+      location9999Installations.forEach(row => {
+        const amanahName = row.amanah || "Unknown";
+        if (!groupedByAmanah[amanahName]) {
+          groupedByAmanah[amanahName] = [];
+        }
+        groupedByAmanah[amanahName].push(row);
+      });
+
+      // Generate CSV for each Amanah
+      Object.entries(groupedByAmanah).forEach(([amanahName, amanahRows]) => {
+        // Sort by installer name and device ID
+        const sortedRows = [...amanahRows].sort((a, b) => {
+          const nameA = a.inst.installedByName || "";
+          const nameB = b.inst.installedByName || "";
+          if (nameA !== nameB) return nameA.localeCompare(nameB);
+          return a.device.id.localeCompare(b.device.id);
+        });
+
+        const headers = [
+          "Serial No", "Location ID", "Coordinates", "Device ID", "Installer Name", "Amanah", "Municipality", "Sensor Height"
+        ];
+
+        const csvRows = sortedRows.map((row, index) => {
+          const { device, inst } = row;
+          const locationId = inst?.locationId ? String(inst.locationId).trim() : "";
+          const location = locationMap.get(locationId);
+          
+          // For location 9999, use installation coordinates if available, otherwise use location coordinates
+          const latitude = inst?.latitude != null ? inst.latitude : (location?.latitude ?? null);
+          const longitude = inst?.longitude != null ? inst.longitude : (location?.longitude ?? null);
+          
+          // Format coordinates as a single string
+          let coordinates = "-";
+          if (latitude != null && longitude != null) {
+            coordinates = formatCoordinates(latitude, longitude);
+          }
+          
+          return [
+            (index + 1).toString(),
+            locationId || "-",
+            coordinates,
+            device.id,
+            inst.installedByName || "-",
+            row.amanah || "-",
+            location?.municipalityName || "-",
+            inst.sensorReading != null ? inst.sensorReading.toString() : "-"
+          ];
+        });
+
+        const allCsvRows = [headers, ...csvRows];
+        const csvContent = allCsvRows
+          .map((row) =>
+            row
+              .map((value) => {
+                const safeValue = value ?? "";
+                return `"${safeValue.replace(/"/g, '""')}"`;
+              })
+              .join(",")
+          )
+          .join("\r\n");
+
+        const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        const dateStr = format(new Date(), "yyyy-MM-dd");
+        const fileName = `Location_9999_${amanahName.replace(/[^a-z0-9]/gi, "_")}_${dateStr}.csv`;
+        link.setAttribute("download", fileName);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      });
+
+      const amanahCount = Object.keys(groupedByAmanah).length;
+      toast({
+        title: "Export Complete",
+        description: `Exported ${location9999Installations.length} location 9999 installation(s) across ${amanahCount} Amanah(s).`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error.message || "An error occurred during export.",
+      });
+    } finally {
+      setExporting9999(false);
+    }
   };
 
   const handleCsvExport = () => {
@@ -841,6 +954,24 @@ export default function MinistryDevices() {
               >
                 <FileDown className="h-4 w-4" />
                 Download CSV
+              </Button>
+              <Button
+                variant="outline"
+                className="flex items-center gap-2 w-full sm:w-auto bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200"
+                onClick={handleLocation9999Export}
+                disabled={exporting9999}
+              >
+                {exporting9999 ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Exporting...
+                  </>
+                ) : (
+                  <>
+                    <FileDown className="h-4 w-4" />
+                    Location 9999 CSV
+                  </>
+                )}
               </Button>
               <Button
                 onClick={generateReports}

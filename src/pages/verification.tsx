@@ -493,6 +493,11 @@ export default function Verification() {
     return displayedVerifiedItems.slice(0, displayLimit);
   }, [displayedVerifiedItems, displayLimit]);
 
+  // Reset display limit when filters change
+  useEffect(() => {
+    setDisplayLimit(500);
+  }, [activeFilter, installerNameFilter, teamIdFilter, dateFilter]);
+
   const handleShowMore = () => {
     setDisplayLimit(prev => prev + 500);
   };
@@ -1255,7 +1260,7 @@ export default function Verification() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle className="text-2xl font-bold">
-                Pending Installations ({paginatedDisplayedItems.length}{displayedItems.length > displayLimit ? ` of ${displayedItems.length}` : ''})
+                Pending Installations ({displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}{displayedItems.length})
               </CardTitle>
               <Button
                 variant="outline"
@@ -1407,9 +1412,12 @@ export default function Verification() {
               </Table>
             </div>
             
-            {paginatedDisplayedItems.length < displayedItems.length && (
-              <div className="mt-6 p-4 text-center border-t bg-muted/30">
-                <Button variant="default" size="lg" onClick={handleShowMore} className="min-w-[200px]">
+            {displayedItems.length > displayLimit && (
+              <div className="mt-6 pt-6 text-center border-t-2 border-dashed bg-blue-50 dark:bg-blue-950/20 rounded-lg p-4">
+                <p className="text-sm text-muted-foreground mb-3 font-medium">
+                  Showing {paginatedDisplayedItems.length} of {displayedItems.length} installations
+                </p>
+                <Button variant="default" size="lg" onClick={handleShowMore} className="min-w-[250px] font-semibold shadow-md">
                   Show More ({displayedItems.length - paginatedDisplayedItems.length} remaining)
                 </Button>
               </div>
@@ -1426,7 +1434,7 @@ export default function Verification() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle className="text-2xl font-bold">
-                Verified Installations ({paginatedVerifiedItems.length}{displayedVerifiedItems.length > displayLimit ? ` of ${displayedVerifiedItems.length}` : ''})
+                Verified Installations ({displayedVerifiedItems.length > displayLimit ? `${paginatedVerifiedItems.length} of ` : ''}{displayedVerifiedItems.length})
               </CardTitle>
               <Button
                 variant="outline"
@@ -1578,9 +1586,12 @@ export default function Verification() {
                 </Table>
               </div>
               
-              {paginatedVerifiedItems.length < displayedVerifiedItems.length && (
-                <div className="mt-6 p-4 text-center border-t bg-muted/30">
-                  <Button variant="default" size="lg" onClick={handleShowMore} className="min-w-[200px]">
+              {displayedVerifiedItems.length > displayLimit && (
+                <div className="mt-6 pt-6 text-center border-t-2 border-dashed bg-blue-50 dark:bg-blue-950/20 rounded-lg p-4">
+                  <p className="text-sm text-muted-foreground mb-3 font-medium">
+                    Showing {paginatedVerifiedItems.length} of {displayedVerifiedItems.length} installations
+                  </p>
+                  <Button variant="default" size="lg" onClick={handleShowMore} className="min-w-[250px] font-semibold shadow-md">
                     Show More ({displayedVerifiedItems.length - paginatedVerifiedItems.length} remaining)
                   </Button>
                 </div>
@@ -1722,43 +1733,73 @@ export default function Verification() {
                         </p>
                       )}
                     </div>
-                    {(selectedItem.installation.latitude !== undefined || selectedItem.installation.longitude !== undefined || isEditMode) && (
-                      <div>
-                        <p className="text-sm text-muted-foreground">Coordinates</p>
-                        {isEditMode ? (
-                          <div className="grid grid-cols-2 gap-2 mt-1">
-                            <div>
-                              <Label htmlFor="latitude" className="text-xs">Latitude</Label>
-                              <Input
-                                id="latitude"
-                                type="number"
-                                step="0.000001"
-                                value={editedLatitude}
-                                onChange={(e) => setEditedLatitude(e.target.value)}
-                                placeholder="Latitude"
-                              />
-                            </div>
-                            <div>
-                              <Label htmlFor="longitude" className="text-xs">Longitude</Label>
-                              <Input
-                                id="longitude"
-                                type="number"
-                                step="0.000001"
-                                value={editedLongitude}
-                                onChange={(e) => setEditedLongitude(e.target.value)}
-                                placeholder="Longitude"
-                              />
-                            </div>
-                          </div>
-                        ) : (
-                          <p className="text-base font-medium">
-                            {selectedItem.installation.latitude != null && selectedItem.installation.longitude != null
-                              ? `${selectedItem.installation.latitude.toFixed(6)}, ${selectedItem.installation.longitude.toFixed(6)}`
-                              : "-"}
+                    {(() => {
+                      const locationId = selectedItem.installation.locationId ? String(selectedItem.installation.locationId).trim() : "";
+                      const isLocation9999 = locationId === "9999";
+                      const location = locationMap.get(locationId);
+                      
+                      // If location is 9999, use user-entered coordinates; otherwise use location coordinates
+                      let displayLat: number | null = null;
+                      let displayLon: number | null = null;
+                      let coordinateSource = "";
+                      
+                      if (isLocation9999) {
+                        // For location 9999, use user-entered coordinates from installation
+                        displayLat = selectedItem.installation.latitude ?? null;
+                        displayLon = selectedItem.installation.longitude ?? null;
+                        coordinateSource = displayLat != null && displayLon != null ? "User Entered" : "";
+                      } else {
+                        // For other locations, use coordinates from location relation
+                        displayLat = location?.latitude ?? null;
+                        displayLon = location?.longitude ?? null;
+                        coordinateSource = displayLat != null && displayLon != null ? "From Location ID" : "";
+                      }
+                      
+                      return (displayLat !== null || displayLon !== null || isEditMode) ? (
+                        <div>
+                          <p className="text-sm text-muted-foreground">
+                            Coordinates
+                            {coordinateSource && !isEditMode && (
+                              <span className="ml-2 text-xs bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">
+                                {coordinateSource}
+                              </span>
+                            )}
                           </p>
-                        )}
-                      </div>
-                    )}
+                          {isEditMode ? (
+                            <div className="grid grid-cols-2 gap-2 mt-1">
+                              <div>
+                                <Label htmlFor="latitude" className="text-xs">Latitude</Label>
+                                <Input
+                                  id="latitude"
+                                  type="number"
+                                  step="0.000001"
+                                  value={editedLatitude}
+                                  onChange={(e) => setEditedLatitude(e.target.value)}
+                                  placeholder="Latitude"
+                                />
+                              </div>
+                              <div>
+                                <Label htmlFor="longitude" className="text-xs">Longitude</Label>
+                                <Input
+                                  id="longitude"
+                                  type="number"
+                                  step="0.000001"
+                                  value={editedLongitude}
+                                  onChange={(e) => setEditedLongitude(e.target.value)}
+                                  placeholder="Longitude"
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-base font-medium">
+                              {displayLat != null && displayLon != null
+                                ? `${displayLat.toFixed(6)}, ${displayLon.toFixed(6)}`
+                                : "-"}
+                            </p>
+                          )}
+                        </div>
+                      ) : null;
+                    })()}
                     <div>
                       <p className="text-sm text-muted-foreground">Submitted</p>
                       <p className="text-base font-medium flex items-center gap-1">
