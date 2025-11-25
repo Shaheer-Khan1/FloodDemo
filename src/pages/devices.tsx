@@ -4,6 +4,7 @@ import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -46,6 +47,7 @@ export default function Devices() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [productFilter, setProductFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<string>("");
+  const [deviceUidsFilter, setDeviceUidsFilter] = useState<string>("");
   const [displayLimit, setDisplayLimit] = useState(500);
 
   // Real-time devices listener (admin only)
@@ -149,6 +151,19 @@ export default function Devices() {
   // Filter devices
   const filteredDevices = useMemo(() => {
     return devicesWithDetails.filter(device => {
+      // Device UIDs filter (if active, only show devices in the list)
+      let matchesDeviceUids = true;
+      if (deviceUidsFilter.trim()) {
+        const deviceUidsList = deviceUidsFilter
+          .split('\n')
+          .map(uid => uid.trim().toUpperCase())
+          .filter(uid => uid.length > 0);
+        
+        if (deviceUidsList.length > 0) {
+          matchesDeviceUids = deviceUidsList.includes(device.id.toUpperCase());
+        }
+      }
+
       const matchesSearch = searchTerm === "" ||
         device.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
         device.productId.toLowerCase().includes(searchTerm.toLowerCase());
@@ -182,19 +197,20 @@ export default function Devices() {
         }
       }
 
-      return matchesSearch && matchesStatus && matchesProduct && matchesDate;
+      return matchesDeviceUids && matchesSearch && matchesStatus && matchesProduct && matchesDate;
     });
-  }, [devicesWithDetails, searchTerm, statusFilter, productFilter, dateFilter]);
+  }, [devicesWithDetails, deviceUidsFilter, searchTerm, statusFilter, productFilter, dateFilter]);
 
   const clearFilters = () => {
     setSearchTerm("");
     setStatusFilter("all");
     setProductFilter("all");
     setDateFilter("");
+    setDeviceUidsFilter("");
     setDisplayLimit(500);
   };
 
-  const hasActiveFilters = searchTerm !== "" || statusFilter !== "all" || productFilter !== "all" || dateFilter !== "";
+  const hasActiveFilters = searchTerm !== "" || statusFilter !== "all" || productFilter !== "all" || dateFilter !== "" || deviceUidsFilter.trim() !== "";
 
   // Limit displayed devices for performance
   const displayedDevices = useMemo(() => {
@@ -480,6 +496,32 @@ export default function Devices() {
             {/* Results Count */}
             <div className="ml-auto text-sm text-muted-foreground">
               {filteredDevices.length} of {devices.length} devices
+            </div>
+          </div>
+
+          {/* Device UIDs Filter */}
+          <div className="pt-4 border-t">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="device-uids-filter" className="text-sm font-semibold">
+                  Filter by Specific Device UIDs
+                </Label>
+                {deviceUidsFilter.trim() && (
+                  <Badge variant="secondary" className="text-xs">
+                    {deviceUidsFilter.split('\n').filter(uid => uid.trim()).length} UIDs entered
+                  </Badge>
+                )}
+              </div>
+              <Textarea
+                id="device-uids-filter"
+                placeholder="Enter device UIDs, one per line (e.g., E75832989D048709)"
+                value={deviceUidsFilter}
+                onChange={(e) => setDeviceUidsFilter(e.target.value)}
+                className="font-mono text-sm h-24 resize-none"
+              />
+              <p className="text-xs text-muted-foreground">
+                Enter device UIDs (one per line) to show only those devices. Leave empty to show all devices.
+              </p>
             </div>
           </div>
         </CardContent>
