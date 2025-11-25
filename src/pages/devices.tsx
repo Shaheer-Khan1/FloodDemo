@@ -548,6 +548,9 @@ export default function Devices() {
                   <TableHead className="px-2 py-2 w-[80px]">
                     <div className="truncate">Product</div>
                   </TableHead>
+                  <TableHead className="px-2 py-2 w-[110px]">
+                    <div className="truncate">Created At</div>
+                  </TableHead>
                   <TableHead className="px-2 py-2 w-[100px]">
                     <div className="truncate">Timestamp</div>
                   </TableHead>
@@ -569,7 +572,7 @@ export default function Devices() {
               <TableBody>
                 {filteredDevices.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
                       No devices found
                     </TableCell>
                   </TableRow>
@@ -595,6 +598,13 @@ export default function Devices() {
                         <TableCell className="px-2 py-2">
                           <div className="truncate max-w-[80px]" title={device.productId}>
                             {device.productId}
+                          </div>
+                        </TableCell>
+                        <TableCell className="px-2 py-2 text-muted-foreground">
+                          <div className="truncate max-w-[110px]" title={device.createdAt ? format(device.createdAt, "MMM d, yyyy HH:mm") : "-"}>
+                            {device.createdAt 
+                              ? format(device.createdAt, "MMM d, yyyy HH:mm")
+                              : "-"}
                           </div>
                         </TableCell>
                         <TableCell className="px-2 py-2 text-muted-foreground">
