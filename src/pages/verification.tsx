@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp } from "firebase/firestore";
+import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp, deleteDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
@@ -40,6 +40,7 @@ import {
   Save,
   FileDown,
   Upload,
+  Trash2,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -70,6 +71,7 @@ export default function Verification() {
   const [installerNameFilter, setInstallerNameFilter] = useState<string>("");
   const [teamIdFilter, setTeamIdFilter] = useState<string>("");
   const [dateFilter, setDateFilter] = useState<string>("");
+  const [deviceIdFilter, setDeviceIdFilter] = useState<string>("");
   const [displayLimit, setDisplayLimit] = useState(500);
   
   // Edit mode states
@@ -82,6 +84,11 @@ export default function Verification() {
   const [newImageFile, setNewImageFile] = useState<File | null>(null);
   const [newImagePreview, setNewImagePreview] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
+
+  // Delete states
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [itemToDelete, setItemToDelete] = useState<VerificationItem | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Real-time installations listener (pending verification)
   useEffect(() => {
@@ -382,6 +389,13 @@ export default function Verification() {
       );
     }
 
+    // Apply device ID filter
+    if (deviceIdFilter) {
+      filtered = filtered.filter(i => 
+        i.installation.deviceId?.toUpperCase().includes(deviceIdFilter.toUpperCase())
+      );
+    }
+
     // Apply team filter (admin only)
     if (teamIdFilter && userProfile?.isAdmin) {
       filtered = filtered.filter(i => i.installation.teamId === teamIdFilter);
@@ -410,7 +424,7 @@ export default function Verification() {
     });
 
     return filtered;
-  }, [verificationItems, activeFilter, installerNameFilter, teamIdFilter, dateFilter, userProfile?.isAdmin]);
+  }, [verificationItems, activeFilter, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter, userProfile?.isAdmin]);
 
   // Limit displayed items for performance
   const paginatedDisplayedItems = useMemo(() => {
@@ -453,6 +467,13 @@ export default function Verification() {
       );
     }
 
+    // Apply device ID filter
+    if (deviceIdFilter) {
+      filtered = filtered.filter(i => 
+        i.installation.deviceId?.toUpperCase().includes(deviceIdFilter.toUpperCase())
+      );
+    }
+
     // Apply team filter (admin only)
     if (teamIdFilter && userProfile?.isAdmin) {
       filtered = filtered.filter(i => i.installation.teamId === teamIdFilter);
@@ -486,7 +507,7 @@ export default function Verification() {
     });
 
     return filtered;
-  }, [verifiedInstallations, devices, installerNameFilter, teamIdFilter, activeFilter, dateFilter, userProfile?.isAdmin]);
+  }, [verifiedInstallations, devices, installerNameFilter, deviceIdFilter, teamIdFilter, activeFilter, dateFilter, userProfile?.isAdmin]);
 
   // Limit displayed verified items for performance
   const paginatedVerifiedItems = useMemo(() => {
@@ -496,7 +517,7 @@ export default function Verification() {
   // Reset display limit when filters change
   useEffect(() => {
     setDisplayLimit(500);
-  }, [activeFilter, installerNameFilter, teamIdFilter, dateFilter]);
+  }, [activeFilter, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter]);
 
   const handleShowMore = () => {
     setDisplayLimit(prev => prev + 500);
@@ -638,12 +659,18 @@ export default function Verification() {
     setProcessing(true);
     try {
       const originalInstallation = selectedItem.installation;
+      
+      // Normalize coordinates for comparison (treat null and undefined as same)
+      const normalizeCoord = (val: number | null | undefined) => val ?? null;
+      const originalLat = normalizeCoord(originalInstallation.latitude);
+      const originalLon = normalizeCoord(originalInstallation.longitude);
+      
       const hasChanges = 
         editedDeviceId.trim() !== originalInstallation.deviceId ||
         sensorReading !== originalInstallation.sensorReading ||
         editedLocationId.trim() !== originalInstallation.locationId ||
-        latitude !== originalInstallation.latitude ||
-        longitude !== originalInstallation.longitude ||
+        latitude !== originalLat ||
+        longitude !== originalLon ||
         newImageFile !== null;
 
       if (!hasChanges) {
@@ -709,16 +736,16 @@ export default function Verification() {
         updateData.locationId = editedLocationId.trim();
       }
 
-      if (latitude !== originalInstallation.latitude) {
+      if (latitude !== originalLat) {
         const version = getNextVersion('latitude', originalInstallation);
-        updateData[`original_latitude_${version}`] = originalInstallation.latitude;
-        updateData.latitude = latitude !== null ? latitude : null;
+        updateData[`original_latitude_${version}`] = originalLat;
+        updateData.latitude = latitude;
       }
 
-      if (longitude !== originalInstallation.longitude) {
+      if (longitude !== originalLon) {
         const version = getNextVersion('longitude', originalInstallation);
-        updateData[`original_longitude_${version}`] = originalInstallation.longitude;
-        updateData.longitude = longitude !== null ? longitude : null;
+        updateData[`original_longitude_${version}`] = originalLon;
+        updateData.longitude = longitude;
       }
 
       // Upload new image if one was selected
@@ -817,6 +844,37 @@ export default function Verification() {
       });
     } finally {
       setProcessing(false);
+    }
+  };
+
+  const handleDeleteClick = (item: VerificationItem) => {
+    setItemToDelete(item);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!itemToDelete || !userProfile) return;
+
+    setDeleting(true);
+    try {
+      // Delete the installation document
+      await deleteDoc(doc(db, "installations", itemToDelete.installation.id));
+
+      toast({
+        title: "Installation Deleted",
+        description: `Installation for device ${itemToDelete.installation.deviceId} has been permanently deleted.`,
+      });
+
+      setDeleteDialogOpen(false);
+      setItemToDelete(null);
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Delete Failed",
+        description: error instanceof Error ? error.message : "An error occurred while deleting.",
+      });
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -1173,6 +1231,18 @@ export default function Verification() {
               />
             </div>
 
+            {/* Device ID Filter */}
+            <div className="space-y-2">
+              <Label htmlFor="device-id-filter">Device ID</Label>
+              <Input
+                id="device-id-filter"
+                placeholder="Search device ID..."
+                value={deviceIdFilter}
+                onChange={(e) => setDeviceIdFilter(e.target.value)}
+                className="font-mono"
+              />
+            </div>
+
             {/* Team Filter (Admin Only) */}
             {userProfile?.isAdmin && (
               <div className="space-y-2">
@@ -1206,13 +1276,14 @@ export default function Verification() {
           </div>
 
           {/* Clear Filters Button */}
-          {(installerNameFilter || teamIdFilter || dateFilter || activeFilter !== 'all') && (
+          {(installerNameFilter || deviceIdFilter || teamIdFilter || dateFilter || activeFilter !== 'all') && (
             <div className="mt-4 flex items-center gap-2 flex-wrap">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
                   setInstallerNameFilter("");
+                  setDeviceIdFilter("");
                   setTeamIdFilter("");
                   setDateFilter("");
                   setActiveFilter('all');
@@ -1225,6 +1296,11 @@ export default function Verification() {
                 {installerNameFilter && (
                   <Badge variant="secondary" className="text-xs">
                     Installer: {installerNameFilter}
+                  </Badge>
+                )}
+                {deviceIdFilter && (
+                  <Badge variant="secondary" className="text-xs font-mono">
+                    Device: {deviceIdFilter}
                   </Badge>
                 )}
                 {teamIdFilter && (
@@ -1324,11 +1400,29 @@ export default function Verification() {
                         <TableCell>
                           <div className="flex flex-col">
                             <span>{item.installation.locationId || "-"}</span>
-                            {(item.installation.latitude != null && item.installation.longitude != null) && (
-                              <span className="text-xs text-muted-foreground">
-                                {item.installation.latitude.toFixed(6)}, {item.installation.longitude.toFixed(6)}
-                              </span>
-                            )}
+                            {(() => {
+                              const locationId = item.installation.locationId ? String(item.installation.locationId).trim() : "";
+                              const isLocation9999 = locationId === "9999";
+                              const location = locationMap.get(locationId);
+                              
+                              // If location is 9999, use user-entered coordinates; otherwise use location coordinates
+                              let displayLat: number | null = null;
+                              let displayLon: number | null = null;
+                              
+                              if (isLocation9999) {
+                                displayLat = item.installation.latitude ?? null;
+                                displayLon = item.installation.longitude ?? null;
+                              } else {
+                                displayLat = location?.latitude ?? null;
+                                displayLon = location?.longitude ?? null;
+                              }
+                              
+                              return (displayLat != null && displayLon != null) ? (
+                                <span className="text-xs text-muted-foreground">
+                                  {displayLat.toFixed(6)}, {displayLon.toFixed(6)}
+                                </span>
+                              ) : null;
+                            })()}
                           </div>
                         </TableCell>
                         <TableCell>
@@ -1404,6 +1498,13 @@ export default function Verification() {
                               </>
                             ) : (item.installation.latestDisCm !== undefined && item.installation.latestDisCm !== null ? "Refresh Server Data" : "Fetch Server Readings")}
                           </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => handleDeleteClick(item)}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
                         </TableCell>
                       </TableRow>
                     );
@@ -1472,6 +1573,7 @@ export default function Verification() {
                       <TableHead>Status</TableHead>
                       <TableHead>Verified By</TableHead>
                       <TableHead>Submitted</TableHead>
+                      <TableHead>Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1506,11 +1608,29 @@ export default function Verification() {
                           <TableCell>
                             <div className="flex flex-col">
                               <span>{installation.locationId || "-"}</span>
-                              {(installation.latitude != null && installation.longitude != null) && (
-                                <span className="text-xs text-muted-foreground">
-                                  {installation.latitude.toFixed(6)}, {installation.longitude.toFixed(6)}
-                                </span>
-                              )}
+                              {(() => {
+                                const locationId = installation.locationId ? String(installation.locationId).trim() : "";
+                                const isLocation9999 = locationId === "9999";
+                                const location = locationMap.get(locationId);
+                                
+                                // If location is 9999, use user-entered coordinates; otherwise use location coordinates
+                                let displayLat: number | null = null;
+                                let displayLon: number | null = null;
+                                
+                                if (isLocation9999) {
+                                  displayLat = installation.latitude ?? null;
+                                  displayLon = installation.longitude ?? null;
+                                } else {
+                                  displayLat = location?.latitude ?? null;
+                                  displayLon = location?.longitude ?? null;
+                                }
+                                
+                                return (displayLat != null && displayLon != null) ? (
+                                  <span className="text-xs text-muted-foreground">
+                                    {displayLat.toFixed(6)}, {displayLon.toFixed(6)}
+                                  </span>
+                                ) : null;
+                              })()}
                             </div>
                           </TableCell>
                           <TableCell>
@@ -1578,6 +1698,15 @@ export default function Verification() {
                             {installation.createdAt 
                               ? format(installation.createdAt, "MMM d, HH:mm")
                               : "-"}
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => handleDeleteClick(item)}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
                           </TableCell>
                         </TableRow>
                       );
@@ -2059,6 +2188,76 @@ export default function Verification() {
               className="max-w-[95vw] max-h-[90vh] object-contain mx-auto"
             />
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="h-5 w-5" />
+              Delete Installation
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Are you sure you want to permanently delete this installation? This action cannot be undone.
+            </p>
+            {itemToDelete && (
+              <div className="p-4 bg-muted/50 rounded-lg space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-semibold">Device ID:</span>
+                  <span className="font-mono text-sm">{itemToDelete.installation.deviceId}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-semibold">Location ID:</span>
+                  <span className="text-sm">{itemToDelete.installation.locationId || "-"}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-semibold">Installer:</span>
+                  <span className="text-sm">{itemToDelete.installation.installedByName}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-semibold">Submitted:</span>
+                  <span className="text-sm">
+                    {itemToDelete.installation.createdAt 
+                      ? format(itemToDelete.installation.createdAt, "MMM d, yyyy HH:mm")
+                      : "-"}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteDialogOpen(false);
+                setItemToDelete(null);
+              }}
+              disabled={deleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteConfirm}
+              disabled={deleting}
+            >
+              {deleting ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete Permanently
+                </>
+              )}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
