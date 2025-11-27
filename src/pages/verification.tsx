@@ -660,7 +660,7 @@ export default function Verification() {
       return;
     }
 
-    const originalInstallation = selectedItem.installation;
+      const originalInstallation = selectedItem.installation;
     
     // Normalize coordinates for comparison (treat null and undefined as same)
     const normalizeCoord = (val: number | null | undefined) => val ?? null;
@@ -719,13 +719,13 @@ export default function Verification() {
     }
 
     if (changes.length === 0) {
-      toast({
-        title: "No Changes",
-        description: "No changes were made to the installation.",
-      });
-      setIsEditMode(false);
-      return;
-    }
+        toast({
+          title: "No Changes",
+          description: "No changes were made to the installation.",
+        });
+        setIsEditMode(false);
+        return;
+      }
 
     // Show confirmation dialog with changes
     setPendingChanges(changes);
@@ -1484,9 +1484,9 @@ export default function Verification() {
                               }
                               
                               return (displayLat != null && displayLon != null) ? (
-                                <span className="text-xs text-muted-foreground">
+                              <span className="text-xs text-muted-foreground">
                                   {displayLat.toFixed(6)}, {displayLon.toFixed(6)}
-                                </span>
+                              </span>
                               ) : null;
                             })()}
                           </div>
@@ -1587,8 +1587,8 @@ export default function Verification() {
                 <Button variant="default" size="lg" onClick={handleShowMore} className="min-w-[250px] font-semibold shadow-md">
                   Show More ({displayedItems.length - paginatedDisplayedItems.length} remaining)
                 </Button>
-              </div>
-            )}
+            </div>
+          )}
             </>
             )}
         </CardContent>
@@ -1692,9 +1692,9 @@ export default function Verification() {
                                 }
                                 
                                 return (displayLat != null && displayLon != null) ? (
-                                  <span className="text-xs text-muted-foreground">
+                                <span className="text-xs text-muted-foreground">
                                     {displayLat.toFixed(6)}, {displayLon.toFixed(6)}
-                                  </span>
+                                </span>
                                 ) : null;
                               })()}
                             </div>
@@ -1789,7 +1789,7 @@ export default function Verification() {
                   <Button variant="default" size="lg" onClick={handleShowMore} className="min-w-[250px] font-semibold shadow-md">
                     Show More ({displayedVerifiedItems.length - paginatedVerifiedItems.length} remaining)
                   </Button>
-                </div>
+              </div>
               )}
               </>
             )}
@@ -1951,7 +1951,7 @@ export default function Verification() {
                       }
                       
                       return (displayLat !== null || displayLon !== null || isEditMode) ? (
-                        <div>
+                      <div>
                           <p className="text-sm text-muted-foreground">
                             Coordinates
                             {coordinateSource && !isEditMode && (
@@ -1960,39 +1960,39 @@ export default function Verification() {
                               </span>
                             )}
                           </p>
-                          {isEditMode ? (
-                            <div className="grid grid-cols-2 gap-2 mt-1">
-                              <div>
-                                <Label htmlFor="latitude" className="text-xs">Latitude</Label>
-                                <Input
-                                  id="latitude"
-                                  type="number"
-                                  step="0.000001"
-                                  value={editedLatitude}
-                                  onChange={(e) => setEditedLatitude(e.target.value)}
-                                  placeholder="Latitude"
-                                />
-                              </div>
-                              <div>
-                                <Label htmlFor="longitude" className="text-xs">Longitude</Label>
-                                <Input
-                                  id="longitude"
-                                  type="number"
-                                  step="0.000001"
-                                  value={editedLongitude}
-                                  onChange={(e) => setEditedLongitude(e.target.value)}
-                                  placeholder="Longitude"
-                                />
-                              </div>
+                        {isEditMode ? (
+                          <div className="grid grid-cols-2 gap-2 mt-1">
+                            <div>
+                              <Label htmlFor="latitude" className="text-xs">Latitude</Label>
+                              <Input
+                                id="latitude"
+                                type="number"
+                                step="0.000001"
+                                value={editedLatitude}
+                                onChange={(e) => setEditedLatitude(e.target.value)}
+                                placeholder="Latitude"
+                              />
                             </div>
-                          ) : (
-                            <p className="text-base font-medium">
+                            <div>
+                              <Label htmlFor="longitude" className="text-xs">Longitude</Label>
+                              <Input
+                                id="longitude"
+                                type="number"
+                                step="0.000001"
+                                value={editedLongitude}
+                                onChange={(e) => setEditedLongitude(e.target.value)}
+                                placeholder="Longitude"
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-base font-medium">
                               {displayLat != null && displayLon != null
                                 ? `${displayLat.toFixed(6)}, ${displayLon.toFixed(6)}`
-                                : "-"}
-                            </p>
-                          )}
-                        </div>
+                              : "-"}
+                          </p>
+                        )}
+                      </div>
                       ) : null;
                     })()}
                     <div>

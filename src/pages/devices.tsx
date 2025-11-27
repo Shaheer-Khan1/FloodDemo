@@ -349,10 +349,10 @@ export default function Devices() {
               <Download className="h-4 w-4 mr-2" />
               Download Device UIDs CSV
             </Button>
-            <Button onClick={() => setLocation("/device-import")}>
-              <FileUp className="h-4 w-4 mr-2" />
-              Import Devices
-            </Button>
+          <Button onClick={() => setLocation("/device-import")}>
+            <FileUp className="h-4 w-4 mr-2" />
+            Import Devices
+          </Button>
           </div>
         )}
       </div>
@@ -623,10 +623,10 @@ export default function Devices() {
                               Not Installed
                             </Badge>
                           ) : (
-                            <Badge variant="outline" className={`${config.color} text-[10px] px-1.5 py-0.5`}>
-                              <Icon className="h-2.5 w-2.5 mr-0.5" />
-                              {config.label}
-                            </Badge>
+                          <Badge variant="outline" className={`${config.color} text-[10px] px-1.5 py-0.5`}>
+                            <Icon className="h-2.5 w-2.5 mr-0.5" />
+                            {config.label}
+                          </Badge>
                           )}
                         </TableCell>
                         <TableCell className="px-2 py-2">

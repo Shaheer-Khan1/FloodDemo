@@ -150,11 +150,26 @@ export default function InstallationsMap() {
 
     return installations
       .map((inst) => {
-        const location = locationMap.get(inst.locationId);
+        const locationId = inst.locationId ? String(inst.locationId).trim() : "";
+        const isLocation9999 = locationId === "9999";
+        const location = locationMap.get(locationId);
+        
+        // If location is 9999, use user-entered coordinates; otherwise use location coordinates
+        let lat: number | undefined = undefined;
+        let lon: number | undefined = undefined;
+        
+        if (isLocation9999) {
+          lat = inst.latitude ?? undefined;
+          lon = inst.longitude ?? undefined;
+        } else {
+          lat = location?.latitude;
+          lon = location?.longitude;
+        }
+        
         return {
           ...inst,
-          lat: location?.latitude,
-          lon: location?.longitude,
+          lat,
+          lon,
         };
       })
       .filter((inst) => inst.lat != null && inst.lon != null) as InstallationWithCoords[];
