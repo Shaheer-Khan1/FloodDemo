@@ -91,6 +91,7 @@ export default function MinistryDevices() {
   const [dateFilter, setDateFilter] = useState<string>("");
   const [generatingReport, setGeneratingReport] = useState(false);
   const [exporting9999, setExporting9999] = useState(false);
+  const [exportingGroupedCsv, setExportingGroupedCsv] = useState(false);
 
   useEffect(() => {
     const unsubD = onSnapshot(collection(db, "devices"), (snap) => {
@@ -505,6 +506,139 @@ export default function MinistryDevices() {
         amanahCount === 1 ? "" : "s"
       }.`,
     });
+  };
+
+  const handleGroupedCsvExport = () => {
+    if (rows.length === 0) {
+      toast({
+        title: "No devices found",
+        description: "There are no devices in the current view to export.",
+      });
+      return;
+    }
+
+    setExportingGroupedCsv(true);
+
+    try {
+      const rowsByAmanah: Record<string, string[][]> = {};
+      let totalRows = 0;
+
+      // Process rows same as handleCsvExport
+      rows.forEach((row) => {
+        const { device, inst, amanah } = row;
+        const rawLocationId = inst?.locationId ? String(inst.locationId).trim() : "";
+        let location: Location | null = null;
+        if (rawLocationId) {
+          location = locationMap.get(rawLocationId) ?? null;
+          if (!location && locations.length > 0) {
+            location =
+              locations.find(
+                (loc) =>
+                  String(loc.id).trim() === rawLocationId ||
+                  String(loc.locationId).trim() === rawLocationId
+              ) ?? null;
+          }
+        }
+
+        const instLat = parseCoordinate(inst?.latitude);
+        const instLon = parseCoordinate(inst?.longitude);
+
+        let coordinates = "-";
+        if (SPECIAL_LOCATION_IDS.has(rawLocationId)) {
+          if (instLat != null && instLon != null) {
+            coordinates = formatCoordinates(instLat, instLon);
+          } else if (location?.latitude != null && location?.longitude != null) {
+            coordinates = formatCoordinates(location.latitude, location.longitude);
+          }
+        } else {
+          if (location?.latitude != null && location?.longitude != null) {
+            coordinates = formatCoordinates(location.latitude, location.longitude);
+          } else if (instLat != null && instLon != null) {
+            coordinates = `${formatCoordinates(instLat, instLon)} (user entered)`;
+          }
+        }
+
+        const sensorReadingValue = inst?.sensorReading != null ? String(inst.sensorReading) : "-";
+        const englishAmanahName = amanah || "-";
+        const translatedAmanah = translateTeamNameToArabic(
+          englishAmanahName === "-" ? null : englishAmanahName
+        );
+        const amanahForExport = translatedAmanah ?? englishAmanahName;
+        const municipalityName = location?.municipalityName || "-";
+
+        const csvRow = [
+          "", // Serial placeholder
+          rawLocationId || "-",
+          coordinates,
+          device.id,
+          amanahForExport,
+          municipalityName,
+          sensorReadingValue,
+        ];
+
+        const groupKey = amanahForExport || "Unknown";
+        if (!rowsByAmanah[groupKey]) {
+          rowsByAmanah[groupKey] = [];
+        }
+        rowsByAmanah[groupKey].push(csvRow);
+        totalRows++;
+      });
+
+      // Sort Amanahs alphabetically
+      const sortedAmanahs = Object.keys(rowsByAmanah).sort();
+
+      // Build single CSV with grouped data
+      const headers = ["Serial No", "Location ID", "Coordinates", "Device ID", "Amanah", "Municipality", "Sensor Height"];
+      const allCsvRows: string[][] = [headers];
+
+      // Add each Amanah group
+      sortedAmanahs.forEach((amanahName) => {
+        const amanahRows = rowsByAmanah[amanahName];
+        
+        // Add numbered rows for this Amanah
+        amanahRows.forEach((row, index) => {
+          const numberedRow = [...row];
+          numberedRow[0] = (index + 1).toString(); // Set serial number
+          allCsvRows.push(numberedRow);
+        });
+      });
+
+      // Generate CSV content
+      const csvContent = allCsvRows
+        .map((row) =>
+          row
+            .map((value) => {
+              const safeValue = value ?? "";
+              return `"${safeValue.replace(/"/g, '""')}"`;
+            })
+            .join(",")
+        )
+        .join("\r\n");
+
+      const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const dateStr = format(new Date(), "yyyy-MM-dd");
+      link.setAttribute("download", `All_Installations_Grouped_by_Amanah_${dateStr}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "CSV downloaded",
+        description: `Exported ${totalRows} row${totalRows !== 1 ? "s" : ""} grouped by ${sortedAmanahs.length} Amanah${sortedAmanahs.length !== 1 ? "s" : ""} in a single CSV file.`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error.message || "An error occurred during export.",
+      });
+    } finally {
+      setExportingGroupedCsv(false);
+    }
   };
 
   if (!userProfile?.isAdmin && userProfile?.role !== "ministry") {
@@ -954,6 +1088,24 @@ export default function MinistryDevices() {
               >
                 <FileDown className="h-4 w-4" />
                 Download CSV
+              </Button>
+              <Button
+                variant="outline"
+                className="flex items-center gap-2 w-full sm:w-auto bg-green-50 hover:bg-green-100 text-green-700 border-green-200"
+                onClick={handleGroupedCsvExport}
+                disabled={exportingGroupedCsv}
+              >
+                {exportingGroupedCsv ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Exporting...
+                  </>
+                ) : (
+                  <>
+                    <FileDown className="h-4 w-4" />
+                    Grouped CSV by Amanah
+                  </>
+                )}
               </Button>
               <Button
                 variant="outline"

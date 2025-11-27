@@ -297,6 +297,40 @@ export default function Devices() {
     };
   }, [devices, installations]);
 
+  const dataIntegrity = useMemo(() => {
+    const deviceIdSet = new Set(devices.map(device => device.id?.trim().toUpperCase()).filter(Boolean));
+    const installationGroups = new Map<string, Installation[]>();
+
+    installations.forEach((installation) => {
+      const normalized = installation.deviceId?.trim().toUpperCase();
+      if (!normalized) return;
+      if (!installationGroups.has(normalized)) {
+        installationGroups.set(normalized, []);
+      }
+      installationGroups.get(normalized)!.push(installation);
+    });
+
+    const installationsWithoutDevice: { deviceId: string; installations: Installation[] }[] = [];
+    const duplicateInstallations: { deviceId: string; installations: Installation[] }[] = [];
+
+    installationGroups.forEach((installs, deviceId) => {
+      if (!deviceIdSet.has(deviceId)) {
+        installationsWithoutDevice.push({ deviceId, installations: installs });
+      }
+      if (installs.length > 1) {
+        duplicateInstallations.push({ deviceId, installations: installs });
+      }
+    });
+
+    installationsWithoutDevice.sort((a, b) => b.installations.length - a.installations.length);
+    duplicateInstallations.sort((a, b) => b.installations.length - a.installations.length);
+
+    return {
+      installationsWithoutDevice,
+      duplicateInstallations,
+    };
+  }, [devices, installations]);
+
   // Admin-only access gate
   if (!userProfile?.isAdmin) {
     return (
@@ -414,6 +448,97 @@ export default function Devices() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Data Integrity */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <AlertCircle className="h-5 w-5 text-amber-600" />
+            Data Integrity Checks
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {dataIntegrity.installationsWithoutDevice.length === 0 && dataIntegrity.duplicateInstallations.length === 0 ? (
+            <div className="rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950/20 p-4 text-sm text-green-700 dark:text-green-300">
+              ✅ All installations have matching device records and every device has at most one installation.
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="font-semibold text-sm">Installations Without Device</p>
+                    <Badge variant="outline" className="text-xs">
+                      {dataIntegrity.installationsWithoutDevice.length}
+                    </Badge>
+                  </div>
+                  {dataIntegrity.installationsWithoutDevice.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No orphan installations detected.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {dataIntegrity.installationsWithoutDevice.slice(0, 5).map((entry) => (
+                        <div key={entry.deviceId} className="p-3 border rounded-md">
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="font-mono font-semibold">{entry.deviceId}</span>
+                            <Badge variant="secondary" className="text-xs">
+                              {entry.installations.length} record{entry.installations.length === 1 ? "" : "s"}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            First seen at location {entry.installations[0]?.locationId || "-"} by {entry.installations[0]?.installedByName || "Unknown"}
+                          </p>
+                        </div>
+                      ))}
+                      {dataIntegrity.installationsWithoutDevice.length > 5 && (
+                        <p className="text-xs text-muted-foreground text-right">
+                          + {dataIntegrity.installationsWithoutDevice.length - 5} more
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="font-semibold text-sm">Duplicate Installations</p>
+                    <Badge variant="outline" className="text-xs">
+                      {dataIntegrity.duplicateInstallations.length}
+                    </Badge>
+                  </div>
+                  {dataIntegrity.duplicateInstallations.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No duplicate installations detected.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {dataIntegrity.duplicateInstallations.slice(0, 5).map((entry) => (
+                        <div key={entry.deviceId} className="p-3 border rounded-md">
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="font-mono font-semibold">{entry.deviceId}</span>
+                            <Badge variant="secondary" className="text-xs">
+                              {entry.installations.length} installs
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Latest installer: {entry.installations[entry.installations.length - 1]?.installedByName || "Unknown"} • Location {entry.installations[entry.installations.length - 1]?.locationId || "-"}
+                          </p>
+                        </div>
+                      ))}
+                      {dataIntegrity.duplicateInstallations.length > 5 && (
+                        <p className="text-xs text-muted-foreground text-right">
+                          + {dataIntegrity.duplicateInstallations.length - 5} more
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/20 p-3 text-xs text-amber-800 dark:text-amber-200">
+                Installations listed above reference device IDs that are missing from the master list or appear more than once. Fix them by importing the missing device or cleaning up the extra installation so the dashboard totals align.
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Search & Filters */}
       <Card className="border shadow-sm">

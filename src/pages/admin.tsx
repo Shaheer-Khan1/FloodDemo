@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { collection, onSnapshot, query, orderBy, where, doc, setDoc, serverTimestamp, getDocs, updateDoc, writeBatch } from "firebase/firestore";
+import { collection, onSnapshot, query, orderBy, where, doc, setDoc, serverTimestamp, getDocs, getDoc, updateDoc, writeBatch, deleteDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -11,13 +11,24 @@ import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Search, Loader2, Shield, MapPin, Smartphone, Ruler, Users, Filter, X, Upload, Download, CheckCircle2, XCircle, Edit, RefreshCw, FileDown, AlertTriangle } from "lucide-react";
+import { Search, Loader2, Shield, MapPin, Smartphone, Ruler, Users, Filter, X, Upload, Download, CheckCircle2, XCircle, Edit, RefreshCw, FileDown, AlertTriangle, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import type { UserProfile, Team, TeamMember, Installation } from "@/lib/types";
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
+
+const parseDeviceIdsList = (input: string) => {
+  return Array.from(
+    new Set(
+      input
+        .split(/\r?\n/)
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0)
+    )
+  );
+};
 
 export default function Admin() {
   const { userProfile } = useAuth();
@@ -81,6 +92,31 @@ export default function Admin() {
   const [loadingLocationMatches, setLoadingLocationMatches] = useState(false);
   const [updatingLocations, setUpdatingLocations] = useState(false);
   const [showLocationUpdateDialog, setShowLocationUpdateDialog] = useState(false);
+
+  // Device Deletion State
+  const [deleteDeviceIdsInput, setDeleteDeviceIdsInput] = useState("");
+  const [deletingDevices, setDeletingDevices] = useState(false);
+  const [showDeleteDevicesDialog, setShowDeleteDevicesDialog] = useState(false);
+  const [deviceDeletionSummary, setDeviceDeletionSummary] = useState<{
+    deleted: string[];
+    notFound: string[];
+    failed: { id: string; error: string }[];
+  } | null>(null);
+
+  // Coordinate Range Filter State
+  const [locations, setLocations] = useState<{ id: string; locationId: string; latitude: number; longitude: number }[]>([]);
+  const [minLatitude, setMinLatitude] = useState<string>("");
+  const [maxLatitude, setMaxLatitude] = useState<string>("");
+  const [minLongitude, setMinLongitude] = useState<string>("");
+  const [maxLongitude, setMaxLongitude] = useState<string>("");
+  const [coordinateFilteredInstallations, setCoordinateFilteredInstallations] = useState<Installation[]>([]);
+  const [loadingCoordinateFilter, setLoadingCoordinateFilter] = useState(false);
+  const [exportingCoordinateFiltered, setExportingCoordinateFiltered] = useState(false);
+
+  // Missing Coordinates Filter State
+  const [missingCoordinatesInstallations, setMissingCoordinatesInstallations] = useState<Installation[]>([]);
+  const [loadingMissingCoordinates, setLoadingMissingCoordinates] = useState(false);
+  const [exportingMissingCoordinates, setExportingMissingCoordinates] = useState(false);
 
   // Real-time users listener
   useEffect(() => {
@@ -152,6 +188,40 @@ export default function Admin() {
 
     return () => unsubscribe();
   }, [userProfile, toast]);
+
+  // Real-time locations listener (for coordinate filtering)
+  useEffect(() => {
+    if (!userProfile?.isAdmin) return;
+    
+    const unsubscribe = onSnapshot(
+      collection(db, "locations"),
+      (snapshot) => {
+        const locationsData = snapshot.docs.map((d) => {
+          const docData = d.data();
+          const lat = typeof docData.latitude === 'number' 
+            ? docData.latitude 
+            : (docData.latitude ? parseFloat(String(docData.latitude)) : null);
+          const lon = typeof docData.longitude === 'number'
+            ? docData.longitude
+            : (docData.longitude ? parseFloat(String(docData.longitude)) : null);
+          
+          return {
+            id: d.id,
+            locationId: docData.locationId || d.id,
+            latitude: lat,
+            longitude: lon,
+          };
+        }).filter(loc => loc.latitude != null && loc.longitude != null && !isNaN(loc.latitude) && !isNaN(loc.longitude)) as { id: string; locationId: string; latitude: number; longitude: number }[];
+        
+        setLocations(locationsData);
+      },
+      (error) => {
+        console.error("Failed to load locations:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [userProfile]);
 
   // Real-time team members listener
   useEffect(() => {
@@ -226,6 +296,8 @@ export default function Admin() {
     return Array.from(locations).sort();
   }, [users]);
 
+  const deleteDeviceIdList = useMemo(() => parseDeviceIdsList(deleteDeviceIdsInput), [deleteDeviceIdsInput]);
+
   // Advanced filtering
   const filteredUsers = useMemo(() => {
     return users.filter(user => {
@@ -258,6 +330,86 @@ export default function Admin() {
   };
 
   const hasActiveFilters = searchTerm !== "" || locationFilter !== "all" || teamFilter !== "all";
+
+  const openDeleteDevicesDialog = () => {
+    if (deleteDeviceIdList.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No Device UIDs",
+        description: "Please enter at least one device UID to delete.",
+      });
+      return;
+    }
+    setShowDeleteDevicesDialog(true);
+  };
+
+  const handleConfirmDeleteDevices = async () => {
+    const deviceIds = deleteDeviceIdList;
+
+    if (deviceIds.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No Device UIDs",
+        description: "Please enter at least one device UID to delete.",
+      });
+      setShowDeleteDevicesDialog(false);
+      return;
+    }
+
+    setDeletingDevices(true);
+
+    const deleted: string[] = [];
+    const notFound: string[] = [];
+    const failed: { id: string; error: string }[] = [];
+
+    try {
+      for (const id of deviceIds) {
+        try {
+          const deviceRef = doc(db, "devices", id);
+          const deviceSnapshot = await getDoc(deviceRef);
+
+          if (!deviceSnapshot.exists()) {
+            notFound.push(id);
+            continue;
+          }
+
+          await deleteDoc(deviceRef);
+          deleted.push(id);
+        } catch (error: any) {
+          failed.push({ id, error: error?.message || "Unknown error" });
+        }
+      }
+
+      setDeviceDeletionSummary({ deleted, notFound, failed });
+
+      const summaryParts = [`${deleted.length} deleted`];
+      if (notFound.length > 0) summaryParts.push(`${notFound.length} not found`);
+      if (failed.length > 0) summaryParts.push(`${failed.length} failed`);
+
+      toast({
+        title: failed.length > 0 ? "Delete completed with warnings" : "Devices deleted",
+        description: summaryParts.join(" • "),
+        variant: failed.length > 0 ? "destructive" : "default",
+      });
+
+      if (failed.length > 0 || notFound.length > 0) {
+        const remaining = [...failed.map((f) => f.id), ...notFound];
+        setDeleteDeviceIdsInput(remaining.join("\n"));
+      } else {
+        setDeleteDeviceIdsInput("");
+      }
+
+      setShowDeleteDevicesDialog(false);
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Delete failed",
+        description: error?.message || "An unexpected error occurred while deleting devices.",
+      });
+    } finally {
+      setDeletingDevices(false);
+    }
+  };
 
   // Location ID Bulk Update Functions
   const findMatchingInstallations = async () => {
@@ -1257,6 +1409,443 @@ export default function Admin() {
       });
     } finally {
       setUpdatingLocations(false);
+    }
+  };
+
+  // Coordinate Range Filter Functions
+  const filterInstallationsByCoordinateRange = async () => {
+    // Validate inputs
+    const minLat = parseFloat(minLatitude);
+    const maxLat = parseFloat(maxLatitude);
+    const minLon = parseFloat(minLongitude);
+    const maxLon = parseFloat(maxLongitude);
+
+    if (isNaN(minLat) || isNaN(maxLat) || isNaN(minLon) || isNaN(maxLon)) {
+      toast({
+        variant: "destructive",
+        title: "Invalid Coordinates",
+        description: "Please enter valid numeric values for all coordinate ranges.",
+      });
+      return;
+    }
+
+    if (minLat > maxLat || minLon > maxLon) {
+      toast({
+        variant: "destructive",
+        title: "Invalid Range",
+        description: "Minimum values must be less than maximum values.",
+      });
+      return;
+    }
+
+    setLoadingCoordinateFilter(true);
+    setCoordinateFilteredInstallations([]);
+
+    try {
+      // Create location map for quick lookup
+      const locationMap = new Map<string, { latitude: number; longitude: number }>();
+      locations.forEach((loc) => {
+        locationMap.set(loc.locationId, { latitude: loc.latitude, longitude: loc.longitude });
+      });
+
+      // Fetch all installations
+      const installationsRef = collection(db, "installations");
+      const snapshot = await getDocs(installationsRef);
+      
+      const filtered: Installation[] = [];
+      
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        const locationId = data.locationId ? String(data.locationId).trim() : "";
+        const isLocation9999 = locationId === "9999";
+        
+        let lat: number | null = null;
+        let lon: number | null = null;
+        
+        // For location 9999, use user-entered coordinates
+        // For other locations, use coordinates from locations collection
+        if (isLocation9999) {
+          lat = data.latitude != null ? (typeof data.latitude === 'number' ? data.latitude : parseFloat(String(data.latitude))) : null;
+          lon = data.longitude != null ? (typeof data.longitude === 'number' ? data.longitude : parseFloat(String(data.longitude))) : null;
+        } else {
+          const location = locationMap.get(locationId);
+          lat = location?.latitude ?? null;
+          lon = location?.longitude ?? null;
+        }
+        
+        // Check if coordinates are within range
+        if (lat != null && lon != null && !isNaN(lat) && !isNaN(lon)) {
+          if (lat >= minLat && lat <= maxLat && lon >= minLon && lon <= maxLon) {
+            filtered.push({
+              ...data,
+              id: doc.id,
+              createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : data.createdAt,
+              updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : data.updatedAt,
+              verifiedAt: data.verifiedAt?.toDate ? data.verifiedAt.toDate() : data.verifiedAt,
+              systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate ? data.systemPreVerifiedAt.toDate() : data.systemPreVerifiedAt,
+              serverRefreshedAt: data.serverRefreshedAt?.toDate ? data.serverRefreshedAt.toDate() : data.serverRefreshedAt,
+            } as Installation);
+          }
+        }
+      });
+
+      setCoordinateFilteredInstallations(filtered);
+      
+      if (filtered.length > 0) {
+        toast({
+          title: "Filter Complete",
+          description: `Found ${filtered.length} installation(s) within the specified coordinate range.`,
+        });
+      } else {
+        toast({
+          title: "No Installations Found",
+          description: "No installations found within the specified coordinate range.",
+        });
+      }
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Filter Failed",
+        description: error.message || "An error occurred while filtering.",
+      });
+    } finally {
+      setLoadingCoordinateFilter(false);
+    }
+  };
+
+  const exportCoordinateFilteredInstallations = async () => {
+    if (coordinateFilteredInstallations.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No Installations",
+        description: "No installations to export. Please filter installations first.",
+      });
+      return;
+    }
+
+    setExportingCoordinateFiltered(true);
+
+    try {
+      // Create location map for coordinate lookup
+      const locationMap = new Map<string, { latitude: number; longitude: number }>();
+      locations.forEach((loc) => {
+        locationMap.set(loc.locationId, { latitude: loc.latitude, longitude: loc.longitude });
+      });
+
+      // Fetch all teams to resolve team names
+      const teamsSnapshot = await getDocs(collection(db, "teams"));
+      const teamsMap = new Map<string, string>();
+      teamsSnapshot.docs.forEach(doc => teamsMap.set(doc.id, doc.data().name));
+
+      // Sort by deviceId and then by createdAt
+      const sortedInstallations = [...coordinateFilteredInstallations].sort((a, b) => {
+        if (a.deviceId < b.deviceId) return -1;
+        if (a.deviceId > b.deviceId) return 1;
+        return (a.createdAt?.getTime() || 0) - (b.createdAt?.getTime() || 0);
+      });
+
+      const headers = [
+        "Serial No", "Installation ID", "Device UID", "Location ID", "Original Location ID",
+        "Latitude", "Longitude", "Sensor Reading (cm)", "Latest Server Reading (cm)", "Latest Server Timestamp",
+        "Installed By Name", "Installed By UID", "Team Name", "Team ID", "Status", "Flagged Reason",
+        "Verified By", "Verified At", "System Pre-Verified", "System Pre-Verified At",
+        "Created At", "Updated At", "Device Input Method", "Server Refreshed At",
+        "Image URLs", "Video URL", "Tags"
+      ];
+
+      const csvRows = sortedInstallations.map((inst, index) => {
+        const locationId = inst.locationId ? String(inst.locationId).trim() : "";
+        const isLocation9999 = locationId === "9999";
+        
+        let lat: number | null = null;
+        let lon: number | null = null;
+        
+        // For location 9999, use user-entered coordinates
+        // For other locations, use coordinates from locations collection
+        if (isLocation9999) {
+          lat = inst.latitude ?? null;
+          lon = inst.longitude ?? null;
+        } else {
+          const location = locationMap.get(locationId);
+          lat = location?.latitude ?? null;
+          lon = location?.longitude ?? null;
+        }
+
+        return [
+          (index + 1).toString(),
+          inst.id,
+          inst.deviceId,
+          inst.locationId,
+          inst.originalLocationId || "-",
+          lat != null ? lat.toFixed(6) : "-",
+          lon != null ? lon.toFixed(6) : "-",
+          inst.sensorReading != null ? inst.sensorReading.toString() : "-",
+          inst.latestDisCm != null ? inst.latestDisCm.toString() : "-",
+          inst.latestDisTimestamp || "-",
+          inst.installedByName || "-",
+          inst.installedBy || "-",
+          teamsMap.get(inst.teamId || "") || "-",
+          inst.teamId || "-",
+          inst.status,
+          inst.flaggedReason || "-",
+          inst.verifiedBy || "-",
+          inst.verifiedAt ? format(inst.verifiedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+          inst.systemPreVerified ? "Yes" : "No",
+          inst.systemPreVerifiedAt ? format(inst.systemPreVerifiedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+          inst.createdAt ? format(inst.createdAt, "yyyy-MM-dd HH:mm:ss") : "-",
+          inst.updatedAt ? format(inst.updatedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+          inst.deviceInputMethod || "-",
+          inst.serverRefreshedAt ? format(inst.serverRefreshedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+          inst.imageUrls?.join("; ") || "-",
+          inst.videoUrl || "-",
+          inst.tags?.join("; ") || "-",
+        ];
+      });
+
+      const allRows = [headers, ...csvRows];
+      const csvContent = allRows
+        .map((row) =>
+          row
+            .map((value) => {
+              const safeValue = value ?? "";
+              return `"${safeValue.replace(/"/g, '""')}"`;
+            })
+            .join(",")
+        )
+        .join("\r\n");
+
+      const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const dateStr = new Date().toISOString().split('T')[0];
+      link.setAttribute("download", `coordinate-filtered-installations-${dateStr}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Export Complete",
+        description: `Exported ${coordinateFilteredInstallations.length} installation(s) successfully.`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error.message || "An error occurred during export.",
+      });
+    } finally {
+      setExportingCoordinateFiltered(false);
+    }
+  };
+
+  // Missing Coordinates Filter Functions
+  const findInstallationsWithMissingCoordinates = async () => {
+    setLoadingMissingCoordinates(true);
+    setMissingCoordinatesInstallations([]);
+
+    try {
+      // Create location map for quick lookup
+      const locationMap = new Map<string, { latitude: number | null; longitude: number | null }>();
+      locations.forEach((loc) => {
+        locationMap.set(loc.locationId, { latitude: loc.latitude, longitude: loc.longitude });
+      });
+
+      // Fetch all installations
+      const installationsRef = collection(db, "installations");
+      const snapshot = await getDocs(installationsRef);
+      
+      const filtered: Installation[] = [];
+      
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        const locationId = data.locationId ? String(data.locationId).trim() : "";
+        const isLocation9999 = locationId === "9999";
+        
+        let hasCoordinates = false;
+        
+        if (isLocation9999) {
+          // For location 9999, check if user-entered coordinates exist
+          const lat = data.latitude != null ? (typeof data.latitude === 'number' ? data.latitude : parseFloat(String(data.latitude))) : null;
+          const lon = data.longitude != null ? (typeof data.longitude === 'number' ? data.longitude : parseFloat(String(data.longitude))) : null;
+          hasCoordinates = lat != null && lon != null && !isNaN(lat) && !isNaN(lon);
+        } else {
+          // For other locations, check if location exists in locations collection with coordinates
+          const location = locationMap.get(locationId);
+          hasCoordinates = location != null && 
+                          location.latitude != null && 
+                          location.longitude != null && 
+                          !isNaN(location.latitude) && 
+                          !isNaN(location.longitude);
+        }
+        
+        // If coordinates are missing, include this installation
+        if (!hasCoordinates && locationId) {
+          filtered.push({
+            ...data,
+            id: doc.id,
+            createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : data.createdAt,
+            updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : data.updatedAt,
+            verifiedAt: data.verifiedAt?.toDate ? data.verifiedAt.toDate() : data.verifiedAt,
+            systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate ? data.systemPreVerifiedAt.toDate() : data.systemPreVerifiedAt,
+            serverRefreshedAt: data.serverRefreshedAt?.toDate ? data.serverRefreshedAt.toDate() : data.serverRefreshedAt,
+          } as Installation);
+        }
+      });
+
+      setMissingCoordinatesInstallations(filtered);
+      
+      if (filtered.length > 0) {
+        toast({
+          title: "Search Complete",
+          description: `Found ${filtered.length} installation(s) with missing coordinates.`,
+        });
+      } else {
+        toast({
+          title: "No Installations Found",
+          description: "All installations have coordinates.",
+        });
+      }
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Search Failed",
+        description: error.message || "An error occurred while searching.",
+      });
+    } finally {
+      setLoadingMissingCoordinates(false);
+    }
+  };
+
+  const exportMissingCoordinatesInstallations = async () => {
+    if (missingCoordinatesInstallations.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No Installations",
+        description: "No installations to export. Please search for installations first.",
+      });
+      return;
+    }
+
+    setExportingMissingCoordinates(true);
+
+    try {
+      // Create location map for coordinate lookup
+      const locationMap = new Map<string, { latitude: number | null; longitude: number | null }>();
+      locations.forEach((loc) => {
+        locationMap.set(loc.locationId, { latitude: loc.latitude, longitude: loc.longitude });
+      });
+
+      // Fetch all teams to resolve team names
+      const teamsSnapshot = await getDocs(collection(db, "teams"));
+      const teamsMap = new Map<string, string>();
+      teamsSnapshot.docs.forEach(doc => teamsMap.set(doc.id, doc.data().name));
+
+      // Sort by deviceId and then by createdAt
+      const sortedInstallations = [...missingCoordinatesInstallations].sort((a, b) => {
+        if (a.deviceId < b.deviceId) return -1;
+        if (a.deviceId > b.deviceId) return 1;
+        return (a.createdAt?.getTime() || 0) - (b.createdAt?.getTime() || 0);
+      });
+
+      const headers = [
+        "Serial No", "Installation ID", "Device UID", "Location ID", "Original Location ID",
+        "Latitude", "Longitude", "Missing Coordinates Reason", "Sensor Reading (cm)", "Latest Server Reading (cm)", "Latest Server Timestamp",
+        "Installed By Name", "Installed By UID", "Team Name", "Team ID", "Status", "Flagged Reason",
+        "Verified By", "Verified At", "System Pre-Verified", "System Pre-Verified At",
+        "Created At", "Updated At", "Device Input Method", "Server Refreshed At",
+        "Image URLs", "Video URL", "Tags"
+      ];
+
+      const csvRows = sortedInstallations.map((inst, index) => {
+        const locationId = inst.locationId ? String(inst.locationId).trim() : "";
+        const isLocation9999 = locationId === "9999";
+        
+        let lat: number | null = null;
+        let lon: number | null = null;
+        let missingReason = "";
+        
+        if (isLocation9999) {
+          lat = inst.latitude ?? null;
+          lon = inst.longitude ?? null;
+          missingReason = "Location 9999 - User-entered coordinates are null";
+        } else {
+          const location = locationMap.get(locationId);
+          lat = location?.latitude ?? null;
+          lon = location?.longitude ?? null;
+          missingReason = location 
+            ? `Location ID ${locationId} exists but coordinates are null`
+            : `Location ID ${locationId} not found in locations database`;
+        }
+
+        return [
+          (index + 1).toString(),
+          inst.id,
+          inst.deviceId,
+          inst.locationId,
+          inst.originalLocationId || "-",
+          lat != null ? lat.toFixed(6) : "-",
+          lon != null ? lon.toFixed(6) : "-",
+          missingReason,
+          inst.sensorReading != null ? inst.sensorReading.toString() : "-",
+          inst.latestDisCm != null ? inst.latestDisCm.toString() : "-",
+          inst.latestDisTimestamp || "-",
+          inst.installedByName || "-",
+          inst.installedBy || "-",
+          teamsMap.get(inst.teamId || "") || "-",
+          inst.teamId || "-",
+          inst.status,
+          inst.flaggedReason || "-",
+          inst.verifiedBy || "-",
+          inst.verifiedAt ? format(inst.verifiedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+          inst.systemPreVerified ? "Yes" : "No",
+          inst.systemPreVerifiedAt ? format(inst.systemPreVerifiedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+          inst.createdAt ? format(inst.createdAt, "yyyy-MM-dd HH:mm:ss") : "-",
+          inst.updatedAt ? format(inst.updatedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+          inst.deviceInputMethod || "-",
+          inst.serverRefreshedAt ? format(inst.serverRefreshedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+          inst.imageUrls?.join("; ") || "-",
+          inst.videoUrl || "-",
+          inst.tags?.join("; ") || "-",
+        ];
+      });
+
+      const allRows = [headers, ...csvRows];
+      const csvContent = allRows
+        .map((row) =>
+          row
+            .map((value) => {
+              const safeValue = value ?? "";
+              return `"${safeValue.replace(/"/g, '""')}"`;
+            })
+            .join(",")
+        )
+        .join("\r\n");
+
+      const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const dateStr = new Date().toISOString().split('T')[0];
+      link.setAttribute("download", `missing-coordinates-installations-${dateStr}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Export Complete",
+        description: `Exported ${missingCoordinatesInstallations.length} installation(s) successfully.`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error.message || "An error occurred during export.",
+      });
+    } finally {
+      setExportingMissingCoordinates(false);
     }
   };
 
@@ -2276,6 +2865,142 @@ export default function Admin() {
         </CardContent>
       </Card>
 
+      {/* Delete Devices from Master List */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-destructive">
+            <Trash2 className="h-5 w-5" />
+            Delete Devices from Master List
+          </CardTitle>
+          <CardDescription>
+            Remove devices from the `devices` collection by UID. Related installation records are not deleted automatically.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="delete-device-ids">Device UIDs (one per line)</Label>
+            <Textarea
+              id="delete-device-ids"
+              placeholder="E75832989D048709&#10;434F564A84ADB55F&#10;8E9F81B4EDF9910B&#10;..."
+              value={deleteDeviceIdsInput}
+              onChange={(e) => setDeleteDeviceIdsInput(e.target.value)}
+              disabled={deletingDevices}
+              className="font-mono h-40"
+            />
+            <p className="text-xs text-muted-foreground">
+              This only deletes device documents. Any installations referencing these UIDs must be cleaned up separately.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant="destructive"
+              onClick={openDeleteDevicesDialog}
+              disabled={deleteDeviceIdList.length === 0 || deletingDevices}
+            >
+              {deletingDevices ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete Devices
+                  {deleteDeviceIdList.length > 0 && (
+                    <span className="ml-2 text-xs font-normal">
+                      ({deleteDeviceIdList.length})
+                    </span>
+                  )}
+                </>
+              )}
+            </Button>
+
+            {deleteDeviceIdList.length > 0 && !deletingDevices && (
+              <Badge variant="secondary" className="text-xs">
+                {deleteDeviceIdList.length} UID{deleteDeviceIdList.length === 1 ? "" : "s"} queued
+              </Badge>
+            )}
+          </div>
+
+          {deviceDeletionSummary && (
+            <div className="border rounded-lg p-4 space-y-3 bg-muted/40">
+              <p className="text-sm font-semibold">Last delete run</p>
+              {deviceDeletionSummary.deleted.length > 0 && (
+                <p className="text-sm text-green-600 font-medium">
+                  Deleted: {deviceDeletionSummary.deleted.length}
+                </p>
+              )}
+              {deviceDeletionSummary.notFound.length > 0 && (
+                <div className="text-sm text-amber-600 space-y-1">
+                  <p className="font-medium">
+                    Not found: {deviceDeletionSummary.notFound.length}
+                  </p>
+                  <p className="font-mono text-xs break-all">
+                    {deviceDeletionSummary.notFound.slice(0, 5).join(", ")}
+                    {deviceDeletionSummary.notFound.length > 5 && " ..."}
+                  </p>
+                </div>
+              )}
+              {deviceDeletionSummary.failed.length > 0 && (
+                <div className="text-sm text-destructive space-y-1">
+                  <p className="font-medium">
+                    Failed: {deviceDeletionSummary.failed.length}
+                  </p>
+                  <div className="space-y-1 text-xs font-mono">
+                    {deviceDeletionSummary.failed.slice(0, 3).map((item) => (
+                      <p key={item.id}>
+                        {item.id}: {item.error}
+                      </p>
+                    ))}
+                    {deviceDeletionSummary.failed.length > 3 && (
+                      <p className="italic text-[11px]">...and more</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Delete Devices Confirmation Dialog */}
+      <AlertDialog open={showDeleteDevicesDialog} onOpenChange={setShowDeleteDevicesDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {deleteDeviceIdList.length} device{deleteDeviceIdList.length === 1 ? "" : "s"}?</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <p>
+                This action permanently deletes <strong>{deleteDeviceIdList.length}</strong> device record{deleteDeviceIdList.length === 1 ? "" : "s"}.
+              </p>
+              <p className="text-amber-600">
+                Installations referencing these UIDs will remain in the database until you delete them separately.
+              </p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingDevices}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmDeleteDevices}
+              disabled={deletingDevices}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingDevices ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete Devices
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Bulk Team Change */}
       <Card className="border shadow-sm">
         <CardHeader>
@@ -2589,6 +3314,306 @@ export default function Admin() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Coordinate Range Filter */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <MapPin className="h-5 w-5" />
+            Filter by Coordinate Range
+          </CardTitle>
+          <CardDescription>
+            Filter installations by latitude/longitude range. For location ID 9999, uses user-entered coordinates. 
+            For other locations, uses coordinates from location database.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="min-latitude">Minimum Latitude</Label>
+              <Input
+                id="min-latitude"
+                type="number"
+                step="any"
+                placeholder="e.g., 21.0"
+                value={minLatitude}
+                onChange={(e) => setMinLatitude(e.target.value)}
+                disabled={loadingCoordinateFilter || exportingCoordinateFiltered}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="max-latitude">Maximum Latitude</Label>
+              <Input
+                id="max-latitude"
+                type="number"
+                step="any"
+                placeholder="e.g., 22.0"
+                value={maxLatitude}
+                onChange={(e) => setMaxLatitude(e.target.value)}
+                disabled={loadingCoordinateFilter || exportingCoordinateFiltered}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="min-longitude">Minimum Longitude</Label>
+              <Input
+                id="min-longitude"
+                type="number"
+                step="any"
+                placeholder="e.g., 39.0"
+                value={minLongitude}
+                onChange={(e) => setMinLongitude(e.target.value)}
+                disabled={loadingCoordinateFilter || exportingCoordinateFiltered}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="max-longitude">Maximum Longitude</Label>
+              <Input
+                id="max-longitude"
+                type="number"
+                step="any"
+                placeholder="e.g., 40.0"
+                value={maxLongitude}
+                onChange={(e) => setMaxLongitude(e.target.value)}
+                disabled={loadingCoordinateFilter || exportingCoordinateFiltered}
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <Button
+              onClick={filterInstallationsByCoordinateRange}
+              disabled={!minLatitude || !maxLatitude || !minLongitude || !maxLongitude || loadingCoordinateFilter || exportingCoordinateFiltered}
+            >
+              {loadingCoordinateFilter ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Filtering...
+                </>
+              ) : (
+                <>
+                  <Search className="h-4 w-4 mr-2" />
+                  Filter Installations
+                </>
+              )}
+            </Button>
+
+            {coordinateFilteredInstallations.length > 0 && (
+              <Button
+                onClick={exportCoordinateFilteredInstallations}
+                disabled={exportingCoordinateFiltered}
+                variant="default"
+              >
+                {exportingCoordinateFiltered ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Exporting...
+                  </>
+                ) : (
+                  <>
+                    <FileDown className="h-4 w-4 mr-2" />
+                    Export to CSV ({coordinateFilteredInstallations.length})
+                  </>
+                )}
+              </Button>
+            )}
+          </div>
+
+          {/* Results Preview */}
+          {coordinateFilteredInstallations.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-lg bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-blue-600" />
+                  <span className="font-semibold text-blue-600">
+                    Found {coordinateFilteredInstallations.length} installation{coordinateFilteredInstallations.length !== 1 ? 's' : ''}
+                  </span>
+                </div>
+              </div>
+
+              {/* Preview of filtered installations */}
+              <div className="border rounded-lg p-4 max-h-96 overflow-y-auto">
+                <p className="text-sm font-semibold mb-3">Preview (showing first 10):</p>
+                <div className="space-y-2">
+                  {coordinateFilteredInstallations.slice(0, 10).map((installation) => {
+                    const locationId = installation.locationId ? String(installation.locationId).trim() : "";
+                    const isLocation9999 = locationId === "9999";
+                    const locationMap = new Map<string, { latitude: number; longitude: number }>();
+                    locations.forEach((loc) => {
+                      locationMap.set(loc.locationId, { latitude: loc.latitude, longitude: loc.longitude });
+                    });
+                    
+                    let lat: number | null = null;
+                    let lon: number | null = null;
+                    
+                    if (isLocation9999) {
+                      lat = installation.latitude ?? null;
+                      lon = installation.longitude ?? null;
+                    } else {
+                      const location = locationMap.get(locationId);
+                      lat = location?.latitude ?? null;
+                      lon = location?.longitude ?? null;
+                    }
+
+                    return (
+                      <div key={installation.id} className="flex items-center justify-between p-3 rounded-md bg-muted/50 text-sm">
+                        <div className="flex-1 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium font-mono">{installation.deviceId}</span>
+                            <Badge variant="outline" className="text-xs">
+                              Location: {installation.locationId}
+                            </Badge>
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Installer: {installation.installedByName}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-xs text-muted-foreground">Coordinates</div>
+                          <div className="text-xs font-mono">
+                            {lat != null && lon != null ? `${lat.toFixed(6)}, ${lon.toFixed(6)}` : "N/A"}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {coordinateFilteredInstallations.length > 10 && (
+                    <p className="text-xs text-muted-foreground text-center pt-2">
+                      ... and {coordinateFilteredInstallations.length - 10} more
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Missing Coordinates Filter */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <AlertTriangle className="h-5 w-5" />
+            Find Installations with Missing Coordinates
+          </CardTitle>
+          <CardDescription>
+            Find installations where coordinates are missing:
+            <ul className="list-disc list-inside mt-2 space-y-1 text-sm">
+              <li>Location ID 9999 with null user-entered coordinates</li>
+              <li>Other location IDs where the location-to-coordinates mapping is missing or null</li>
+            </ul>
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="flex gap-3">
+            <Button
+              onClick={findInstallationsWithMissingCoordinates}
+              disabled={loadingMissingCoordinates || exportingMissingCoordinates}
+            >
+              {loadingMissingCoordinates ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Searching...
+                </>
+              ) : (
+                <>
+                  <Search className="h-4 w-4 mr-2" />
+                  Find Missing Coordinates
+                </>
+              )}
+            </Button>
+
+            {missingCoordinatesInstallations.length > 0 && (
+              <Button
+                onClick={exportMissingCoordinatesInstallations}
+                disabled={exportingMissingCoordinates}
+                variant="default"
+              >
+                {exportingMissingCoordinates ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Exporting...
+                  </>
+                ) : (
+                  <>
+                    <FileDown className="h-4 w-4 mr-2" />
+                    Export to CSV ({missingCoordinatesInstallations.length})
+                  </>
+                )}
+              </Button>
+            )}
+          </div>
+
+          {/* Results Preview */}
+          {missingCoordinatesInstallations.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="h-5 w-5 text-amber-600" />
+                  <span className="font-semibold text-amber-600">
+                    Found {missingCoordinatesInstallations.length} installation{missingCoordinatesInstallations.length !== 1 ? 's' : ''} with missing coordinates
+                  </span>
+                </div>
+              </div>
+
+              {/* Preview of filtered installations */}
+              <div className="border rounded-lg p-4 max-h-96 overflow-y-auto">
+                <p className="text-sm font-semibold mb-3">Preview (showing first 10):</p>
+                <div className="space-y-2">
+                  {missingCoordinatesInstallations.slice(0, 10).map((installation) => {
+                    const locationId = installation.locationId ? String(installation.locationId).trim() : "";
+                    const isLocation9999 = locationId === "9999";
+                    const locationMap = new Map<string, { latitude: number | null; longitude: number | null }>();
+                    locations.forEach((loc) => {
+                      locationMap.set(loc.locationId, { latitude: loc.latitude, longitude: loc.longitude });
+                    });
+                    
+                    let missingReason = "";
+                    
+                    if (isLocation9999) {
+                      const lat = installation.latitude ?? null;
+                      const lon = installation.longitude ?? null;
+                      missingReason = (lat == null || lon == null) 
+                        ? "Location 9999 - User-entered coordinates are null" 
+                        : "Location 9999 - Coordinates exist";
+                    } else {
+                      const location = locationMap.get(locationId);
+                      missingReason = location 
+                        ? (location.latitude == null || location.longitude == null
+                            ? `Location ID ${locationId} exists but coordinates are null`
+                            : `Location ID ${locationId} - Has coordinates`)
+                        : `Location ID ${locationId} not found in locations database`;
+                    }
+
+                    return (
+                      <div key={installation.id} className="flex items-center justify-between p-3 rounded-md bg-muted/50 text-sm">
+                        <div className="flex-1 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium font-mono">{installation.deviceId}</span>
+                            <Badge variant="outline" className="text-xs">
+                              Location: {installation.locationId}
+                            </Badge>
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Installer: {installation.installedByName}
+                          </div>
+                          <div className="text-xs text-amber-600 font-medium">
+                            {missingReason}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {missingCoordinatesInstallations.length > 10 && (
+                    <p className="text-xs text-muted-foreground text-center pt-2">
+                      ... and {missingCoordinatesInstallations.length - 10} more
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Export Installations by Device UIDs */}
       <Card className="border shadow-sm">
