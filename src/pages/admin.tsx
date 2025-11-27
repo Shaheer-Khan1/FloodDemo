@@ -74,6 +74,14 @@ export default function Admin() {
   const [loadingExportMatches, setLoadingExportMatches] = useState(false);
   const [exportingSelectedInstallations, setExportingSelectedInstallations] = useState(false);
 
+  // Bulk Location Change State
+  const [bulkLocationDeviceIdsInput, setBulkLocationDeviceIdsInput] = useState("");
+  const [bulkLocationTargetLocationId, setBulkLocationTargetLocationId] = useState("");
+  const [matchingLocationInstallations, setMatchingLocationInstallations] = useState<Installation[]>([]);
+  const [loadingLocationMatches, setLoadingLocationMatches] = useState(false);
+  const [updatingLocations, setUpdatingLocations] = useState(false);
+  const [showLocationUpdateDialog, setShowLocationUpdateDialog] = useState(false);
+
   // Real-time users listener
   useEffect(() => {
     if (!userProfile?.isAdmin) return;
@@ -1093,6 +1101,162 @@ export default function Admin() {
       });
     } finally {
       setExportingDuplicates(false);
+    }
+  };
+
+  // Bulk Location Change Functions
+  const findInstallationsForLocationChange = async () => {
+    if (!bulkLocationDeviceIdsInput.trim()) {
+      toast({
+        variant: "destructive",
+        title: "Device IDs Required",
+        description: "Please enter device IDs (one per line).",
+      });
+      return;
+    }
+
+    if (!bulkLocationTargetLocationId.trim()) {
+      toast({
+        variant: "destructive",
+        title: "Location ID Required",
+        description: "Please enter a target location ID.",
+      });
+      return;
+    }
+
+    setLoadingLocationMatches(true);
+    setMatchingLocationInstallations([]);
+
+    try {
+      // Parse device IDs from input (one per line)
+      const deviceIds = bulkLocationDeviceIdsInput
+        .split('\n')
+        .map(id => id.trim().toUpperCase())
+        .filter(id => id.length > 0);
+
+      if (deviceIds.length === 0) {
+        toast({
+          variant: "destructive",
+          title: "No Valid Device IDs",
+          description: "Please enter at least one device ID.",
+        });
+        setLoadingLocationMatches(false);
+        return;
+      }
+
+      const installationsRef = collection(db, "installations");
+      const snapshot = await getDocs(installationsRef);
+      
+      const matches: Installation[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        const deviceId = data.deviceId?.toUpperCase();
+        
+        // Check if device ID is in the list
+        if (deviceIds.includes(deviceId)) {
+          matches.push({
+            ...data,
+            id: doc.id,
+            createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : data.createdAt,
+            updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : data.updatedAt,
+            verifiedAt: data.verifiedAt?.toDate ? data.verifiedAt.toDate() : data.verifiedAt,
+            systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate ? data.systemPreVerifiedAt.toDate() : data.systemPreVerifiedAt,
+            serverRefreshedAt: data.serverRefreshedAt?.toDate ? data.serverRefreshedAt.toDate() : data.serverRefreshedAt,
+          } as Installation);
+        }
+      });
+
+      setMatchingLocationInstallations(matches);
+      
+      if (matches.length > 0) {
+        setShowLocationUpdateDialog(true);
+      } else {
+        toast({
+          title: "No Installations Found",
+          description: `No installations found matching the specified device IDs.`,
+        });
+      }
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Search Failed",
+        description: error.message || "An error occurred while searching.",
+      });
+    } finally {
+      setLoadingLocationMatches(false);
+    }
+  };
+
+  const handleBulkLocationChangeByDeviceIds = async () => {
+    if (matchingLocationInstallations.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No Installations",
+        description: "No installations found to update.",
+      });
+      return;
+    }
+
+    if (!bulkLocationTargetLocationId.trim()) {
+      toast({
+        variant: "destructive",
+        title: "Location ID Required",
+        description: "Please enter a target location ID.",
+      });
+      return;
+    }
+
+    setUpdatingLocations(true);
+
+    try {
+      let batch = writeBatch(db);
+      let batchCount = 0;
+
+      for (const installation of matchingLocationInstallations) {
+        const installationRef = doc(db, "installations", installation.id);
+        
+        // Store original locationId if not already stored
+        const updateData: any = {
+          locationId: bulkLocationTargetLocationId.trim(),
+          updatedAt: serverTimestamp(),
+        };
+
+        // If originalLocationId doesn't exist, save current locationId as original
+        if (!installation.originalLocationId && installation.locationId) {
+          updateData.originalLocationId = installation.locationId;
+        }
+        
+        batch.update(installationRef, updateData);
+        batchCount++;
+
+        if (batchCount === 500) {
+          await batch.commit();
+          batchCount = 0;
+          batch = writeBatch(db);
+        }
+      }
+
+      if (batchCount > 0) {
+        await batch.commit();
+      }
+
+      toast({
+        title: "Update Complete",
+        description: `Successfully updated ${matchingLocationInstallations.length} installation(s) to location ID ${bulkLocationTargetLocationId}.`,
+      });
+
+      setMatchingLocationInstallations([]);
+      setShowLocationUpdateDialog(false);
+      setBulkLocationDeviceIdsInput("");
+      setBulkLocationTargetLocationId("");
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Update Failed",
+        description: error.message || "An error occurred during update.",
+      });
+    } finally {
+      setUpdatingLocations(false);
     }
   };
 
@@ -2269,6 +2433,149 @@ export default function Admin() {
               className="bg-primary"
             >
               {updatingTeams ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Updating...
+                </>
+              ) : (
+                <>
+                  Confirm Update
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk Location Change */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <MapPin className="h-5 w-5" />
+            Bulk Location Change
+          </CardTitle>
+          <CardDescription>Change location ID for multiple installations by device IDs</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="bulk-location-device-ids">Device IDs (one per line)</Label>
+              <Textarea
+                id="bulk-location-device-ids"
+                placeholder="Enter device IDs, one per line..."
+                value={bulkLocationDeviceIdsInput}
+                onChange={(e) => setBulkLocationDeviceIdsInput(e.target.value)}
+                disabled={loadingLocationMatches || updatingLocations}
+                className="min-h-[120px] font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                Enter device UIDs, one per line. Matching installations will be found.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="bulk-location-target">Target Location ID</Label>
+              <Input
+                id="bulk-location-target"
+                placeholder="Enter target location ID (e.g., 9999)"
+                value={bulkLocationTargetLocationId}
+                onChange={(e) => setBulkLocationTargetLocationId(e.target.value)}
+                disabled={loadingLocationMatches || updatingLocations}
+              />
+              <p className="text-xs text-muted-foreground">
+                Enter the location ID to assign to all matching installations.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <Button
+              onClick={findInstallationsForLocationChange}
+              disabled={!bulkLocationDeviceIdsInput.trim() || !bulkLocationTargetLocationId.trim() || loadingLocationMatches || updatingLocations}
+            >
+              {loadingLocationMatches ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Searching...
+                </>
+              ) : (
+                <>
+                  <Search className="h-4 w-4 mr-2" />
+                  Find Matching Installations
+                </>
+              )}
+            </Button>
+          </div>
+
+          {/* Preview of matching installations */}
+          {matchingLocationInstallations.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-lg bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-blue-600" />
+                  <span className="font-semibold text-blue-600">
+                    Found {matchingLocationInstallations.length} matching installation{matchingLocationInstallations.length !== 1 ? 's' : ''}
+                  </span>
+                </div>
+              </div>
+
+              <div className="border rounded-lg p-4 max-h-96 overflow-y-auto">
+                <p className="text-sm font-semibold mb-3">Preview (showing first 10):</p>
+                <div className="space-y-2">
+                  {matchingLocationInstallations.slice(0, 10).map((installation) => (
+                    <div key={installation.id} className="flex items-center justify-between p-3 rounded-md bg-muted/50 text-sm">
+                      <div className="flex-1 space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium font-mono">{installation.deviceId}</span>
+                          <Badge variant="outline" className="text-xs">Current: {installation.locationId}</Badge>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Installer: {installation.installedByName}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xs text-muted-foreground">Will become</div>
+                        <div className="text-xs font-medium text-green-600">Location: {bulkLocationTargetLocationId}</div>
+                      </div>
+                    </div>
+                  ))}
+                  {matchingLocationInstallations.length > 10 && (
+                    <p className="text-xs text-muted-foreground text-center pt-2">
+                      ... and {matchingLocationInstallations.length - 10} more
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Confirmation Dialog for Bulk Location Change */}
+      <AlertDialog open={showLocationUpdateDialog} onOpenChange={setShowLocationUpdateDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Bulk Location Change</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <p>You are about to update <strong>{matchingLocationInstallations.length}</strong> installation(s).</p>
+              <p className="font-semibold">Changes:</p>
+              <ul className="list-disc list-inside space-y-1 text-sm">
+                <li>Update location ID to <strong>{bulkLocationTargetLocationId}</strong></li>
+                <li>Original location IDs will be preserved in the originalLocationId field</li>
+              </ul>
+              <p className="text-amber-600 dark:text-amber-500 font-medium mt-3">
+                This action cannot be undone. Are you sure you want to continue?
+              </p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={updatingLocations}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleBulkLocationChangeByDeviceIds}
+              disabled={updatingLocations}
+              className="bg-primary"
+            >
+              {updatingLocations ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   Updating...

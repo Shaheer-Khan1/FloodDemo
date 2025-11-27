@@ -5,8 +5,10 @@ import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Search, MapPin } from "lucide-react";
-import type { Installation } from "@/lib/types";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
+import { Loader2, Search, MapPin, Filter, X } from "lucide-react";
+import type { Installation, Team } from "@/lib/types";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
@@ -109,8 +111,10 @@ export default function InstallationsMap() {
   const isDesktop = useIsDesktop();
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
+  const [teamFilter, setTeamFilter] = useState<string>("all");
   const [selectedInstallationId, setSelectedInstallationId] = useState<string | null>(null);
 
   // Fetch installations
@@ -137,6 +141,21 @@ export default function InstallationsMap() {
         ...(d.data() as any),
       })) as Location[];
       setLocations(data);
+    });
+    return () => unsub();
+  }, []);
+
+  // Fetch teams
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "teams"), (snap) => {
+      const data = snap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as any),
+        createdAt: d.data().createdAt?.toDate(),
+        updatedAt: d.data().updatedAt?.toDate(),
+      })) as Team[];
+      data.sort((a, b) => a.name.localeCompare(b.name));
+      setTeams(data);
     });
     return () => unsub();
   }, []);
@@ -175,41 +194,61 @@ export default function InstallationsMap() {
       .filter((inst) => inst.lat != null && inst.lon != null) as InstallationWithCoords[];
   }, [installations, locations]);
 
-  // Filter installations based on search
+  // Create team ID to name mapping
+  const teamIdToName = useMemo(() => {
+    const map: Record<string, string> = {};
+    teams.forEach((team) => {
+      if (team.id) map[team.id] = team.name;
+    });
+    return map;
+  }, [teams]);
+
+  // Filter installations based on search and team
   const filteredInstallations = useMemo(() => {
-    if (!searchTerm.trim()) return installationsWithCoords;
-    const term = searchTerm.toLowerCase().trim();
-    return installationsWithCoords.filter(
-      (inst) =>
-        inst.deviceId.toLowerCase().includes(term) ||
-        inst.locationId.toLowerCase().includes(term) ||
-        inst.installedByName.toLowerCase().includes(term)
-    );
-  }, [installationsWithCoords, searchTerm]);
+    let filtered = installationsWithCoords;
+
+    // Apply team filter
+    if (teamFilter !== "all") {
+      filtered = filtered.filter((inst) => inst.teamId === teamFilter);
+    }
+
+    // Apply search filter
+    if (searchTerm.trim()) {
+      const term = searchTerm.toLowerCase().trim();
+      filtered = filtered.filter(
+        (inst) =>
+          inst.deviceId.toLowerCase().includes(term) ||
+          inst.locationId.toLowerCase().includes(term) ||
+          inst.installedByName.toLowerCase().includes(term)
+      );
+    }
+
+    return filtered;
+  }, [installationsWithCoords, searchTerm, teamFilter]);
 
   // Component to center map on selected installation
   function CenterOnInstallation({ installationId }: { installationId: string | null }) {
     const map = useMap();
 
     useEffect(() => {
-      if (installationId && installationsWithCoords.length > 0) {
-        const inst = installationsWithCoords.find((i) => i.id === installationId);
+      if (installationId && filteredInstallations.length > 0) {
+        const inst = filteredInstallations.find((i) => i.id === installationId);
         if (inst && inst.lat && inst.lon) {
           map.setView([inst.lat, inst.lon], 15, { animate: true });
         }
       }
-    }, [installationId, installationsWithCoords, map]);
+    }, [installationId, filteredInstallations, map]);
 
     return null;
   }
 
-  // Calculate center point for map (fallback)
+  // Calculate center point for map (fallback) - use filtered installations
   const mapCenter = useMemo(() => {
-    if (installationsWithCoords.length === 0) return [21.5, 39.8] as [number, number];
-    const avgLat = installationsWithCoords.reduce((sum, inst) => sum + (inst.lat || 0), 0) / installationsWithCoords.length;
-    const avgLon = installationsWithCoords.reduce((sum, inst) => sum + (inst.lon || 0), 0) / installationsWithCoords.length;
+    if (filteredInstallations.length === 0) return [21.5, 39.8] as [number, number];
+    const avgLat = filteredInstallations.reduce((sum, inst) => sum + (inst.lat || 0), 0) / filteredInstallations.length;
+    const avgLon = filteredInstallations.reduce((sum, inst) => sum + (inst.lon || 0), 0) / filteredInstallations.length;
     return [avgLat, avgLon] as [number, number];
-  }, [installationsWithCoords]);
+  }, [filteredInstallations]);
 
   if (!userProfile?.isAdmin && userProfile?.role !== "ministry" && userProfile?.role !== "verifier" && userProfile?.role !== "manager") {
     return (
@@ -246,6 +285,40 @@ export default function InstallationsMap() {
         />
       </div>
 
+      {/* Team/Amanah Filter */}
+      <div className="mb-4 space-y-2">
+        <Label htmlFor="team-filter" className="text-sm font-medium">Filter by Team/Amanah</Label>
+        <Select value={teamFilter} onValueChange={setTeamFilter}>
+          <SelectTrigger id="team-filter" className="w-full">
+            <SelectValue placeholder="All Teams" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Teams</SelectItem>
+            {teams.map((team) => (
+              <SelectItem key={team.id} value={team.id}>
+                {team.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Clear Filters Button */}
+      {(teamFilter !== "all" || searchTerm.trim()) && (
+        <div className="mb-4">
+          <button
+            onClick={() => {
+              setTeamFilter("all");
+              setSearchTerm("");
+            }}
+            className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <X className="h-3 w-3" />
+            Clear filters
+          </button>
+        </div>
+      )}
+
       {/* Status Legend */}
       <div className="mb-4 pb-4 border-b space-y-2">
         <div className="font-semibold text-sm">Status Legend</div>
@@ -266,7 +339,8 @@ export default function InstallationsMap() {
       {/* Installations List */}
       <div className="flex-1 overflow-y-auto space-y-2">
         <div className="text-sm text-muted-foreground mb-2">
-          {filteredInstallations.length} installation{filteredInstallations.length !== 1 ? 's' : ''}
+          {filteredInstallations.length} of {installationsWithCoords.length} installation{filteredInstallations.length !== 1 ? 's' : ''}
+          {(teamFilter !== "all" || searchTerm.trim()) && " (filtered)"}
         </div>
         {filteredInstallations.length > 0 ? (
           filteredInstallations.map((inst) => (
@@ -285,6 +359,9 @@ export default function InstallationsMap() {
                   <div className="text-xs text-muted-foreground mt-1">
                     <div>Location: {inst.locationId}</div>
                     <div>Installer: {inst.installedByName}</div>
+                    {inst.teamId && teamIdToName[inst.teamId] && (
+                      <div>Team: {teamIdToName[inst.teamId]}</div>
+                    )}
                   </div>
                 </div>
                 <Badge
@@ -338,7 +415,7 @@ export default function InstallationsMap() {
         {/* Map only on mobile; list remains desktop-only */}
         <Card className="border shadow-sm flex-1 flex flex-col min-h-0 order-1 lg:order-2">
           <CardContent className="p-0 relative" style={{ height: '60vh' }}>
-            {installationsWithCoords.length > 0 ? (
+            {filteredInstallations.length > 0 ? (
               <MapContainer
                 center={mapCenter}
                 zoom={10}
@@ -349,9 +426,9 @@ export default function InstallationsMap() {
                   attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
-                <FitBounds installations={installationsWithCoords} />
+                <FitBounds installations={filteredInstallations} />
                 <CenterOnInstallation installationId={selectedInstallationId} />
-                {installationsWithCoords.map((inst) => (
+                {filteredInstallations.map((inst) => (
                   <Marker
                     key={inst.id}
                     position={[inst.lat!, inst.lon!]}
@@ -366,6 +443,9 @@ export default function InstallationsMap() {
                         <div className="text-sm space-y-1">
                           <div><strong>Location ID:</strong> {inst.locationId}</div>
                           <div><strong>Installer:</strong> {inst.installedByName}</div>
+                          {inst.teamId && teamIdToName[inst.teamId] && (
+                            <div><strong>Team/Amanah:</strong> {teamIdToName[inst.teamId]}</div>
+                          )}
                           <div>
                             <strong>Status:</strong>{" "}
                             <span className={`capitalize font-medium ${
