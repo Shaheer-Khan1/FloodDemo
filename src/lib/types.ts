@@ -58,6 +58,32 @@ export interface Device {
   iccid: string; // ICCID
   timestamp?: string; // Original import timestamp
   boxNumber?: string; // Box number from packaging
+  /**
+   * Original box code / sequence identifier for the device inside the box
+   * (e.g. "No" column or any internal code printed on packaging).
+   */
+  boxCode?: string;
+  /**
+   * True if this device/box was mapped using the legacy box-number workflow
+   * (without ORIGINAL BOX CODE from the new master list).
+   */
+  legacyBox?: boolean;
+  /**
+   * Team responsible for this device/box.
+   * Set when admin assigns a box list to a specific team.
+   */
+  teamId?: string;
+  /**
+   * Whether the physical box containing this device has been opened
+   * by the assigned team (verifier). Installers must only be able
+   * to install devices when boxOpened === true.
+   *
+   * Undefined or false = not opened yet.
+   */
+  boxOpened?: boolean;
+  /** Optional installer assignment for planning who should install this device */
+  assignedInstallerId?: string;
+  assignedInstallerName?: string;
   status: DeviceStatus;
   createdAt?: Date;
   updatedAt?: Date;

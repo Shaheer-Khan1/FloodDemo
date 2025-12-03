@@ -48,6 +48,7 @@ export default function Devices() {
   const [productFilter, setProductFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<string>("");
   const [deviceUidsFilter, setDeviceUidsFilter] = useState<string>("");
+  const [boxFilter, setBoxFilter] = useState<string>("all");
   const [displayLimit, setDisplayLimit] = useState(500);
 
   // Real-time devices listener (admin only)
@@ -148,6 +149,16 @@ export default function Devices() {
     return Array.from(productIds).sort();
   }, [devices]);
 
+  // Get unique box identifiers (final boxNumber or fallback to boxCode)
+  const uniqueBoxes = useMemo(() => {
+    const boxes = new Set(
+      devices
+        .map(d => d.boxNumber || d.boxCode)
+        .filter((b): b is string => !!b)
+    );
+    return Array.from(boxes).sort();
+  }, [devices]);
+
   // Filter devices
   const filteredDevices = useMemo(() => {
     return devicesWithDetails.filter(device => {
@@ -180,6 +191,9 @@ export default function Devices() {
       
       const matchesProduct = productFilter === "all" || device.productId === productFilter;
 
+      const deviceBox = device.boxNumber || device.boxCode || "";
+      const matchesBox = boxFilter === "all" || (deviceBox && deviceBox === boxFilter);
+
       // Apply date filter (filter by installation date)
       let matchesDate = true;
       if (dateFilter) {
@@ -197,20 +211,27 @@ export default function Devices() {
         }
       }
 
-      return matchesDeviceUids && matchesSearch && matchesStatus && matchesProduct && matchesDate;
+      return matchesDeviceUids && matchesSearch && matchesStatus && matchesProduct && matchesDate && matchesBox;
     });
-  }, [devicesWithDetails, deviceUidsFilter, searchTerm, statusFilter, productFilter, dateFilter]);
+  }, [devicesWithDetails, deviceUidsFilter, searchTerm, statusFilter, productFilter, dateFilter, boxFilter]);
 
   const clearFilters = () => {
     setSearchTerm("");
     setStatusFilter("all");
     setProductFilter("all");
+    setBoxFilter("all");
     setDateFilter("");
     setDeviceUidsFilter("");
     setDisplayLimit(500);
   };
 
-  const hasActiveFilters = searchTerm !== "" || statusFilter !== "all" || productFilter !== "all" || dateFilter !== "" || deviceUidsFilter.trim() !== "";
+  const hasActiveFilters =
+    searchTerm !== "" ||
+    statusFilter !== "all" ||
+    productFilter !== "all" ||
+    boxFilter !== "all" ||
+    dateFilter !== "" ||
+    deviceUidsFilter.trim() !== "";
 
   // Limit displayed devices for performance
   const displayedDevices = useMemo(() => {
@@ -331,7 +352,7 @@ export default function Devices() {
     };
   }, [devices, installations]);
 
-  // Admin-only access gate
+  // Access gate: admins only
   if (!userProfile?.isAdmin) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -715,10 +736,24 @@ export default function Devices() {
                             {device.id}
                           </div>
                         </TableCell>
-                        <TableCell className="px-2 py-2">
-                          <div className="truncate max-w-[70px]" title={device.boxNumber || "-"}>
-                            {device.boxNumber || "-"}
-                          </div>
+                        <TableCell className="px-2 py-2 text-xs">
+                          {(() => {
+                            // Show original code as primary, and final identifier (boxNumber) as a tag below if present
+                            const original = device.boxCode || "-";
+                            const identifier = device.boxNumber;
+                            return (
+                              <div className="max-w-[90px] space-y-0.5">
+                                <div className="truncate" title={original}>
+                                  {original}
+                                </div>
+                                {identifier && (
+                                  <div className="inline-flex items-center rounded-full border border-muted px-1.5 py-0.5 text-[10px] text-muted-foreground bg-muted/40">
+                                    ID: {identifier}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </TableCell>
                         <TableCell className="px-2 py-2">
                           <div className="truncate max-w-[80px]" title={device.productId}>

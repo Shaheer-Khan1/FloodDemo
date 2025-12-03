@@ -40,19 +40,21 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   };
 
   const menuItems = [
-    // Dashboard, Teams - Not for installers
-    ...(userProfile?.role !== "installer" ? [
-      { title: "Dashboard", icon: LayoutDashboard, url: "/dashboard" },
-      // Hide Teams for ministry role
-      ...(userProfile?.role !== "ministry" ? [{ title: "Teams", icon: Users, url: "/teams" }] : [] as any),
-    ].flat() : []),
+    // Dashboard, Teams - for non-installer, non-manager roles
+    ...(userProfile && userProfile.role !== "installer" && userProfile.role !== "manager"
+      ? [
+          { title: "Dashboard", icon: LayoutDashboard, url: "/dashboard" },
+          // Hide Teams for ministry role
+          ...(userProfile.role !== "ministry" ? [{ title: "Teams", icon: Users, url: "/teams" }] : [] as any),
+        ].flat()
+      : []),
     // Admin menu items
     ...(userProfile?.isAdmin ? [
       { title: "Admin", icon: Shield, url: "/admin" },
       { title: "Create User", icon: UserPlus, url: "/create-user" },
       { title: "Devices", icon: Package, url: "/devices" },
       { title: "Import Devices", icon: FileUp, url: "/device-import" },
-      { title: "Import Box Numbers", icon: Box, url: "/box-import" },
+      { title: "Assign Box", icon: Box, url: "/assign-box" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
       { title: "Installations Map", icon: MapPin, url: "/installations-map" },
       { title: "New Installation", icon: Plus, url: "/new-installation" },
@@ -67,14 +69,16 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     ...(userProfile?.role === "verifier" && !userProfile?.isAdmin ? [
       { title: "Create Installer", icon: UserPlus, url: "/create-user" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
+      { title: "Open Boxes", icon: Box, url: "/open-boxes" },
       { title: "Installations Map", icon: MapPin, url: "/installations-map" },
     ] : []),
-    // Manager-specific menu items
-    ...(userProfile?.role === "manager" && !userProfile?.isAdmin ? [
-      { title: "Create Installer", icon: UserPlus, url: "/create-user" },
-      { title: "Verification", icon: CheckSquare, url: "/verification" },
-      { title: "Installations Map", icon: MapPin, url: "/installations-map" },
-    ] : []),
+    // Manager-specific menu items (limited)
+    ...(userProfile?.role === "manager" && !userProfile?.isAdmin
+      ? [
+          { title: "Teams", icon: Users, url: "/teams" },
+          { title: "Assign Box", icon: Box, url: "/assign-box" },
+        ]
+      : []),
     // Ministry-specific menu items
     ...(userProfile?.role === "ministry" && !userProfile?.isAdmin ? [
       { title: "All Devices", icon: Package, url: "/ministry-devices" },

@@ -24,6 +24,7 @@ export default function Teams() {
   const [creating, setCreating] = useState(false);
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
   const [teamMembers, setTeamMembers] = useState<Record<string, CustomTeamMember[]>>({});
+  const [teamBoxes, setTeamBoxes] = useState<Record<string, { boxNumber: string; count: number }[]>>({});
 
   // Redirect installers to their installation page
   useEffect(() => {
@@ -38,9 +39,9 @@ export default function Teams() {
     
     setLoading(true);
     
-    // Admins can see all teams, others see teams they own or are assigned to
+    // Admins and managers can see all teams, others see teams they own or are assigned to
     let teamsQuery;
-    if (userProfile.isAdmin) {
+    if (userProfile.isAdmin || userProfile.role === "manager") {
       teamsQuery = collection(db, "teams");
     } else if (userProfile.teamId) {
       // Show the team they're assigned to
@@ -105,6 +106,42 @@ export default function Teams() {
       unsubscribes.forEach(unsub => unsub());
     };
   }, [teams]);
+
+  // Real-time box assignments per team (for admins and managers)
+  useEffect(() => {
+    if (!userProfile || (!userProfile.isAdmin && userProfile.role !== "manager")) return;
+
+    const unsubscribe = onSnapshot(
+      collection(db, "devices"),
+      (snapshot) => {
+        const boxesByTeam: Record<string, Record<string, number>> = {};
+
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as any;
+          const teamId = data.teamId as string | undefined;
+          const boxNumber = data.boxNumber as string | undefined;
+          if (!teamId || !boxNumber) return;
+
+          if (!boxesByTeam[teamId]) boxesByTeam[teamId] = {};
+          boxesByTeam[teamId][boxNumber] = (boxesByTeam[teamId][boxNumber] || 0) + 1;
+        });
+
+        const formatted: Record<string, { boxNumber: string; count: number }[]> = {};
+        Object.entries(boxesByTeam).forEach(([teamId, boxes]) => {
+          formatted[teamId] = Object.entries(boxes)
+            .map(([boxNumber, count]) => ({ boxNumber, count }))
+            .sort((a, b) => a.boxNumber.localeCompare(b.boxNumber));
+        });
+
+        setTeamBoxes(formatted);
+      },
+      (error) => {
+        console.error("Failed to load team box assignments:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [userProfile]);
 
   const handleCreateTeam = async () => {
     if (!user || !userProfile || !newTeamName.trim()) return;
@@ -189,11 +226,11 @@ export default function Teams() {
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-3xl font-bold">
-            {userProfile?.isAdmin ? "All Teams" : "My Teams"}
+            {userProfile?.isAdmin || userProfile?.role === "manager" ? "All Teams" : "My Teams"}
           </h1>
           <p className="text-muted-foreground">
-            {userProfile?.isAdmin 
-              ? "Manage all teams and their members" 
+            {userProfile?.isAdmin || userProfile?.role === "manager"
+              ? "View and manage all teams and their box assignments"
               : "Manage your teams"}
           </p>
         </div>
@@ -293,44 +330,95 @@ export default function Teams() {
               </CardHeader>
               <CardContent>
                 {teamMembers[team.id]?.length > 0 ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {teamMembers[team.id].map((member) => {
-                      const memberName = member.name || member.displayName || 'Unknown';
-                      const initials = memberName.split(' ').map(n => n[0]).join('').toUpperCase() || 'U';
-                      return (
-                        <Card key={member.id} className="hover-elevate">
-                          <CardContent className="p-4">
-                            <div className="flex items-start gap-3">
-                              <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-                                <span className="text-sm font-semibold text-primary">
-                                  {initials}
-                                </span>
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2">
-                                  <p className="font-medium truncate" data-testid={`text-member-name-${member.id}`}>{memberName}</p>
-                                  {member.role && (
-                                    <Badge variant="secondary" className="text-[10px] h-5 px-1.5 capitalize">
-                                      {member.role}
-                                    </Badge>
-                                  )}
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {teamMembers[team.id].map((member) => {
+                        const memberName = member.name || member.displayName || 'Unknown';
+                        const initials = memberName.split(' ').map(n => n[0]).join('').toUpperCase() || 'U';
+                        return (
+                          <Card key={member.id} className="hover-elevate">
+                            <CardContent className="p-4">
+                              <div className="flex items-start gap-3">
+                                <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+                                  <span className="text-sm font-semibold text-primary">
+                                    {initials}
+                                  </span>
                                 </div>
-                                <p className="text-sm text-muted-foreground truncate">{member.email || 'No email'}</p>
-                                <div className="flex gap-2 mt-2 text-xs text-muted-foreground">
-                                  {member.deviceId && <><span>ID: {member.deviceId}</span><span>•</span></>}
-                                  {member.height && <span>{member.height} {member.heightUnit || 'cm'}</span>}
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <p className="font-medium truncate" data-testid={`text-member-name-${member.id}`}>{memberName}</p>
+                                    {member.role && (
+                                      <Badge variant="secondary" className="text-[10px] h-5 px-1.5 capitalize">
+                                        {member.role}
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <p className="text-sm text-muted-foreground truncate">{member.email || 'No email'}</p>
+                                  <div className="flex gap-2 mt-2 text-xs text-muted-foreground">
+                                    {member.deviceId && <><span>ID: {member.deviceId}</span><span>•</span></>}
+                                    {member.height && <span>{member.height} {member.heightUnit || 'cm'}</span>}
+                                  </div>
                                 </div>
                               </div>
-                            </div>
-                          </CardContent>
-                        </Card>
-                      );
-                    })}
+                            </CardContent>
+                          </Card>
+                        );
+                      })}
+                    </div>
+
+                    {(userProfile?.isAdmin || userProfile?.role === "manager") && (
+                      <div className="mt-2 pt-3 border-t space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-semibold">Assigned Boxes</span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setLocation(`/assign-box?teamId=${team.id}`)}
+                          >
+                            Manage Assignments
+                          </Button>
+                        </div>
+                        {teamBoxes[team.id]?.length ? (
+                          <div className="flex flex-wrap gap-2">
+                            {teamBoxes[team.id].map((box) => (
+                              <button
+                                key={box.boxNumber}
+                                type="button"
+                                className="px-3 py-1 rounded-full border text-xs font-mono bg-background text-foreground border-muted hover:bg-muted"
+                                onClick={() =>
+                                  setLocation(`/assign-box?teamId=${team.id}&box=${encodeURIComponent(box.boxNumber)}`)
+                                }
+                              >
+                                {box.boxNumber} · {box.count}
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">
+                            No boxes assigned to this team yet.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="text-center py-8 text-muted-foreground">
                     <UserPlus className="h-8 w-8 mx-auto mb-2 opacity-50" />
                     <p className="text-sm">No members yet. Add your first team member.</p>
+                    {(userProfile?.isAdmin || userProfile?.role === "manager") && (
+                      <div className="mt-4 space-y-2">
+                        <p className="text-xs text-muted-foreground">
+                          You can still assign boxes to this team using the button below.
+                        </p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setLocation(`/assign-box?teamId=${team.id}`)}
+                        >
+                          Manage Box Assignments
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 )}
               </CardContent>

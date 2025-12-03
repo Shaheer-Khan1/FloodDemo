@@ -18,6 +18,7 @@ import NotFound from "@/pages/not-found";
 import Devices from "@/pages/devices";
 import DeviceImport from "@/pages/device-import";
 import BoxImport from "@/pages/box-import";
+import OpenBoxes from "@/pages/open-boxes";
 import NewInstallation from "@/pages/new-installation";
 import MySubmissions from "@/pages/my-submissions";
 import Verification from "@/pages/verification";
@@ -81,10 +82,18 @@ function Router() {
         </ProtectedRoute>
       </Route>
 
-      <Route path="/box-import">
+      <Route path="/assign-box">
         <ProtectedRoute>
           <AppLayout>
             <BoxImport />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/open-boxes">
+        <ProtectedRoute>
+          <AppLayout>
+            <OpenBoxes />
           </AppLayout>
         </ProtectedRoute>
       </Route>

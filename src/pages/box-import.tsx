@@ -1,204 +1,263 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { Upload, Download, CheckCircle2, XCircle, Loader2, Package, AlertCircle } from "lucide-react";
-import { collection, query, where, getDocs, doc, updateDoc, serverTimestamp } from "firebase/firestore";
+import { AlertCircle, Loader2, Package, Users } from "lucide-react";
+import { collection, doc, onSnapshot, updateDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-import * as XLSX from 'xlsx';
+import type { Team, Device } from "@/lib/types";
+import { useLocation } from "wouter";
 
-interface ImportResult {
-  success: number;
-  failed: number;
-  notFound: number;
-  errors: string[];
+interface BoxAssignment {
+  key: string;
+  label: string;
+  deviceCount: number;
+  value: string; // boxCode
 }
 
 export default function BoxImport() {
   const { userProfile } = useAuth();
   const { toast } = useToast();
-  const [file, setFile] = useState<File | null>(null);
-  const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState<ImportResult | null>(null);
-  const [progress, setProgress] = useState(0);
+  const [location] = useLocation();
 
-  const downloadTemplate = () => {
-    const csvContent = `Box,No,Serial ID (Full)
-1,1,SNNEP312045H0105J25007685CEFD507B1EBDA3DELDYGCDK-85CEFD507B1EBDA3
-1,2,SNNEP312045H0105J250071C53604506914FC9BDELDYGCDK-C53604506914FC9B
-2,1,SNNEP312045H0106J2500ED36D86B2E8120F6CDDELDYGCDK-36D86B2E8120F6CD`;
+  const searchParams = useMemo(
+    () => new URLSearchParams(location.split("?")[1] || ""),
+    [location]
+  );
+  const initialTeamFromQuery = searchParams.get("teamId") || "";
+  const initialAssignedBoxFromQuery = searchParams.get("box") || "";
 
-    const blob = new Blob([csvContent], { type: "text/csv" });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "box_numbers_template.csv";
-    a.click();
-    window.URL.revokeObjectURL(url);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
-    toast({
-      title: "Template Downloaded",
-      description: "Use this template to format your box number data.",
+  const [selectedBoxCode, setSelectedBoxCode] = useState<string>("");
+  const [boxIdentifier, setBoxIdentifier] = useState<string>("");
+  const [selectedTeamId, setSelectedTeamId] = useState<string>(initialTeamFromQuery);
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
+  const [selectedAssignedBox, setSelectedAssignedBox] = useState<string>(initialAssignedBoxFromQuery);
+
+  // Only managers (and admins, if you want) can assign boxes
+  const isManager =
+    userProfile?.role === "manager" || userProfile?.isAdmin;
+
+  useEffect(() => {
+    if (!userProfile || !isManager) return;
+
+    setLoading(true);
+
+    const teamsUnsub = onSnapshot(collection(db, "teams"), (snapshot) => {
+      const loadedTeams = snapshot.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as any),
+      })) as Team[];
+      loadedTeams.sort((a, b) => a.name.localeCompare(b.name));
+      setTeams(loadedTeams);
     });
-  };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
-      const validTypes = ["text/csv", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"];
-      const isValidExtension = selectedFile.name.endsWith(".csv") || selectedFile.name.endsWith(".xlsx") || selectedFile.name.endsWith(".xls");
-      
-      if (!validTypes.includes(selectedFile.type) && !isValidExtension) {
-        toast({
-          variant: "destructive",
-          title: "Invalid File Type",
-          description: "Please upload a CSV or Excel (.xlsx) file.",
-        });
-        return;
+    const devicesUnsub = onSnapshot(collection(db, "devices"), (snapshot) => {
+      const loadedDevices = snapshot.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as any),
+      })) as Device[];
+      setDevices(loadedDevices);
+      setLoading(false);
+    });
+
+    return () => {
+      teamsUnsub();
+      devicesUnsub();
+    };
+  }, [userProfile, isManager]);
+
+  const availableBoxCodes: BoxAssignment[] = useMemo(() => {
+    const counts: Record<string, number> = {};
+
+    for (const d of devices) {
+      // New flow only: devices imported with ORIGINAL BOX CODE and not yet assigned to any team
+      if (d.boxCode && !d.teamId) {
+        counts[d.boxCode] = (counts[d.boxCode] || 0) + 1;
       }
-      setFile(selectedFile);
-      setImportResult(null);
     }
-  };
 
-  const parseCSV = (text: string): string[][] => {
-    const lines = text.split("\n").filter(line => line.trim());
-    return lines.map(line => {
-      const matches = line.match(/(".*?"|[^,\t]+)(?=\s*[,\t]|\s*$)/g);
-      return matches ? matches.map(cell => cell.replace(/^"|"$/g, "").trim()) : [];
-    });
-  };
+    return Object.entries(counts)
+      .map(([boxCode, deviceCount]) => ({
+        key: boxCode,
+        label: boxCode,
+        deviceCount,
+        value: boxCode,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [devices]);
 
-  const parseExcel = async (file: File): Promise<string[][]> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      
-      reader.onload = (e) => {
-        try {
-          const data = e.target?.result;
-          const workbook = XLSX.read(data, { type: 'binary' });
-          
-          const firstSheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[firstSheetName];
-          
-          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as string[][];
-          
-          resolve(jsonData);
-        } catch (error) {
-          reject(error);
+  const selectedBoxMeta = useMemo(
+    () => availableBoxCodes.find((b) => b.key === selectedBoxCode) || null,
+    [availableBoxCodes, selectedBoxCode]
+  );
+
+  const selectedBoxDevices = useMemo(() => {
+    if (!selectedBoxMeta) return [];
+
+    // Devices imported with this ORIGINAL BOX CODE that are not yet assigned to any team
+    return devices.filter(
+      (d) => d.boxCode === selectedBoxMeta.value && !d.teamId
+    );
+  }, [devices, selectedBoxMeta]);
+
+  // Reset selected devices when box changes
+  useEffect(() => {
+    setSelectedDeviceIds([]);
+  }, [selectedBoxCode]);
+
+  // Keep selected assigned box in sync with selected team
+  useEffect(() => {
+    if (!selectedTeamId) {
+      setSelectedAssignedBox("");
+      return;
+    }
+    // If current selectedAssignedBox doesn't belong to this team anymore, clear it
+    const stillValid = devices.some(
+      (d) => d.teamId === selectedTeamId && d.boxNumber === selectedAssignedBox
+    );
+    if (!stillValid) {
+      setSelectedAssignedBox("");
+    }
+  }, [selectedTeamId, selectedAssignedBox, devices]);
+
+  // Boxes already assigned to teams (by final boxNumber).
+  // If a team is selected, we only show that team's boxes; otherwise show all teams.
+  const assignedBoxes = useMemo(
+    () => {
+      const counts: Record<string, { teamId: string; boxNumber: string; count: number }> = {};
+      for (const d of devices) {
+        if (!d.teamId || !d.boxNumber) continue;
+        if (selectedTeamId && d.teamId !== selectedTeamId) continue;
+        const key = `${d.teamId}__${d.boxNumber}`;
+        if (!counts[key]) {
+          counts[key] = { teamId: d.teamId, boxNumber: d.boxNumber, count: 0 };
         }
-      };
-      
-      reader.onerror = () => reject(new Error("Failed to read file"));
-      reader.readAsBinaryString(file);
-    });
-  };
-
-  const handleImport = async () => {
-    if (!file || !userProfile) return;
-
-    setImporting(true);
-    setProgress(0);
-    const result: ImportResult = { success: 0, failed: 0, notFound: 0, errors: [] };
-
-    try {
-      let rows: string[][];
-      
-      if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
-        rows = await parseExcel(file);
-      } else {
-        const text = await file.text();
-        rows = parseCSV(text);
+        counts[key].count += 1;
       }
+      return Object.values(counts).sort((a, b) =>
+        a.boxNumber.localeCompare(b.boxNumber)
+      );
+    },
+    [devices, selectedTeamId]
+  );
 
-      if (rows.length < 2) {
-        toast({
-          variant: "destructive",
-          title: "Import Failed",
-          description: "File must contain at least a header row and one data row.",
-        });
-        setImporting(false);
-        return;
-      }
+  const assignedDevicesForSelectedBox = useMemo(() => {
+    if (!selectedTeamId || !selectedAssignedBox) return [];
+    return devices.filter(
+      (d) => d.teamId === selectedTeamId && d.boxNumber === selectedAssignedBox
+    );
+  }, [devices, selectedTeamId, selectedAssignedBox]);
 
-      // Filter out header rows (rows that contain "Box" in the first column)
-      const dataRows = rows.filter((row, index) => {
-        if (index === 0) return false; // Skip first row (header)
-        const firstCol = row[0]?.toString().trim().toLowerCase();
-        return firstCol !== "box" && firstCol !== ""; // Skip "Box" headers and empty rows
-      });
-      
-      const totalRows = dataRows.length;
+  const handleAssign = async () => {
+    if (!userProfile || !isManager) return;
 
-      for (let i = 0; i < dataRows.length; i++) {
-        const row = dataRows[i];
-        const [boxNumber, , serialIdFull] = row;
-
-        if (!boxNumber || !serialIdFull) {
-          result.failed++;
-          result.errors.push(`Row ${i + 2}: Missing box number or serial ID`);
-          continue;
-        }
-
-        try {
-          // Extract the device serial ID (before the dash)
-          const deviceSerialId = serialIdFull.split('-')[0].trim();
-
-          // Find the device by serial ID
-          const devicesRef = collection(db, "devices");
-          const q = query(devicesRef, where("deviceSerialId", "==", deviceSerialId));
-          const querySnapshot = await getDocs(q);
-
-          if (querySnapshot.empty) {
-            result.notFound++;
-            result.errors.push(`Row ${i + 2}: Device not found with serial ID: ${deviceSerialId.substring(0, 30)}...`);
-          } else {
-            // Update the device with box number
-            const deviceDoc = querySnapshot.docs[0];
-            await updateDoc(doc(db, "devices", deviceDoc.id), {
-              boxNumber: boxNumber.toString(),
-              updatedAt: serverTimestamp(),
-            });
-            result.success++;
-          }
-        } catch (error: any) {
-          result.failed++;
-          result.errors.push(`Row ${i + 2}: ${error.message}`);
-        }
-
-        setProgress(Math.round(((i + 1) / totalRows) * 100));
-      }
-
-      setImportResult(result);
-      toast({
-        title: "Import Complete",
-        description: `Successfully updated ${result.success} device(s). ${result.notFound} not found. ${result.failed} failed.`,
-      });
-    } catch (error: any) {
+    if (!selectedBoxCode) {
       toast({
         variant: "destructive",
-        title: "Import Failed",
-        description: error.message || "An unexpected error occurred.",
+        title: "Original Box Code Required",
+        description: "Please select an original box code from the list.",
+      });
+      return;
+    }
+
+    if (!boxIdentifier.trim()) {
+      toast({
+        variant: "destructive",
+        title: "Box Identifier Required",
+        description: "Please enter the final box identifier for this box.",
+      });
+      return;
+    }
+
+    if (!selectedTeamId) {
+      toast({
+        variant: "destructive",
+        title: "Team Required",
+        description: "Please select the Amanah team for this box.",
+      });
+      return;
+    }
+
+    const selected = availableBoxCodes.find((b) => b.key === selectedBoxCode);
+    if (!selected) {
+      toast({
+        variant: "destructive",
+        title: "Invalid Selection",
+        description: "The selected box could not be found. Please refresh and try again.",
+      });
+      return;
+    }
+
+    // Determine which devices from this box should be assigned:
+    // - If the user selected specific devices, only update those.
+    // - If none selected, assign all devices from this box (current behaviour).
+    const devicesInBox = selectedBoxDevices;
+    const toUpdate = selectedDeviceIds.length
+      ? devicesInBox.filter((d) => selectedDeviceIds.includes(d.id))
+      : devicesInBox;
+
+    if (toUpdate.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No Devices Selected",
+        description: "Please select at least one device from this box to assign.",
+      });
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const finalBoxId = boxIdentifier.trim();
+
+      const updates = toUpdate.map((d) =>
+        updateDoc(doc(db, "devices", d.id), {
+          boxNumber: finalBoxId,
+          teamId: selectedTeamId,
+          boxOpened: false,
+          updatedAt: serverTimestamp(),
+        })
+      );
+
+      await Promise.all(updates);
+
+      toast({
+        title: "Box Assigned",
+        description: `Assigned original box code ${selected.value} to box ${finalBoxId} and selected team.`,
+      });
+
+      setBoxIdentifier("");
+      setSelectedBoxCode("");
+      setSelectedDeviceIds([]);
+    } catch (error) {
+      console.error(error);
+      toast({
+        variant: "destructive",
+        title: "Assignment Failed",
+        description: error instanceof Error ? error.message : "Failed to assign box to team.",
       });
     } finally {
-      setImporting(false);
-      setProgress(0);
+      setSaving(false);
     }
   };
 
-  if (!userProfile?.isAdmin) {
+  if (!userProfile || !isManager) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <Card className="max-w-md">
           <CardContent className="pt-6 text-center">
             <AlertCircle className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
             <h2 className="text-xl font-semibold mb-2">Access Denied</h2>
-            <p className="text-muted-foreground">Only administrators can import box numbers.</p>
+            <p className="text-muted-foreground">
+              Only managers (or admins) can assign boxes to Amanah teams.
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -209,146 +268,271 @@ export default function BoxImport() {
     <div className="space-y-8">
       <div>
         <h1 className="text-4xl font-bold text-slate-900 dark:text-white">
-          Box Number Import
+          Assign Box
         </h1>
-        <p className="text-muted-foreground mt-2">Update devices with their box numbers</p>
+        <p className="text-muted-foreground mt-2">
+          Use original box codes from the device import to assign final box identifiers and Amanah teams.
+        </p>
       </div>
 
-      {/* Instructions Card */}
       <Card className="border shadow-sm">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Package className="h-5 w-5" />
-            Import Instructions
+            Assign Box by Original Code
           </CardTitle>
           <CardDescription>
-            Supports both CSV and Excel (.xlsx) formats - Upload your file directly!
+            Select an original box code, review the devices inside it,
+            then assign it to a final box identifier and Amanah team.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <ol className="list-decimal list-inside space-y-2 text-sm">
-            <li>Download the CSV template using the button below</li>
-            <li>Fill in your box number data with the required columns:
-              <ul className="list-disc list-inside ml-4 mt-1 text-xs text-muted-foreground">
-                <li>Box - Box number</li>
-                <li>No - Sequential number within box (optional, for reference)</li>
-                <li>Serial ID (Full) - Complete device serial ID from the device label</li>
-              </ul>
-            </li>
-            <li>The file can contain multiple "Box" header rows - they will be automatically skipped</li>
-            <li>Save the file as CSV or keep it as Excel (.xlsx) format</li>
-            <li>Upload the file and click "Import Box Numbers"</li>
-          </ol>
-
-          <Button onClick={downloadTemplate} variant="outline" className="w-full sm:w-auto">
-            <Download className="h-4 w-4 mr-2" />
-            Download CSV Template
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* Upload Card */}
-      <Card className="border shadow-sm">
-        <CardHeader>
-          <CardTitle>Upload File</CardTitle>
-          <CardDescription>Select a CSV or Excel (.xlsx) file containing box number data</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Input
-              type="file"
-              accept=".csv,.xlsx,.xls"
-              onChange={handleFileChange}
-              disabled={importing}
-              className="cursor-pointer"
-            />
-            {file && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Package className="h-4 w-4" />
-                <span>{file.name}</span>
-                <Badge variant="secondary">{(file.size / 1024).toFixed(2)} KB</Badge>
+          {loading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Loading box codes and teams...</span>
+            </div>
+          ) : availableBoxCodes.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No unassigned original box codes found. Make sure devices were imported with ORIGINAL BOX CODE
+              and not already assigned to a box/team.
+            </p>
+          ) : (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium flex items-center gap-2">
+                  <Package className="h-4 w-4 text-muted-foreground" />
+                  Box (original)
+                </label>
+                <select
+                  className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={selectedBoxCode}
+                  onChange={(e) => setSelectedBoxCode(e.target.value)}
+                  disabled={saving}
+                >
+                  <option value="">Select original box</option>
+                  {availableBoxCodes.map((b) => (
+                    <option key={b.key} value={b.key}>
+                      {b.label} ({b.deviceCount} devices)
+                    </option>
+                  ))}
+                </select>
               </div>
-            )}
-          </div>
 
-          {importing && (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Importing... {progress}%</span>
+              <div className="space-y-2">
+                <label className="text-sm font-medium flex items-center gap-2">
+                  <Package className="h-4 w-4 text-muted-foreground" />
+                  Box Identifier
+                </label>
+                <Input
+                  type="text"
+                  placeholder="Enter final box identifier (e.g., DMM-BOX-001)"
+                  value={boxIdentifier}
+                  onChange={(e) => setBoxIdentifier(e.target.value)}
+                  disabled={saving}
+                />
               </div>
-              <Progress value={progress} className="w-full" />
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium flex items-center gap-2">
+                  <Users className="h-4 w-4 text-muted-foreground" />
+                  Amanah Team
+                </label>
+                <select
+                  className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={selectedTeamId}
+                  onChange={(e) => setSelectedTeamId(e.target.value)}
+                  disabled={saving}
+                >
+                  <option value="">Select team</option>
+                  {teams.map((team) => (
+                    <option key={team.id} value={team.id}>
+                      {team.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <Button
+                onClick={handleAssign}
+                disabled={saving || availableBoxCodes.length === 0}
+                className="w-full sm:w-auto"
+              >
+                {saving ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Assigning...
+                  </>
+                ) : (
+                  "Assign Box to Team"
+                )}
+              </Button>
+
+              {/* Devices inside selected box */}
+              {selectedBoxMeta && (
+                <div className="mt-6 border-t pt-4 space-y-2">
+                  <h3 className="text-sm font-semibold flex items-center gap-2">
+                    <Package className="h-4 w-4 text-muted-foreground" />
+                    Devices in this box ({selectedBoxDevices.length})
+                  </h3>
+                  {selectedBoxDevices.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No unassigned devices found for this box. It may already be assigned to a team.
+                    </p>
+                  ) : (
+                    <div className="max-h-64 overflow-y-auto rounded-md border text-xs font-mono bg-slate-50 dark:bg-slate-950/40">
+                      <table className="w-full">
+                        <thead className="bg-slate-100 dark:bg-slate-900">
+                          <tr>
+                            <th className="px-3 py-1 w-8">
+                              <input
+                                type="checkbox"
+                                className="h-3 w-3"
+                                aria-label="Select all devices in box"
+                                checked={
+                                  selectedBoxDevices.length > 0 &&
+                                  selectedDeviceIds.length === selectedBoxDevices.length
+                                }
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedDeviceIds(selectedBoxDevices.map((d) => d.id));
+                                  } else {
+                                    setSelectedDeviceIds([]);
+                                  }
+                                }}
+                              />
+                            </th>
+                            <th className="text-left px-3 py-1">Device UID</th>
+                            <th className="text-left px-3 py-1">Product</th>
+                            <th className="text-left px-3 py-1">Orig. Box Code</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {selectedBoxDevices.map((d) => (
+                            <tr key={d.id} className="border-t">
+                              <td className="px-3 py-1">
+                                <input
+                                  type="checkbox"
+                                  className="h-3 w-3"
+                                  checked={selectedDeviceIds.includes(d.id)}
+                                  onChange={(e) => {
+                                    setSelectedDeviceIds((prev) =>
+                                      e.target.checked
+                                        ? [...prev, d.id]
+                                        : prev.filter((id) => id !== d.id)
+                                    );
+                                  }}
+                                />
+                              </td>
+                              <td className="px-3 py-1">{d.id}</td>
+                              <td className="px-3 py-1">{d.productId}</td>
+                              <td className="px-3 py-1">{d.boxCode || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  <p className="text-[11px] text-muted-foreground">
+                    Once assigned, installers from the selected Amanah team will only be able to install
+                    devices from their own boxes (after the verifier opens the box).
+                  </p>
+                </div>
+              )}
             </div>
           )}
-
-          <Button 
-            onClick={handleImport} 
-            disabled={!file || importing}
-            className="w-full"
-          >
-            <Upload className="h-4 w-4 mr-2" />
-            {importing ? "Importing..." : "Import Box Numbers"}
-          </Button>
         </CardContent>
       </Card>
 
-      {/* Results Card */}
-      {importResult && (
-        <Card className="border shadow-sm">
-          <CardHeader>
-            <CardTitle>Import Results</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="flex items-center gap-3 p-4 bg-green-50 dark:bg-green-950/20 rounded-lg border border-green-200 dark:border-green-800">
-                <CheckCircle2 className="h-8 w-8 text-green-600" />
-                <div>
-                  <p className="text-2xl font-bold text-green-600">{importResult.success}</p>
-                  <p className="text-sm text-green-600/80">Updated</p>
-                </div>
+      {/* Assigned section for existing assignments (all teams or selected team) */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Package className="h-5 w-5" />
+            Existing Box Assignments
+          </CardTitle>
+          <CardDescription>
+            View devices already assigned to teams. Select a box to see its devices.
+            {selectedTeamId
+              ? " (Filtered to the selected Amanah team.)"
+              : " (Showing boxes for all teams.)"}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {assignedBoxes.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No boxes have been assigned to any team yet.
+            </p>
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-2">
+                {assignedBoxes.map((entry) => {
+                  const teamName =
+                    teams.find((t) => t.id === entry.teamId)?.name || entry.teamId;
+                  const key = `${entry.teamId}__${entry.boxNumber}`;
+                  const isActive =
+                    selectedAssignedBox === entry.boxNumber &&
+                    selectedTeamId === entry.teamId;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      className={`px-3 py-1 rounded-full border text-xs font-mono ${
+                        isActive
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background text-foreground border-muted hover:bg-muted"
+                      }`}
+                      onClick={() => {
+                        setSelectedTeamId(entry.teamId);
+                        setSelectedAssignedBox(entry.boxNumber);
+                      }}
+                    >
+                      {teamName}: {entry.boxNumber} · {entry.count}
+                    </button>
+                  );
+                })}
               </div>
 
-              <div className="flex items-center gap-3 p-4 bg-yellow-50 dark:bg-yellow-950/20 rounded-lg border border-yellow-200 dark:border-yellow-800">
-                <AlertCircle className="h-8 w-8 text-yellow-600" />
-                <div>
-                  <p className="text-2xl font-bold text-yellow-600">{importResult.notFound}</p>
-                  <p className="text-sm text-yellow-600/80">Not Found</p>
+              {selectedTeamId && selectedAssignedBox && (
+                <div className="space-y-2">
+                  <h3 className="text-sm font-semibold">
+                    Devices in box {selectedAssignedBox} for{" "}
+                    {teams.find((t) => t.id === selectedTeamId)?.name ||
+                      selectedTeamId}{" "}
+                    ({assignedDevicesForSelectedBox.length})
+                  </h3>
+                  {assignedDevicesForSelectedBox.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No devices currently assigned to this box for the selected team.
+                    </p>
+                  ) : (
+                    <div className="max-h-64 overflow-y-auto rounded-md border text-xs font-mono bg-slate-50 dark:bg-slate-950/40">
+                      <table className="w-full">
+                        <thead className="bg-slate-100 dark:bg-slate-900">
+                          <tr>
+                            <th className="text-left px-3 py-1">Device UID</th>
+                            <th className="text-left px-3 py-1">Product</th>
+                            <th className="text-left px-3 py-1">Orig. Box Code</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {assignedDevicesForSelectedBox.map((d) => (
+                            <tr key={d.id} className="border-t">
+                              <td className="px-3 py-1">{d.id}</td>
+                              <td className="px-3 py-1">{d.productId}</td>
+                              <td className="px-3 py-1">{d.boxCode || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
-              </div>
-
-              <div className="flex items-center gap-3 p-4 bg-red-50 dark:bg-red-950/20 rounded-lg border border-red-200 dark:border-red-800">
-                <XCircle className="h-8 w-8 text-red-600" />
-                <div>
-                  <p className="text-2xl font-bold text-red-600">{importResult.failed}</p>
-                  <p className="text-sm text-red-600/80">Failed</p>
-                </div>
-              </div>
-            </div>
-
-            {importResult.errors.length > 0 && (
-              <Alert variant="destructive">
-                <AlertCircle className="h-4 w-4" />
-                <AlertTitle>Errors Encountered</AlertTitle>
-                <AlertDescription>
-                  <div className="mt-2 max-h-60 overflow-y-auto space-y-1">
-                    {importResult.errors.slice(0, 20).map((error, index) => (
-                      <div key={index} className="text-xs font-mono">
-                        {error}
-                      </div>
-                    ))}
-                    {importResult.errors.length > 20 && (
-                      <div className="text-xs italic">
-                        ... and {importResult.errors.length - 20} more errors
-                      </div>
-                    )}
-                  </div>
-                </AlertDescription>
-              </Alert>
-            )}
-          </CardContent>
-        </Card>
-      )}
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
-

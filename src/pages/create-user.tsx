@@ -181,11 +181,12 @@ export default function CreateUser() {
       }
     }
 
-    if (!formData.teamId && formData.role !== "ministry") {
+    // Team is required for installers and verifiers, but NOT for managers or ministry
+    if (!formData.teamId && formData.role !== "ministry" && formData.role !== "manager") {
       toast({
         variant: "destructive",
         title: "Team Required",
-        description: "Please select a team for the user.",
+        description: "Please select a team for the user (not required for managers or ministry).",
       });
       return;
     }
@@ -209,7 +210,8 @@ export default function CreateUser() {
         email: formData.email.trim(),
         displayName: formData.displayName.trim(),
         role: formData.role,
-        teamId: formData.role === "ministry" ? null : formData.teamId,
+        // Managers and ministry users are not tied to a single team
+        teamId: formData.role === "ministry" || formData.role === "manager" ? null : formData.teamId,
         location: formData.location || "",
         isAdmin: false,
         createdAt: serverTimestamp(),
@@ -222,8 +224,8 @@ export default function CreateUser() {
       // Also save to users (for auth-context compatibility)
       await setDoc(doc(db, "users", newUser.uid), userData);
 
-      // Add user to team members (skip for ministry accounts)
-      if (formData.role !== "ministry") {
+      // Add user to team members (installers/verifiers only; managers/ministry are global)
+      if (formData.role !== "ministry" && formData.role !== "manager") {
         await setDoc(doc(db, "teams", formData.teamId, "members", newUser.uid), {
           userId: newUser.uid,
           displayName: formData.displayName.trim(),
@@ -324,7 +326,7 @@ export default function CreateUser() {
         </h1>
         <p className="text-muted-foreground mt-2">
           {canCreateVerifierOrManager 
-            ? "Create accounts for installers, verifiers, or managers and assign them to teams"
+            ? "Create accounts for installers and verifiers (team-based) or global managers and ministry users"
             : `Create installer accounts for your team${teams.length > 0 ? ` (${teams[0]?.name})` : ""}`}
         </p>
       </div>
@@ -416,7 +418,9 @@ export default function CreateUser() {
             )}
 
             <div>
-              <Label htmlFor="team">Team *</Label>
+              <Label htmlFor="team">
+                Team {formData.role === "manager" || formData.role === "ministry" ? "(optional for this role)" : "*"}
+              </Label>
               <Select
                 value={formData.teamId}
                 onValueChange={(value) => {
@@ -450,11 +454,16 @@ export default function CreateUser() {
                   User will be added to your team: {teams[0].name}
                 </p>
               )}
-              {teams.length === 0 && !loadingTeams && (
+              {teams.length === 0 && !loadingTeams && formData.role !== "manager" && formData.role !== "ministry" && (
                 <p className="text-xs text-destructive mt-1">
                   {userProfile?.isAdmin 
                     ? "No teams available. Please create a team first."
                     : "You are not assigned to any team. Please contact an administrator."}
+                </p>
+              )}
+              {(formData.role === "manager" || formData.role === "ministry") && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Managers and ministry users are global and do not require a team.
                 </p>
               )}
             </div>

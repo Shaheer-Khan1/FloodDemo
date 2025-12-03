@@ -17,7 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { 
+import {
   Loader2, 
   Clock, 
   CheckCircle2, 
@@ -41,6 +41,7 @@ import {
   FileDown,
   Upload,
   Trash2,
+  Package,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -567,6 +568,8 @@ export default function Verification() {
       setNewImagePreview(URL.createObjectURL(file));
     }
   };
+
+  // Box opening is handled on the dedicated Open Boxes page
 
   const handleApprove = async () => {
     if (!selectedItem || !userProfile) return;
@@ -1394,8 +1397,6 @@ export default function Verification() {
           )}
         </CardContent>
       </Card>
-
-
       {/* Verification Table - Hide if verified filter is active */}
       {activeFilter !== 'verified' && (
         <Card className="border shadow-sm">

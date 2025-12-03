@@ -187,7 +187,49 @@ export default function NewInstallation() {
         return;
       }
       const deviceDoc = matchingDevices[0];
-      const device = deviceDoc.data();
+      const device = deviceDoc.data() as any;
+
+      // Enforce team ownership if both installer and device have team assignment
+      if (userProfile?.teamId && device.teamId && device.teamId !== userProfile.teamId) {
+        setDeviceValid(false);
+        setDeviceErrorMessage({
+          title: "Device Belongs to Another Team",
+          description: "This device is assigned to a different team and cannot be installed by you.",
+        });
+        return;
+      }
+
+      // If the device has been assigned to a specific installer, only that user may install it.
+      if (userProfile?.role === "installer") {
+        if (!device.assignedInstallerId) {
+          setDeviceValid(false);
+          setDeviceErrorMessage({
+            title: "Installer Not Assigned",
+            description:
+              "This device has not been assigned to an installer yet. Please contact your verifier or manager.",
+          });
+          return;
+        }
+        if (device.assignedInstallerId !== userProfile.uid) {
+          setDeviceValid(false);
+          setDeviceErrorMessage({
+            title: "Assigned to Another Installer",
+            description:
+              "This device is assigned to a different installer in your team. You cannot perform this installation.",
+          });
+          return;
+        }
+      }
+
+      // Enforce box-opened rule: device can only be installed once its box has been opened
+      if (device.boxNumber && device.boxOpened !== true) {
+        setDeviceValid(false);
+        setDeviceErrorMessage({
+          title: "Box Not Opened Yet",
+          description: "This device is inside a box that has not been opened by your team verifier yet.",
+        });
+        return;
+      }
       
       // Check if device already has an installation
       const installationsQuery = query(

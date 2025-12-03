@@ -1,16 +1,17 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { Upload, Download, CheckCircle2, XCircle, Loader2, FileSpreadsheet, AlertCircle } from "lucide-react";
-import { collection, doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import * as XLSX from 'xlsx';
+import type { Team } from "@/lib/types";
 
 interface ImportResult {
   success: number;
@@ -26,12 +27,52 @@ export default function DeviceImport() {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [progress, setProgress] = useState(0);
 
+  useEffect(() => {
+    // Reserved for future enhancements
+  }, []);
+
   const downloadTemplate = () => {
-    const headers = ["PRODUCT COUNT", "TIMESTAMP", "PRODUCT ID", "DEVICE SERIAL ID", "DEVICE UID", "DEVICE IMEI", "ICCID"];
+    const headers = [
+      "PRODUCT COUNT",
+      "TIMESTAMP",
+      "PRODUCT ID",
+      "DEVICE SERIAL ID",
+      "DEVICE UID",
+      "DEVICE IMEI",
+      "ICCID",
+      "ORIGINAL BOX CODE",
+    ];
     const sampleData = [
-      ["1", "2025-10-04  11:40:39", "BBNGJV2I", "SNNEP312045H0104J25000163F915135DD44169DELDYGCDK", "63F915135DD44169", "868927087312836", "89966098241131297102"],
-      ["2", "2025-10-04  11:49:29", "BBNGJV2I", "SNNEP312045H0104J250002B8A5027D6B68E1CEDELDYGCDK", "B8A5027D6B68E1CE", "868927087312893", "89966098241131297136"],
-      ["3", "2025-10-04  12:03:19", "BBNGJV2I", "SNNEP312045H0104J250003EE040E85BCB40FFCDELDYGCDK", "EE040E85BCB40FFC", "868927087294646", "89966098241131297144"],
+      [
+        "1",
+        "2025-10-04  11:40:39",
+        "BBNGJV2I",
+        "SNNEP312045H0104J25000163F915135DD44169DELDYGCDK",
+        "63F915135DD44169",
+        "868927087312836",
+        "89966098241131297102",
+        "BOX-A-001",
+      ],
+      [
+        "2",
+        "2025-10-04  11:49:29",
+        "BBNGJV2I",
+        "SNNEP312045H0104J250002B8A5027D6B68E1CEDELDYGCDK",
+        "B8A5027D6B68E1CE",
+        "868927087312893",
+        "89966098241131297136",
+        "BOX-A-001",
+      ],
+      [
+        "3",
+        "2025-10-04  12:03:19",
+        "BBNGJV2I",
+        "SNNEP312045H0104J250003EE040E85BCB40FFCDELDYGCDK",
+        "EE040E85BCB40FFC",
+        "868927087294646",
+        "89966098241131297144",
+        "BOX-A-002",
+      ],
     ];
 
     const csvContent = [
@@ -51,7 +92,7 @@ export default function DeviceImport() {
 
     toast({
       title: "Template Downloaded",
-      description: "Use this template to format your device data.",
+      description: "Use this template to format your device data, including ORIGINAL BOX CODE.",
     });
   };
 
@@ -146,11 +187,14 @@ export default function DeviceImport() {
         const row = dataRows[i];
         setProgress(Math.round(((i + 1) / totalRows) * 100));
 
-        // Detect format: 7 columns (with PRODUCT COUNT and TIMESTAMP) or 5 columns (without them)
-        let productId, deviceSerialId, deviceUid, deviceImei, iccid, timestamp, productCount;
-        
-        if (row.length >= 7) {
-          // Format 1: PRODUCT COUNT, TIMESTAMP, PRODUCT ID, DEVICE SERIAL ID, DEVICE UID, DEVICE IMEI, ICCID
+        // Detect format with ORIGINAL BOX CODE (8 columns) and support older formats as best-effort
+        let productId, deviceSerialId, deviceUid, deviceImei, iccid, timestamp, productCount, originalBoxCode;
+
+        if (row.length >= 8) {
+          // Format: PRODUCT COUNT, TIMESTAMP, PRODUCT ID, DEVICE SERIAL ID,
+          //         DEVICE UID, DEVICE IMEI, ICCID, ORIGINAL BOX CODE
+          [productCount, timestamp, productId, deviceSerialId, deviceUid, deviceImei, iccid, originalBoxCode] = row;
+        } else if (row.length >= 7) {
           [productCount, timestamp, productId, deviceSerialId, deviceUid, deviceImei, iccid] = row;
         } else if (row.length >= 5) {
           // Format 2: PRODUCT ID, DEVICE SERIAL ID, DEVICE UID, DEVICE IMEI, ICCID
@@ -159,13 +203,19 @@ export default function DeviceImport() {
           timestamp = new Date().toISOString();
         } else {
           result.failed++;
-          result.errors.push(`Row ${i + 2}: Incomplete data (expected 5 or 7 columns, got ${row.length})`);
+          result.errors.push(`Row ${i + 2}: Incomplete data (expected at least 5 columns, got ${row.length})`);
           continue;
         }
 
         if (!deviceUid || !productId) {
           result.failed++;
           result.errors.push(`Row ${i + 2}: DEVICE UID and PRODUCT ID are required`);
+          continue;
+        }
+
+        if (!originalBoxCode) {
+          result.failed++;
+          result.errors.push(`Row ${i + 2}: ORIGINAL BOX CODE is required in the import file`);
           continue;
         }
 
@@ -177,6 +227,8 @@ export default function DeviceImport() {
             deviceImei: deviceImei || "",
             iccid: iccid || "",
             timestamp: timestamp || "",
+            // Only store original box code at admin import time.
+            boxCode: originalBoxCode || "",
             status: "pending",
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
@@ -230,7 +282,9 @@ export default function DeviceImport() {
         <h1 className="text-4xl font-bold text-slate-900 dark:text-white">
           Device Import
         </h1>
-        <p className="text-muted-foreground mt-2">Bulk import devices from CSV file</p>
+        <p className="text-muted-foreground mt-2">
+          Bulk import devices from a CSV/Excel file, including their <span className="font-semibold">ORIGINAL BOX CODE</span>.
+        </p>
       </div>
 
       {/* Instructions Card */}
@@ -256,6 +310,9 @@ export default function DeviceImport() {
                 <li>DEVICE UID - Unique identifier (primary key)</li>
                 <li>DEVICE IMEI - IMEI number</li>
                 <li>ICCID - SIM card identifier</li>
+                <li className="font-semibold text-amber-700 dark:text-amber-400">
+                  ORIGINAL BOX CODE - Original box code provided in the manufacturer/master list (required)
+                </li>
               </ul>
             </li>
             <li>Save the file as CSV or keep it as Excel (.xlsx) format</li>
@@ -273,7 +330,9 @@ export default function DeviceImport() {
       <Card className="border shadow-sm">
         <CardHeader>
           <CardTitle>Upload File</CardTitle>
-          <CardDescription>Select a CSV or Excel (.xlsx) file containing device data</CardDescription>
+          <CardDescription>
+            Upload a CSV or Excel (.xlsx) file containing device data, including ORIGINAL BOX CODE.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
