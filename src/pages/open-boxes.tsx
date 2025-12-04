@@ -8,19 +8,27 @@ import { useToast } from "@/hooks/use-toast";
 import { AlertCircle, Loader2, Package } from "lucide-react";
 import { collection, doc, getDocs, updateDoc, serverTimestamp, onSnapshot, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import type { Device, CustomTeamMember } from "@/lib/types";
+import type { Device, CustomTeamMember, Team } from "@/lib/types";
 
 export default function OpenBoxes() {
   const { userProfile } = useAuth();
   const { toast } = useToast();
   const [devices, setDevices] = useState<Device[]>([]);
   const [installers, setInstallers] = useState<CustomTeamMember[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
   const [boxToOpen, setBoxToOpen] = useState<string>("");
   const [opening, setOpening] = useState(false);
   const [selectedBoxForAssignment, setSelectedBoxForAssignment] = useState<string>("");
   const [assignmentByDevice, setAssignmentByDevice] = useState<Record<string, string | "">>({});
   const [savingAssignments, setSavingAssignments] = useState(false);
+  const [bulkInstallerId, setBulkInstallerId] = useState<string>("");
+  const [bulkCount, setBulkCount] = useState<number | "">("");
+  const [editingAssigned, setEditingAssigned] = useState<Record<string, string>>({});
+  const [savingAssignedId, setSavingAssignedId] = useState<string | null>(null);
+
+  const isVerifier = userProfile?.role === "verifier";
+  const isAdmin = !!userProfile?.isAdmin;
 
   if (!userProfile) {
     return (
@@ -30,7 +38,7 @@ export default function OpenBoxes() {
     );
   }
 
-  if (userProfile.role !== "verifier") {
+  if (!isVerifier && !isAdmin) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <Card className="max-width-md">
@@ -38,7 +46,7 @@ export default function OpenBoxes() {
             <AlertCircle className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
             <h2 className="text-xl font-semibold mb-2">Access Restricted</h2>
             <p className="text-muted-foreground">
-              Only verifier accounts can open boxes for installation.
+              Only verifier or admin accounts can manage box openings and installer assignments.
             </p>
           </CardContent>
         </Card>
@@ -46,19 +54,40 @@ export default function OpenBoxes() {
     );
   }
 
-  // Load devices for this verifier's team and installers in the team
+  // Determine active team: verifiers use their own team; admins choose via dropdown
+  const [activeTeamId, setActiveTeamId] = useState<string>(userProfile?.teamId || "");
+
+  // Load team list for admins so they can pick a team
   useEffect(() => {
-    if (!userProfile?.teamId) {
+    if (!isAdmin) return;
+    const unsubscribe = onSnapshot(collection(db, "teams"), (snapshot) => {
+      const teamsData = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...(doc.data() as any),
+      })) as Team[];
+      teamsData.sort((a, b) => a.name.localeCompare(b.name));
+      setTeams(teamsData);
+    });
+    return () => unsubscribe();
+  }, [isAdmin]);
+
+  // Keep activeTeamId in sync for verifiers
+  useEffect(() => {
+    if (isVerifier && userProfile?.teamId) {
+      setActiveTeamId(userProfile.teamId);
+    }
+  }, [isVerifier, userProfile?.teamId]);
+
+  // Load devices for the active team and installers in that team
+  useEffect(() => {
+    if (!activeTeamId) {
       setLoading(false);
       return;
     }
 
     setLoading(true);
 
-    const devicesQuery = query(
-      collection(db, "devices"),
-      where("teamId", "==", userProfile.teamId)
-    );
+    const devicesQuery = query(collection(db, "devices"), where("teamId", "==", activeTeamId));
 
     const unsubscribeDevices = onSnapshot(
       devicesQuery,
@@ -77,7 +106,7 @@ export default function OpenBoxes() {
     );
 
     const unsubscribeInstallers = onSnapshot(
-      collection(db, "teams", userProfile.teamId, "members"),
+      collection(db, "teams", activeTeamId, "members"),
       (snapshot) => {
         const members = snapshot.docs.map((d) => ({
           id: d.id,
@@ -94,7 +123,7 @@ export default function OpenBoxes() {
       unsubscribeDevices();
       unsubscribeInstallers();
     };
-  }, [userProfile]);
+  }, [activeTeamId]);
 
   const groupedBoxes = useMemo(() => {
     const opened: Record<string, number> = {};
@@ -123,6 +152,22 @@ export default function OpenBoxes() {
     [devices, selectedBoxForAssignment]
   );
 
+  const unassignedDevicesInBox = useMemo(
+    () =>
+      devicesInSelectedAssignmentBox.filter(
+        (d) => !d.assignedInstallerId
+      ),
+    [devicesInSelectedAssignmentBox]
+  );
+
+  const assignedDevicesInBox = useMemo(
+    () =>
+      devicesInSelectedAssignmentBox.filter(
+        (d) => !!d.assignedInstallerId
+      ),
+    [devicesInSelectedAssignmentBox]
+  );
+
   const allBoxIds = useMemo(() => {
     const set = new Set<string>();
     devices.forEach((d) => {
@@ -132,11 +177,11 @@ export default function OpenBoxes() {
   }, [devices]);
 
   const handleOpenBox = async (boxIdFromRow?: string) => {
-    if (!userProfile.teamId) {
+    if (!activeTeamId) {
       toast({
         variant: "destructive",
         title: "No Team Assigned",
-        description: "Your account must be linked to a team before you can open boxes.",
+        description: "Please select a team before opening boxes.",
       });
       return;
     }
@@ -157,7 +202,7 @@ export default function OpenBoxes() {
         (d) =>
           d.boxNumber?.toString().trim() === trimmed &&
           d.boxOpened !== true &&
-          d.teamId === userProfile.teamId
+          d.teamId === activeTeamId
       );
 
       if (matching.length === 0) {
@@ -195,13 +240,31 @@ export default function OpenBoxes() {
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
-      <div>
+      <div className="space-y-3">
         <h1 className="text-3xl font-bold text-slate-900 dark:text-white">
           Open Boxes
         </h1>
-        <p className="text-muted-foreground mt-2">
+        <p className="text-muted-foreground">
           Verify and open assigned boxes so that installers in your team can start installing devices.
         </p>
+        {isAdmin && (
+          <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
+            <Label htmlFor="team-select">Team</Label>
+            <select
+              id="team-select"
+              className="mt-1 block w-full sm:w-64 rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              value={activeTeamId}
+              onChange={(e) => setActiveTeamId(e.target.value)}
+            >
+              <option value="">Select a team</option>
+              {teams.map((team) => (
+                <option key={team.id} value={team.id}>
+                  {team.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       <Card className="border shadow-sm">
@@ -359,7 +422,91 @@ export default function OpenBoxes() {
                   No devices found in this box for your team.
                 </p>
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-4">
+                  {/* Bulk assign helper */}
+                  <div className="flex flex-col md:flex-row gap-3 items-start md:items-end">
+                    <div className="flex-1 space-y-1">
+                      <Label>Bulk Assign (optional)</Label>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <select
+                          className="w-full sm:w-1/2 rounded border border-input bg-background px-2 py-1 text-sm"
+                          value={bulkInstallerId}
+                          onChange={(e) => setBulkInstallerId(e.target.value)}
+                        >
+                          <option value="">Select installer</option>
+                          {installers.map((inst) => (
+                            <option
+                              key={inst.id}
+                              value={(inst as any).userId || inst.id}
+                            >
+                              {inst.displayName || inst.name || inst.email}
+                            </option>
+                          ))}
+                        </select>
+                        <Input
+                          type="number"
+                          min={1}
+                          className="w-full sm:w-32"
+                          placeholder="Count"
+                          value={bulkCount === "" ? "" : bulkCount}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (!val) {
+                              setBulkCount("");
+                            } else {
+                              const num = Number(val);
+                              setBulkCount(
+                                Number.isFinite(num) && num > 0 ? num : ""
+                              );
+                            }
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={
+                            !bulkInstallerId ||
+                            typeof bulkCount !== "number" ||
+                            bulkCount <= 0 ||
+                            installers.length === 0
+                          }
+                          onClick={() => {
+                            if (
+                              !bulkInstallerId ||
+                              typeof bulkCount !== "number" ||
+                              bulkCount <= 0
+                            ) {
+                              return;
+                            }
+                            // Assign next N unassigned devices in this box to the selected installer
+                            const updated: Record<string, string | ""> = {
+                              ...assignmentByDevice,
+                            };
+                            let remaining = bulkCount;
+                            for (const d of unassignedDevicesInBox) {
+                              if (remaining <= 0) break;
+                              const current =
+                                updated[d.id] ?? d.assignedInstallerId ?? "";
+                              if (!current) {
+                                updated[d.id] = bulkInstallerId;
+                                remaining -= 1;
+                              }
+                            }
+                            setAssignmentByDevice(updated);
+                          }}
+                        >
+                          Assign Next N
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Quickly assign the next <strong>N</strong> unassigned devices in this
+                        box to a chosen installer. You can still fine-tune each row below.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Editable table for unassigned devices */}
                   <div className="max-h-72 overflow-y-auto rounded-md border bg-slate-50 dark:bg-slate-950/40">
                     <table className="w-full text-xs">
                       <thead className="bg-slate-100 dark:bg-slate-900">
@@ -370,7 +517,7 @@ export default function OpenBoxes() {
                         </tr>
                       </thead>
                       <tbody>
-                        {devicesInSelectedAssignmentBox.map((d) => {
+                        {unassignedDevicesInBox.map((d) => {
                           const currentId =
                             assignmentByDevice[d.id] ?? d.assignedInstallerId ?? "";
                           const currentInstaller =
@@ -466,10 +613,144 @@ export default function OpenBoxes() {
                         setSavingAssignments(false);
                       }
                     }}
-                    disabled={savingAssignments || devicesInSelectedAssignmentBox.length === 0}
+                    disabled={
+                      savingAssignments || unassignedDevicesInBox.length === 0
+                    }
                   >
                     {savingAssignments ? "Saving..." : "Save Assignments"}
                   </Button>
+
+                  {/* Read-only table for already assigned devices */}
+                  {assignedDevicesInBox.length > 0 && (
+                    <div className="space-y-2 pt-4 border-t mt-4">
+                      <h3 className="text-sm font-semibold">
+                        Already Assigned Devices
+                      </h3>
+                      <div className="max-h-64 overflow-y-auto rounded-md border bg-slate-50 dark:bg-slate-950/40">
+                        <table className="w-full text-xs">
+                          <thead className="bg-slate-100 dark:bg-slate-900">
+                            <tr>
+                              <th className="text-left px-3 py-2">Device UID</th>
+                              <th className="text-left px-3 py-2">Opened?</th>
+                              <th className="text-left px-3 py-2">Installer</th>
+                              <th className="text-left px-3 py-2 w-20">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {assignedDevicesInBox.map((d) => {
+                              const currentId =
+                                editingAssigned[d.id] ?? d.assignedInstallerId ?? "";
+                              return (
+                                <tr key={d.id} className="border-t">
+                                  <td className="px-3 py-2 font-mono">{d.id}</td>
+                                  <td className="px-3 py-2">
+                                    {d.boxOpened ? (
+                                      <span className="text-green-600">Yes</span>
+                                    ) : (
+                                      <span className="text-yellow-700">No</span>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    <select
+                                      className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
+                                      value={currentId}
+                                      onChange={(e) =>
+                                        setEditingAssigned((prev) => ({
+                                          ...prev,
+                                          [d.id]: e.target.value,
+                                        }))
+                                      }
+                                    >
+                                      <option value="">Unassigned</option>
+                                      {installers.map((inst) => (
+                                        <option
+                                          key={inst.id}
+                                          value={(inst as any).userId || inst.id}
+                                        >
+                                          {inst.displayName ||
+                                            inst.name ||
+                                            inst.email}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    <Button
+                                      size="xs"
+                                      variant="outline"
+                                      disabled={savingAssignedId === d.id}
+                                      onClick={async () => {
+                                        const newInstallerId =
+                                          editingAssigned[d.id] ??
+                                          d.assignedInstallerId ??
+                                          "";
+                                        const normalizedNew =
+                                          newInstallerId || undefined;
+                                        const original = d.assignedInstallerId;
+                                        if (normalizedNew === original) return;
+
+                                        setSavingAssignedId(d.id);
+                                        try {
+                                          const installer =
+                                            installers.find(
+                                              (i) =>
+                                                i.id === newInstallerId ||
+                                                (i as any).userId ===
+                                                  newInstallerId
+                                            ) || null;
+                                          await updateDoc(
+                                            doc(db, "devices", d.id),
+                                            {
+                                              assignedInstallerId:
+                                                normalizedNew || null,
+                                              assignedInstallerName: installer
+                                                ? installer.displayName ||
+                                                  installer.name ||
+                                                  installer.email
+                                                : null,
+                                              updatedAt: serverTimestamp(),
+                                            }
+                                          );
+                                          toast({
+                                            title: "Assignment updated",
+                                            description:
+                                              "Installer assignment has been updated for this device.",
+                                          });
+                                        } catch (error) {
+                                          console.error(
+                                            "Failed to update assignment:",
+                                            error
+                                          );
+                                          toast({
+                                            variant: "destructive",
+                                            title: "Failed to update assignment",
+                                            description:
+                                              error instanceof Error
+                                                ? error.message
+                                                : "An error occurred while updating the assignment.",
+                                          });
+                                        } finally {
+                                          setSavingAssignedId(null);
+                                        }
+                                      }}
+                                    >
+                                      {savingAssignedId === d.id
+                                        ? "Saving..."
+                                        : "Save"}
+                                    </Button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Use the dropdown and Save button in each row to update an
+                        existing assignment or clear it (set to Unassigned).
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
             </>

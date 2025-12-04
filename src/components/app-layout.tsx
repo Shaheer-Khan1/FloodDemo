@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { useLocation } from "wouter";
 import { signOut } from "firebase/auth";
@@ -14,13 +15,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, FileUp, Plus, List, CheckSquare, Box, UserPlus, MapPin } from "lucide-react";
+import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, FileUp, Plus, List, CheckSquare, Box, UserPlus, MapPin, ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, userProfile } = useAuth();
   const [location, setLocation] = useLocation();
   const { toast } = useToast();
+  const navRef = useRef<HTMLDivElement | null>(null);
 
   const handleSignOut = async () => {
     try {
@@ -55,6 +57,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       { title: "Devices", icon: Package, url: "/devices" },
       { title: "Import Devices", icon: FileUp, url: "/device-import" },
       { title: "Assign Box", icon: Box, url: "/assign-box" },
+      { title: "Open Boxes", icon: Box, url: "/open-boxes" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
       { title: "Installations Map", icon: MapPin, url: "/installations-map" },
       { title: "New Installation", icon: Plus, url: "/new-installation" },
@@ -114,26 +117,53 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               </div>
             </button>
 
-            {/* Navigation Links */}
-            <nav className="hidden md:flex items-center gap-1">
-              {menuItems.map((item) => (
-                <Button
-                  key={item.url}
-                  variant="ghost"
-                  onClick={() => setLocation(item.url)}
-                  className={cn(
-                    "gap-2 font-medium transition-all",
-                    location === item.url 
-                      ? "bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300" 
-                      : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
-                  )}
-                  data-testid={`nav-${item.url.slice(1)}`}
-                >
-                  <item.icon className="h-4 w-4" />
-                  <span>{item.title}</span>
-                </Button>
-              ))}
-            </nav>
+            {/* Navigation Links with horizontal scroll arrows */}
+            <div className="hidden md:flex items-center gap-1 max-w-[640px]">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() =>
+                  navRef.current?.scrollBy({ left: -200, behavior: "smooth" })
+                }
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <nav
+                ref={navRef}
+                className="flex items-center gap-1 overflow-x-auto scrollbar-none"
+              >
+                {menuItems.map((item) => (
+                  <Button
+                    key={item.url}
+                    variant="ghost"
+                    onClick={() => setLocation(item.url)}
+                    className={cn(
+                      "gap-2 font-medium transition-all whitespace-nowrap",
+                      location === item.url
+                        ? "bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300"
+                        : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100"
+                    )}
+                    data-testid={`nav-${item.url.slice(1)}`}
+                  >
+                    <item.icon className="h-4 w-4" />
+                    <span>{item.title}</span>
+                  </Button>
+                ))}
+              </nav>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() =>
+                  navRef.current?.scrollBy({ left: 200, behavior: "smooth" })
+                }
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
 
           {/* Right Side: User Menu */}

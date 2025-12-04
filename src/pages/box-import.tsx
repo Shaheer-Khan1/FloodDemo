@@ -40,6 +40,7 @@ export default function BoxImport() {
   const [selectedTeamId, setSelectedTeamId] = useState<string>(initialTeamFromQuery);
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
   const [selectedAssignedBox, setSelectedAssignedBox] = useState<string>(initialAssignedBoxFromQuery);
+  const [assignCount, setAssignCount] = useState<number | "">("");
 
   // Only managers (and admins, if you want) can assign boxes
   const isManager =
@@ -198,11 +199,17 @@ export default function BoxImport() {
 
     // Determine which devices from this box should be assigned:
     // - If the user selected specific devices, only update those.
-    // - If none selected, assign all devices from this box (current behaviour).
+    // - Else if a count is provided, assign that many devices from this box.
+    // - Else assign all devices from this box (current behaviour).
     const devicesInBox = selectedBoxDevices;
-    const toUpdate = selectedDeviceIds.length
-      ? devicesInBox.filter((d) => selectedDeviceIds.includes(d.id))
-      : devicesInBox;
+    let toUpdate: Device[];
+    if (selectedDeviceIds.length) {
+      toUpdate = devicesInBox.filter((d) => selectedDeviceIds.includes(d.id));
+    } else if (typeof assignCount === "number" && assignCount > 0) {
+      toUpdate = devicesInBox.slice(0, Math.min(assignCount, devicesInBox.length));
+    } else {
+      toUpdate = devicesInBox;
+    }
 
     if (toUpdate.length === 0) {
       toast({
@@ -332,6 +339,32 @@ export default function BoxImport() {
                   disabled={saving}
                 />
               </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium flex items-center gap-2">
+                Number of Devices (optional)
+              </label>
+              <Input
+                type="number"
+                min={1}
+                placeholder="Leave empty to assign all devices in this box"
+                value={assignCount === "" ? "" : assignCount}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (!val) {
+                    setAssignCount("");
+                  } else {
+                    const num = Number(val);
+                    setAssignCount(Number.isFinite(num) && num > 0 ? num : "");
+                  }
+                }}
+                disabled={saving}
+              />
+              <p className="text-xs text-muted-foreground">
+                If you do not manually select devices with the checkboxes, this count controls how many
+                devices will be assigned from the original box to the selected team. Leave empty to assign all.
+              </p>
+            </div>
 
               <div className="space-y-2">
                 <label className="text-sm font-medium flex items-center gap-2">
