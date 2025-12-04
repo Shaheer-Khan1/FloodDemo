@@ -53,6 +53,7 @@ export default function MySubmissions() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [submissions, setSubmissions] = useState<Installation[]>([]);
+  const [locationsMap, setLocationsMap] = useState<Map<string, { latitude: number; longitude: number; municipalityName?: string }>>(new Map());
   const [loading, setLoading] = useState(true);
   const [selectedSubmission, setSelectedSubmission] = useState<Installation | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -171,6 +172,54 @@ export default function MySubmissions() {
     return () => unsubscribe();
   }, [userProfile, toast]);
 
+  // Load locations for coordinate lookup (same mapping logic as verification screen)
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, "locations"),
+      (snapshot) => {
+        const map = new Map<string, { latitude: number; longitude: number; municipalityName?: string }>();
+        snapshot.docs.forEach((d) => {
+          const data = d.data() as any;
+          const rawId: string = data.locationId || d.id;
+          const lat =
+            typeof data.latitude === "number"
+              ? data.latitude
+              : data.latitude
+              ? parseFloat(String(data.latitude))
+              : null;
+          const lon =
+            typeof data.longitude === "number"
+              ? data.longitude
+              : data.longitude
+              ? parseFloat(String(data.longitude))
+              : null;
+          if (lat == null || lon == null || isNaN(lat) || isNaN(lon)) return;
+
+          const base = {
+            latitude: lat,
+            longitude: lon,
+            municipalityName: data.municipalityName || undefined,
+          };
+
+          const idKey = String(rawId).trim();
+          map.set(idKey, base);
+          if (/^\d+$/.test(idKey)) {
+            const numKey = String(Number(idKey)).trim();
+            if (numKey !== idKey) {
+              map.set(numKey, base);
+            }
+          }
+        });
+        setLocationsMap(map);
+      },
+      (error) => {
+        console.error("Failed to load locations for submissions:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
   // Stats
   const stats = useMemo(() => {
     return {
@@ -274,7 +323,7 @@ export default function MySubmissions() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Device ID</TableHead>
-                    <TableHead>Location ID</TableHead>
+                    <TableHead>Location</TableHead>
                     <TableHead>Sensor Reading</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Submitted</TableHead>
@@ -285,13 +334,53 @@ export default function MySubmissions() {
                   {submissions.map((submission) => {
                     const config = statusConfig[submission.status];
                     const Icon = config.icon;
-                    
+
+                    const locationId = submission.locationId ? String(submission.locationId).trim() : "";
+                    const isLocation9999 = locationId === "9999";
+                    const loc = locationId ? locationsMap.get(locationId) : undefined;
+
+                    let displayLat: number | null = null;
+                    let displayLon: number | null = null;
+
+                    if (isLocation9999) {
+                      displayLat = submission.latitude ?? null;
+                      displayLon = submission.longitude ?? null;
+                    } else if (loc) {
+                      displayLat = loc.latitude;
+                      displayLon = loc.longitude;
+                    }
+
+                    const hasCoords = displayLat != null && displayLon != null;
+                    const googleMapsUrl = hasCoords
+                      ? `https://www.google.com/maps/search/?api=1&query=${displayLat},${displayLon}`
+                      : null;
+
                     return (
                       <TableRow key={submission.id}>
                         <TableCell className="font-mono font-medium">
                           {submission.deviceId}
                         </TableCell>
-                        <TableCell>{submission.locationId}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-col">
+                            <span>{submission.locationId || "-"}</span>
+                            {hasCoords && (
+                              <span className="text-xs text-muted-foreground">
+                                {displayLat!.toFixed(6)}, {displayLon!.toFixed(6)}
+                              </span>
+                            )}
+                            {hasCoords && googleMapsUrl && (
+                              <a
+                                href={googleMapsUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="mt-1 inline-flex items-center text-[11px] text-blue-600 hover:underline"
+                              >
+                                <MapPin className="h-3 w-3 mr-1" />
+                                View in Google Maps
+                              </a>
+                            )}
+                          </div>
+                        </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-1">
                             <Gauge className="h-3 w-3 text-muted-foreground" />
@@ -383,11 +472,52 @@ export default function MySubmissions() {
                   <p className="text-base font-mono font-medium">{selectedSubmission.deviceId}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-muted-foreground">Location ID</p>
-                  <p className="text-base font-medium flex items-center gap-1">
-                    <MapPin className="h-4 w-4 text-muted-foreground" />
-                    {selectedSubmission.locationId}
-                  </p>
+                  <p className="text-sm text-muted-foreground">Location</p>
+                  <div className="flex flex-col gap-1">
+                    <p className="text-base font-medium flex items-center gap-1">
+                      <MapPin className="h-4 w-4 text-muted-foreground" />
+                      {selectedSubmission.locationId || "-"}
+                    </p>
+                    {(() => {
+                      const locationId = selectedSubmission.locationId
+                        ? String(selectedSubmission.locationId).trim()
+                        : "";
+                      const isLocation9999 = locationId === "9999";
+                      const loc = locationId ? locationsMap.get(locationId) : undefined;
+
+                      let displayLat: number | null = null;
+                      let displayLon: number | null = null;
+
+                      if (isLocation9999) {
+                        displayLat = selectedSubmission.latitude ?? null;
+                        displayLon = selectedSubmission.longitude ?? null;
+                      } else if (loc) {
+                        displayLat = loc.latitude;
+                        displayLon = loc.longitude;
+                      }
+
+                      if (displayLat == null || displayLon == null) return null;
+
+                      const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${displayLat},${displayLon}`;
+
+                      return (
+                        <>
+                          <span className="text-sm text-muted-foreground">
+                            {displayLat.toFixed(6)}, {displayLon.toFixed(6)}
+                          </span>
+                          <a
+                            href={googleMapsUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"
+                          >
+                            <MapPin className="h-3 w-3" />
+                            View in Google Maps
+                          </a>
+                        </>
+                      );
+                    })()}
+                  </div>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Sensor Reading</p>

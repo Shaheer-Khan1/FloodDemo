@@ -50,6 +50,7 @@ import type { Installation, Device, ServerData, VerificationItem, Team } from "@
 import { format } from "date-fns";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { translateTeamNameToArabic } from "@/lib/amanah-translations";
 
 export default function Verification() {
@@ -58,7 +59,7 @@ export default function Verification() {
   const [allInstallations, setAllInstallations] = useState<Installation[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
-  const [locations, setLocations] = useState<{ id: string; locationId: string; latitude: number; longitude: number }[]>([]);
+  const [locations, setLocations] = useState<{ id: string; locationId: string; latitude: number; longitude: number; municipalityName?: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState<VerificationItem | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -74,6 +75,7 @@ export default function Verification() {
   const [dateFilter, setDateFilter] = useState<string>("");
   const [deviceIdFilter, setDeviceIdFilter] = useState<string>("");
   const [displayLimit, setDisplayLimit] = useState(500);
+  const [autoServerFetchEnabled, setAutoServerFetchEnabled] = useState(true);
   
   // Edit mode states
   const [isEditMode, setIsEditMode] = useState(false);
@@ -192,7 +194,7 @@ export default function Verification() {
       collection(db, "locations"),
       (snapshot) => {
         const locationsData = snapshot.docs.map((d) => {
-          const docData = d.data();
+          const docData = d.data() as any;
           const lat = typeof docData.latitude === 'number' 
             ? docData.latitude 
             : (docData.latitude ? parseFloat(String(docData.latitude)) : null);
@@ -205,6 +207,7 @@ export default function Verification() {
             locationId: docData.locationId || d.id,
             latitude: lat,
             longitude: lon,
+            municipalityName: docData.municipalityName || undefined,
           };
         }).filter(loc => loc.latitude != null && loc.longitude != null && !isNaN(loc.latitude) && !isNaN(loc.longitude));
         
@@ -313,9 +316,9 @@ export default function Verification() {
     return team?.name || null;
   };
 
-  // Create a map of locationId -> coordinates
+  // Create a map of locationId -> coordinates & municipality
   const locationMap = useMemo(() => {
-    const map = new Map<string, { id: string; locationId: string; latitude: number; longitude: number }>();
+    const map = new Map<string, { id: string; locationId: string; latitude: number; longitude: number; municipalityName?: string }>();
     locations.forEach((loc) => {
       if (loc.id) {
         const idKey = String(loc.id).trim();
@@ -323,7 +326,7 @@ export default function Verification() {
         if (/^\d+$/.test(idKey)) {
           const numKey = String(Number(idKey)).trim();
           if (numKey !== idKey) {
-            map.set(numKey, loc);
+        map.set(numKey, loc);
           }
         }
       }
@@ -366,6 +369,81 @@ export default function Verification() {
   const verifiedCount = useMemo(() => {
     return verifiedInstallations.length;
   }, [verifiedInstallations]);
+
+  // Installations filtered by sidebar filters (installer, device, team, date) for dashboard stats
+  const filteredAllInstallations = useMemo(() => {
+    let filtered = allInstallations;
+
+    if (installerNameFilter) {
+      filtered = filtered.filter((inst) =>
+        inst.installedByName?.toLowerCase().includes(installerNameFilter.toLowerCase())
+      );
+    }
+
+    if (deviceIdFilter) {
+      filtered = filtered.filter((inst) =>
+        inst.deviceId?.toUpperCase().includes(deviceIdFilter.toUpperCase())
+      );
+    }
+
+    if (teamIdFilter && userProfile?.isAdmin) {
+      filtered = filtered.filter((inst) => inst.teamId === teamIdFilter);
+    }
+
+    if (dateFilter) {
+      const filterDate = new Date(dateFilter);
+      filterDate.setHours(0, 0, 0, 0);
+      const nextDay = new Date(filterDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+
+      filtered = filtered.filter((inst) => {
+        if (!inst.createdAt) return false;
+        const installDate = new Date(inst.createdAt);
+        installDate.setHours(0, 0, 0, 0);
+        return installDate >= filterDate && installDate < nextDay;
+      });
+    }
+
+    return filtered;
+  }, [allInstallations, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter, userProfile?.isAdmin]);
+
+  const dashboardStats = useMemo(() => {
+    const total = filteredAllInstallations.length;
+    const installed = total; // every installation in the database represents an installed device
+    const connectedWithServer = filteredAllInstallations.filter(
+      (i) => i.latestDisCm != null
+    ).length;
+    const noConnection = filteredAllInstallations.filter(
+      (i) => i.latestDisCm == null
+    ).length;
+    const editedRecords = filteredAllInstallations.filter((i) =>
+      i.tags?.includes("edited by verifier")
+    ).length;
+    const systemPreApproved = filteredAllInstallations.filter(
+      (i) => i.systemPreVerified === true
+    ).length;
+
+    const verifiedAll = filteredAllInstallations.filter(
+      (i) => i.status === "verified"
+    );
+    const verifiedAuto = verifiedAll.filter(
+      (i) =>
+        i.systemPreVerified === true ||
+        (i.verifiedBy && i.verifiedBy.toLowerCase().includes("system"))
+    ).length;
+    const verifiedManual = verifiedAll.length - verifiedAuto;
+
+    return {
+      total,
+      installed,
+      connectedWithServer,
+      noConnection,
+      editedRecords,
+      verifiedAuto,
+      verifiedManual,
+      systemPreApproved,
+    };
+  }, [filteredAllInstallations]);
 
   // Apply all filters to items shown in the table
   const displayedItems = useMemo(() => {
@@ -1135,6 +1213,8 @@ export default function Verification() {
   // Auto-refresh every 24h for high variance and no-data items (best-effort while page is open)
   const inFlightAuto = useRef<Set<string>>(new Set());
   useEffect(() => {
+    if (!autoServerFetchEnabled) return;
+
     const now = Date.now();
     const DAY_MS = 24 * 60 * 60 * 1000;
     verificationItems.forEach(item => {
@@ -1149,7 +1229,7 @@ export default function Verification() {
       inFlightAuto.current.add(inst.id);
       fetchLatestServerReadings(inst).finally(() => inFlightAuto.current.delete(inst.id));
     });
-  }, [verificationItems]);
+  }, [verificationItems, autoServerFetchEnabled]);
 
   if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") {
     return (
@@ -1182,110 +1262,20 @@ export default function Verification() {
         <p className="text-muted-foreground mt-2">Review and verify installation submissions</p>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='pending' ? 'ring-2 ring-yellow-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='pending' ? 'all' : 'pending')}>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground font-medium">Pending Verification</p>
-                <p className="text-3xl font-bold mt-1">{verificationItems.length}</p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-yellow-100 dark:bg-yellow-950 flex items-center justify-center">
-                <Clock className="h-6 w-6 text-yellow-600 dark:text-yellow-500" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='highVariance' ? 'ring-2 ring-red-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='highVariance' ? 'all' : 'highVariance')}>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground font-medium">High Variance</p>
-                <p className="text-3xl font-bold mt-1 text-red-600">
-                  {verificationItems.filter(item => item.percentageDifference && item.percentageDifference > 5).length}
-                </p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-red-100 dark:bg-red-950 flex items-center justify-center">
-                <AlertTriangle className="h-6 w-6 text-red-600 dark:text-red-500" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='withServerData' ? 'ring-2 ring-green-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='withServerData' ? 'all' : 'withServerData')}>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground font-medium">With Server Data</p>
-                <p className="text-3xl font-bold mt-1 text-green-600">
-                  {verificationItems.filter(item => item.serverData).length}
-                </p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-green-100 dark:bg-green-950 flex items-center justify-center">
-                <CheckCircle2 className="h-6 w-6 text-green-600 dark:text-green-500" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='noServerData' ? 'ring-2 ring-orange-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='noServerData' ? 'all' : 'noServerData')}>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground font-medium">No Server Data</p>
-                <p className="text-3xl font-bold mt-1 text-orange-600">
-                  {noServerDataCount}
-                </p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-orange-100 dark:bg-orange-950 flex items-center justify-center">
-                <CloudOff className="h-6 w-6 text-orange-600 dark:text-orange-500" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='preVerified' ? 'ring-2 ring-blue-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='preVerified' ? 'all' : 'preVerified')}>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground font-medium">Pre-verified</p>
-                <p className="text-3xl font-bold mt-1 text-blue-600">
-                  {preVerifiedCount}
-                </p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-blue-100 dark:bg-blue-950 flex items-center justify-center">
-                <CircleCheck className="h-6 w-6 text-blue-600 dark:text-blue-500" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className={`border shadow-sm hover:shadow-md transition-shadow cursor-pointer ${activeFilter==='verified' ? 'ring-2 ring-purple-400' : ''}`} onClick={() => setActiveFilter(activeFilter==='verified' ? 'all' : 'verified')}>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground font-medium">Verified</p>
-                <p className="text-3xl font-bold mt-1 text-purple-600">
-                  {verifiedCount}
-                </p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-purple-100 dark:bg-purple-950 flex items-center justify-center">
-                <Database className="h-6 w-6 text-purple-600 dark:text-purple-500" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Filters Section */}
+      {/* Filters Section (now before stats; stats react to filters) */}
       <Card className="border shadow-sm">
-        <CardHeader>
+        <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <CardTitle className="text-lg font-semibold flex items-center gap-2">
             <Filter className="h-5 w-5" />
             Filters
           </CardTitle>
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Auto server fetch</span>
+            <Switch
+              checked={autoServerFetchEnabled}
+              onCheckedChange={setAutoServerFetchEnabled}
+            />
+          </div>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1397,6 +1387,122 @@ export default function Verification() {
           )}
         </CardContent>
       </Card>
+
+      {/* Stats Overview based on filtered installations */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <Card className="border shadow-sm">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Total in Database</p>
+                <p className="text-3xl font-bold mt-1">
+                  {dashboardStats.total}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-slate-100 dark:bg-slate-900 flex items-center justify-center">
+                <Database className="h-6 w-6 text-slate-700 dark:text-slate-200" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border shadow-sm">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Installed</p>
+                <p className="text-3xl font-bold mt-1">
+                  {dashboardStats.installed}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-green-100 dark:bg-green-950 flex items-center justify-center">
+                <CheckCircle2 className="h-6 w-6 text-green-600 dark:text-green-500" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border shadow-sm">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Connected with Server</p>
+                <p className="text-3xl font-bold mt-1 text-green-600">
+                  {dashboardStats.connectedWithServer}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-blue-100 dark:bg-blue-950 flex items-center justify-center">
+                <Gauge className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border shadow-sm">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">No Connection Established</p>
+                <p className="text-3xl font-bold mt-1 text-orange-600">
+                  {dashboardStats.noConnection}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-orange-100 dark:bg-orange-950 flex items-center justify-center">
+                <CloudOff className="h-6 w-6 text-orange-600 dark:text-orange-500" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border shadow-sm">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Edited Records</p>
+                <p className="text-3xl font-bold mt-1 text-purple-600">
+                  {dashboardStats.editedRecords}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-purple-100 dark:bg-purple-950 flex items-center justify-center">
+                <Edit className="h-6 w-6 text-purple-600 dark:text-purple-400" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border shadow-sm">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">System Pre-approved</p>
+                <p className="text-3xl font-bold mt-1 text-emerald-600">
+                  {dashboardStats.systemPreApproved}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-emerald-100 dark:bg-emerald-950 flex items-center justify-center">
+                <CheckCircle2 className="h-6 w-6 text-emerald-600 dark:text-emerald-500" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border shadow-sm">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Verified (manual only)</p>
+                <p className="text-2xl md:text-3xl font-bold mt-1 text-emerald-600">
+                  {dashboardStats.verifiedManual}
+                  <span className="ml-1 text-xs md:text-sm text-muted-foreground">manual</span>
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-emerald-100 dark:bg-emerald-950 flex items-center justify-center">
+                <CircleCheck className="h-6 w-6 text-emerald-600 dark:text-emerald-500" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
       {/* Verification Table - Hide if verified filter is active */}
       {activeFilter !== 'verified' && (
         <Card className="border shadow-sm">
@@ -1431,14 +1537,13 @@ export default function Verification() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Device ID</TableHead>
-                    <TableHead>Input Method</TableHead>
+                    <TableHead>Device</TableHead>
                     <TableHead>Installer</TableHead>
                     <TableHead>Location</TableHead>
                     <TableHead>Installer Reading</TableHead>
                     <TableHead>Server Data</TableHead>
                     <TableHead>Variance</TableHead>
-                    <TableHead>Submitted</TableHead>
+                    <TableHead>Amanah / Municipality</TableHead>
                     <TableHead>Actions</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1448,11 +1553,26 @@ export default function Verification() {
                     
                     return (
                       <TableRow key={item.installation.id} className={hasHighVariance ? "bg-red-50 dark:bg-red-950/10" : ""}>
-                        <TableCell className="font-mono font-medium">{item.installation.deviceId}</TableCell>
                         <TableCell>
-                          <Badge variant="outline" className="capitalize text-xs">
-                            {item.installation.deviceInputMethod ? (item.installation.deviceInputMethod === 'qr' ? 'QR' : 'Manual') : 'Legacy'}
-                          </Badge>
+                          <div className="flex flex-col gap-1">
+                            <span className="font-mono font-medium">
+                              {item.installation.deviceId}
+                            </span>
+                            <div className="flex flex-wrap gap-1">
+                              <Badge variant="outline" className="capitalize text-[10px]">
+                                {item.installation.deviceInputMethod
+                                  ? item.installation.deviceInputMethod === "qr"
+                                    ? "QR"
+                                    : "Manual"
+                                  : "Data entry"}
+                              </Badge>
+                              {item.installation.tags?.includes("edited by verifier") && (
+                                <Badge variant="secondary" className="text-[10px]">
+                                  Edited
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
                         </TableCell>
                         <TableCell>
                           <div className="flex flex-col gap-1">
@@ -1493,21 +1613,41 @@ export default function Verification() {
                           </div>
                         </TableCell>
                         <TableCell>
-                          <div className="flex items-center gap-1">
-                            <Gauge className="h-3 w-3 text-muted-foreground" />
-                            {item.installation.sensorReading}
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-1">
+                              <Gauge className="h-3 w-3 text-muted-foreground" />
+                              {item.installation.sensorReading}
+                            </div>
+                            {item.installation.createdAt && (
+                              <span className="text-[10px] text-muted-foreground">
+                                {format(item.installation.createdAt, "MMM d, HH:mm")}
+                              </span>
+                            )}
                           </div>
                         </TableCell>
                         <TableCell>
-                          {item.serverData ? (
-                            <div className="flex items-center gap-1">
-                              <Gauge className="h-3 w-3 text-green-600" />
-                              {item.serverData.sensorData}
-                              {item.installation.latestDisTimestamp && (
-                                <div className="text-[10px] text-muted-foreground ml-2">{item.installation.latestDisTimestamp}</div>
-                              )}
-                            </div>
-                          ) : (
+                          {item.serverData ? (() => {
+                            let fetchedAtLabel: string | null = null;
+                            const ts = item.installation.latestDisTimestamp as any;
+                            if (ts) {
+                              const maybeDate = ts instanceof Date ? ts : new Date(ts);
+                              const formatted = formatDateSafe(maybeDate, "MMM d, HH:mm");
+                              fetchedAtLabel = formatted;
+                            }
+                            return (
+                              <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-1">
+                                  <Gauge className="h-3 w-3 text-green-600" />
+                                  {item.serverData.sensorData}
+                                </div>
+                                {fetchedAtLabel && (
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {fetchedAtLabel}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })() : (
                             <Badge variant="outline" className="text-xs">
                               <Minus className="h-3 w-3 mr-1" />
                               No Data
@@ -1540,38 +1680,66 @@ export default function Verification() {
                           )}
                         </TableCell>
                         <TableCell>
-                          {item.installation.createdAt 
-                            ? format(item.installation.createdAt, "MMM d, HH:mm")
-                            : "-"}
+                          {(() => {
+                            const teamName = item.installation.teamId ? getTeamName(item.installation.teamId) : null;
+                            const amanahArabic = translateTeamNameToArabic(teamName);
+                            const amanahLabel = amanahArabic ?? teamName ?? "-";
+
+                            const locationId = item.installation.locationId ? String(item.installation.locationId).trim() : "";
+                            const loc = locationId ? locationMap.get(locationId) : undefined;
+                            const municipality = loc?.municipalityName;
+
+                            return (
+                              <div className="flex flex-col gap-1">
+                                <span className="text-xs font-medium">{amanahLabel}</span>
+                                {municipality && (
+                                  <span className="text-[11px] text-muted-foreground">
+                                    {municipality}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </TableCell>
-                        <TableCell className="space-x-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => viewDetails(item)}
-                          >
-                            Review
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            disabled={!!fetchingMap[item.installation.id]}
-                            onClick={() => fetchLatestServerReadings(item.installation)}
-                          >
-                            {fetchingMap[item.installation.id] ? (
-                              <>
-                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                                Fetching
-                              </>
-                            ) : (item.installation.latestDisCm !== undefined && item.installation.latestDisCm !== null ? "Refresh Server Data" : "Fetch Server Readings")}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            onClick={() => handleDeleteClick(item)}
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </Button>
+                        <TableCell>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="rounded-full px-4"
+                              onClick={() => viewDetails(item)}
+                            >
+                              Review
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              className="rounded-full px-4"
+                              disabled={!!fetchingMap[item.installation.id]}
+                              onClick={() => fetchLatestServerReadings(item.installation)}
+                            >
+                              {fetchingMap[item.installation.id] ? (
+                                <>
+                                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                                  Fetch
+                                </>
+                              ) : item.installation.latestDisCm !== undefined && item.installation.latestDisCm !== null ? (
+                                "Refresh"
+                              ) : (
+                                "Fetch"
+                              )}
+                            </Button>
+                            {userProfile?.isAdmin && (
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                className="rounded-full px-3"
+                                onClick={() => handleDeleteClick(item)}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </Button>
+                            )}
+                          </div>
                         </TableCell>
                       </TableRow>
                     );
