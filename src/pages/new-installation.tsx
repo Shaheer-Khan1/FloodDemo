@@ -18,6 +18,7 @@ export default function NewInstallation() {
   const { userProfile } = useAuth();
   const { toast } = useToast();
   const [, setLocation] = useLocation();
+  const [checkingPending, setCheckingPending] = useState(true);
   
   const [deviceId, setDeviceId] = useState(""); // used for manual full UID fallback
   const [qrScannedUid, setQrScannedUid] = useState("");
@@ -44,6 +45,39 @@ export default function NewInstallation() {
   const [videoPreview, setVideoPreview] = useState<string | null>(null);
   
   const [submitting, setSubmitting] = useState(false);
+
+  // Check for pending installations and redirect if found
+  useEffect(() => {
+    if (!userProfile || userProfile.role !== "installer") {
+      return;
+    }
+
+    const checkPendingInstallations = async () => {
+      try {
+        const installationsQuery = query(
+          collection(db, "installations"),
+          where("installedBy", "==", userProfile.uid),
+          where("status", "==", "pending")
+        );
+
+        const snapshot = await getDocs(installationsQuery);
+        
+        // Check if there's a pending installation that is not system pre-verified
+        for (const doc of snapshot.docs) {
+          const data = doc.data();
+          if (data.status === "pending" && !data.systemPreVerified) {
+            // Has pending installation, redirect to verification screen
+            setLocation("/installation-verification");
+            return;
+          }
+        }
+      } catch (error) {
+        console.error("Error checking pending installations:", error);
+      }
+    };
+
+    checkPendingInstallations();
+  }, [userProfile, setLocation]);
 
   // Initialize QR Scanner with better settings
   useEffect(() => {
@@ -498,8 +532,8 @@ export default function NewInstallation() {
       setVideo(null);
       setVideoPreview(null);
 
-      // Navigate to submissions
-      setTimeout(() => setLocation("/my-submissions"), 1500);
+      // Navigate to verification waiting screen
+      setTimeout(() => setLocation("/installation-verification"), 1500);
     } catch (error) {
       toast({
         variant: "destructive",

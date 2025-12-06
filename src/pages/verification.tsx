@@ -75,6 +75,7 @@ export default function Verification() {
   const [dateFilter, setDateFilter] = useState<string>("");
   const [deviceIdFilter, setDeviceIdFilter] = useState<string>("");
   const [displayLimit, setDisplayLimit] = useState(500);
+  const [exportDate, setExportDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
   const [autoServerFetchEnabled, setAutoServerFetchEnabled] = useState(true);
   
   // Edit mode states
@@ -516,8 +517,12 @@ export default function Verification() {
 
   // Apply filters to verified installations
   const displayedVerifiedItems = useMemo(() => {
-    // Only show verified items if 'verified' filter is active, or if no filter is active and we want to show verified table
-    if (activeFilter !== 'verified' && activeFilter !== 'all') {
+    // Only show verified items if 'verified', 'all', or 'noServerData' filter is active
+    if (
+      activeFilter !== 'verified' &&
+      activeFilter !== 'all' &&
+      activeFilter !== 'noServerData'
+    ) {
       return [];
     }
 
@@ -1025,9 +1030,8 @@ export default function Verification() {
     }
   };
 
-  const downloadCsv = (rowsData: string[][], filename: string) => {
-    const headers = ["Device ID", "Amanah", "Location ID", "Coordinates", "Sensor Reading"];
-    const csvRows = [headers, ...rowsData];
+  const downloadCsv = (rowsData: string[][], filename: string, headers?: string[]) => {
+    const csvRows = headers ? [headers, ...rowsData] : rowsData;
     const csvContent = csvRows
       .map((row) =>
         row
@@ -1116,11 +1120,139 @@ export default function Verification() {
       ];
     });
 
-    downloadCsv(csvRows, "verification-installations.csv");
+    downloadCsv(csvRows, "verification-installations.csv", ["Device ID", "Amanah", "Location ID", "Coordinates", "Sensor Reading"]);
 
     toast({
       title: "CSV downloaded",
       description: `Exported ${itemsToExport.length} installation${itemsToExport.length === 1 ? "" : "s"}.`,
+    });
+  };
+
+  const handleDailyCsvPrompt = () => {
+    const defaultValue = exportDate || format(new Date(), "yyyy-MM-dd");
+    const input = window.prompt("Enter date for CSV (YYYY-MM-DD)", defaultValue);
+    if (!input) return;
+    handleDailyCsvExport(input);
+  };
+
+  const handleDailyCsvExport = (selectedDate?: string) => {
+    const targetDate = selectedDate?.trim() || exportDate;
+    if (!targetDate) {
+      toast({
+        title: "Select a date",
+        description: "Please choose a date to generate the CSV.",
+      });
+      return;
+    }
+    setExportDate(targetDate);
+
+    const start = new Date(targetDate);
+    if (isNaN(start.getTime())) {
+      toast({
+        variant: "destructive",
+        title: "Invalid date",
+        description: "Please select a valid date.",
+      });
+      return;
+    }
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+
+    const installationsForDate = allInstallations.filter((inst) => {
+      if (!inst.createdAt) return false;
+      const created = inst.createdAt instanceof Date ? inst.createdAt : new Date(inst.createdAt);
+      if (isNaN(created.getTime())) return false;
+      return created >= start && created < end;
+    });
+
+    if (installationsForDate.length === 0) {
+      toast({
+        title: "No installations found",
+        description: "There are no installations for the selected date.",
+      });
+      return;
+    }
+
+    const rows = installationsForDate.map((inst) => {
+      const locationId = inst.locationId ? String(inst.locationId).trim() : "";
+      const isLocation9999 = locationId === "9999";
+      const location = locationId ? locationMap.get(locationId) : undefined;
+
+      let latitude: number | null = null;
+      let longitude: number | null = null;
+      if (isLocation9999) {
+        latitude = inst.latitude ?? null;
+        longitude = inst.longitude ?? null;
+      } else if (location) {
+        latitude = location.latitude;
+        longitude = location.longitude;
+      }
+
+      const coordinates =
+        latitude != null && longitude != null ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}` : "-";
+      const googleMapsUrl =
+        latitude != null && longitude != null
+          ? `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`
+          : "-";
+
+      const installerReading = inst.sensorReading != null ? inst.sensorReading.toString() : "-";
+      const serverReading = inst.latestDisCm != null ? inst.latestDisCm.toString() : "-";
+      const hasInstallerReading = typeof inst.sensorReading === "number" && inst.sensorReading !== 0;
+      const variance =
+        inst.latestDisCm != null && hasInstallerReading
+          ? (Math.abs(inst.latestDisCm - inst.sensorReading!) / Math.abs(inst.sensorReading!)) * 100
+          : null;
+
+      const teamName = inst.teamId ? getTeamName(inst.teamId) : null;
+      const amanahArabic = translateTeamNameToArabic(teamName);
+
+      const latestTimestamp = inst.latestDisTimestamp as Date | string | undefined;
+      const serverDataTime = latestTimestamp
+        ? formatDateSafe(
+            latestTimestamp instanceof Date ? latestTimestamp : new Date(latestTimestamp),
+            "MMM d, yyyy HH:mm"
+          ) || "-"
+        : "-";
+
+      return [
+        inst.deviceId,
+        inst.installedByName || "-",
+        amanahArabic ?? teamName ?? "-",
+        teamName ?? "-",
+        locationId || "-",
+        coordinates,
+        googleMapsUrl,
+        inst.deviceInputMethod ? inst.deviceInputMethod.toUpperCase() : "-",
+        installerReading,
+        serverReading,
+        variance != null ? `${variance.toFixed(2)}%` : "-",
+        inst.status,
+        inst.createdAt ? format(inst.createdAt, "MMM d, yyyy HH:mm") : "-",
+        serverDataTime,
+      ];
+    });
+
+    downloadCsv(rows, `installations-${targetDate}.csv`, [
+      "Device ID",
+      "Installer",
+      "Amanah (Arabic / English)",
+      "Team Name",
+      "Location ID",
+      "Coordinates",
+      "Google Maps URL",
+      "Input Method",
+      "Installer Reading",
+      "Server Reading",
+      "Variance %",
+      "Status",
+      "Submitted At",
+      "Server Data Time",
+    ]);
+
+    toast({
+      title: "Daily CSV downloaded",
+      description: `Exported ${installationsForDate.length} installation${installationsForDate.length === 1 ? "" : "s"} for ${format(start, "MMM d, yyyy")}.`,
     });
   };
 
@@ -1385,6 +1517,7 @@ export default function Verification() {
               </div>
             </div>
           )}
+
         </CardContent>
       </Card>
 
@@ -1507,19 +1640,27 @@ export default function Verification() {
       {activeFilter !== 'verified' && (
         <Card className="border shadow-sm">
           <CardHeader>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
               <CardTitle className="text-2xl font-bold">
                 Pending Installations ({displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}{displayedItems.length})
               </CardTitle>
-              <Button
-                variant="outline"
-                className="flex items-center gap-2"
-                onClick={handleCsvExport}
-                disabled={displayedItems.length === 0}
-              >
-                <FileDown className="h-4 w-4" />
-                Download CSV
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  onClick={handleCsvExport}
+                  disabled={displayedItems.length === 0}
+                >
+                  <FileDown className="h-4 w-4" />
+                  Download CSV
+                </Button>
+                <Button
+                  onClick={handleDailyCsvPrompt}
+                  type="button"
+                >
+                  CSV by Date
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
@@ -1768,19 +1909,27 @@ export default function Verification() {
       {(activeFilter === 'verified' || (activeFilter === 'all' && verifiedInstallations.length > 0)) && (
         <Card className="border shadow-sm">
           <CardHeader>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
               <CardTitle className="text-2xl font-bold">
                 Verified Installations ({displayedVerifiedItems.length > displayLimit ? `${paginatedVerifiedItems.length} of ` : ''}{displayedVerifiedItems.length})
               </CardTitle>
-              <Button
-                variant="outline"
-                className="flex items-center gap-2"
-                onClick={handleCsvExport}
-                disabled={displayedVerifiedItems.length === 0 && displayedItems.length === 0}
-              >
-                <FileDown className="h-4 w-4" />
-                Download CSV
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  onClick={handleCsvExport}
+                  disabled={displayedVerifiedItems.length === 0 && displayedItems.length === 0}
+                >
+                  <FileDown className="h-4 w-4" />
+                  Download CSV
+                </Button>
+                <Button
+                  onClick={handleDailyCsvPrompt}
+                  type="button"
+                >
+                  CSV by Date
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent>

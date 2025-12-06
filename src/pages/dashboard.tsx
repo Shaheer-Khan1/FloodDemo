@@ -3,22 +3,407 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { MapPin, Users, Shield } from "lucide-react";
+import { MapPin, Users, Shield, FileDown, Gauge, Loader2 } from "lucide-react";
 import { useLocation } from "wouter";
 import { useState, useEffect } from "react";
-import { collection, query, where, onSnapshot } from "firebase/firestore";
+import { collection, query, where, onSnapshot, getDocs } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { useToast } from "@/hooks/use-toast";
+import { translateTeamNameToArabic } from "@/lib/amanah-translations";
+import type { Installation, Team } from "@/lib/types";
 
 export default function Dashboard() {
   const { userProfile } = useAuth();
   const [, setLocation] = useLocation();
+  const { toast } = useToast();
   const [teamsCount, setTeamsCount] = useState(0);
+  
+  // Sensor reading range filter state
+  const [sensorRangeDialogOpen, setSensorRangeDialogOpen] = useState(false);
+  const [minSensorReading, setMinSensorReading] = useState("");
+  const [maxSensorReading, setMaxSensorReading] = useState("");
+  const [loadingSensorRange, setLoadingSensorRange] = useState(false);
 
-  // Redirect installers to their installation page
-  useEffect(() => {
-    if (userProfile?.role === "installer") {
-      setLocation("/new-installation");
+  const handleDeviceLocationCsv = async () => {
+    try {
+      const [installSnap, locSnap] = await Promise.all([
+        getDocs(collection(db, "installations")),
+        getDocs(collection(db, "locations")),
+      ]);
+
+      const locationsMap = new Map<
+        string,
+        { latitude: number; longitude: number }
+      >();
+      locSnap.forEach((d) => {
+        const data: any = d.data();
+        const rawId: string = data.locationId || d.id;
+        const lat =
+          typeof data.latitude === "number"
+            ? data.latitude
+            : data.latitude
+            ? parseFloat(String(data.latitude))
+            : null;
+        const lon =
+          typeof data.longitude === "number"
+            ? data.longitude
+            : data.longitude
+            ? parseFloat(String(data.longitude))
+            : null;
+        if (lat == null || lon == null || isNaN(lat) || isNaN(lon)) return;
+        const base = { latitude: lat, longitude: lon };
+        const idKey = String(rawId).trim();
+        locationsMap.set(idKey, base);
+        if (/^\d+$/.test(idKey)) {
+          const numKey = String(Number(idKey)).trim();
+          if (numKey !== idKey) {
+            locationsMap.set(numKey, base);
+          }
+        }
+      });
+
+      const rows: string[][] = [];
+      installSnap.forEach((d) => {
+        const data: any = d.data();
+        const deviceId = data.deviceId || d.id;
+        const locationId = data.locationId ? String(data.locationId).trim() : "";
+
+        const userLat =
+          typeof data.latitude === "number"
+            ? data.latitude
+            : data.latitude
+            ? parseFloat(String(data.latitude))
+            : null;
+        const userLon =
+          typeof data.longitude === "number"
+            ? data.longitude
+            : data.longitude
+            ? parseFloat(String(data.longitude))
+            : null;
+
+        const mapped = locationId ? locationsMap.get(locationId) : undefined;
+
+        const userCoords =
+          userLat != null && userLon != null
+            ? `${userLat.toFixed(6)}, ${userLon.toFixed(6)}`
+            : "-";
+        const mappedCoords =
+          mapped && mapped.latitude != null && mapped.longitude != null
+            ? `${mapped.latitude.toFixed(6)}, ${mapped.longitude.toFixed(6)}`
+            : "-";
+
+        rows.push([
+          String(deviceId),
+          locationId || "-",
+          userCoords,
+          mappedCoords,
+        ]);
+      });
+
+      if (rows.length === 0) {
+        return;
+      }
+
+      const headers = [
+        "Device ID",
+        "Location ID",
+        "User Coordinates",
+        "Mapped Coordinates",
+      ];
+      const csvRows = [headers, ...rows];
+      const csvContent = csvRows
+        .map((row) =>
+          row
+            .map((val) => `"${(val ?? "").replace(/"/g, '""')}"`)
+            .join(",")
+        )
+        .join("\r\n");
+
+      const blob = new Blob(["\ufeff", csvContent], {
+        type: "text/csv;charset=utf-8;",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute(
+        "download",
+        `device-locations-${new Date().toISOString().slice(0, 10)}.csv`
+      );
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Failed to export device locations CSV:", e);
     }
+  };
+
+  const handleSensorReadingRangeExport = async () => {
+    if (!minSensorReading && !maxSensorReading) {
+      toast({
+        variant: "destructive",
+        title: "Validation Error",
+        description: "Please enter at least a minimum or maximum sensor reading value.",
+      });
+      return;
+    }
+
+    const min = minSensorReading ? parseFloat(minSensorReading) : -Infinity;
+    const max = maxSensorReading ? parseFloat(maxSensorReading) : Infinity;
+
+    if (isNaN(min) || isNaN(max)) {
+      toast({
+        variant: "destructive",
+        title: "Validation Error",
+        description: "Please enter valid numeric values for sensor readings.",
+      });
+      return;
+    }
+
+    if (min > max) {
+      toast({
+        variant: "destructive",
+        title: "Validation Error",
+        description: "Minimum sensor reading cannot be greater than maximum.",
+      });
+      return;
+    }
+
+    setLoadingSensorRange(true);
+    try {
+      // Fetch all required data
+      const [installationsSnap, teamsSnap, locationsSnap] = await Promise.all([
+        getDocs(collection(db, "installations")),
+        getDocs(collection(db, "teams")),
+        getDocs(collection(db, "locations")),
+      ]);
+
+      // Create maps for quick lookup
+      const teamsMap = new Map<string, Team>();
+      teamsSnap.forEach((doc) => {
+        teamsMap.set(doc.id, { id: doc.id, ...doc.data() } as Team);
+      });
+
+      const locationsMap = new Map<
+        string,
+        { latitude: number; longitude: number; municipalityName?: string }
+      >();
+      locationsSnap.forEach((d) => {
+        const data: any = d.data();
+        const rawId: string = data.locationId || d.id;
+        const lat =
+          typeof data.latitude === "number"
+            ? data.latitude
+            : data.latitude
+            ? parseFloat(String(data.latitude))
+            : null;
+        const lon =
+          typeof data.longitude === "number"
+            ? data.longitude
+            : data.longitude
+            ? parseFloat(String(data.longitude))
+            : null;
+        if (lat == null || lon == null || isNaN(lat) || isNaN(lon)) return;
+        const idKey = String(rawId).trim();
+        locationsMap.set(idKey, {
+          latitude: lat,
+          longitude: lon,
+          municipalityName: data.municipalityName,
+        });
+        // Also add numeric key variant if applicable
+        if (/^\d+$/.test(idKey)) {
+          const numKey = String(Number(idKey)).trim();
+          if (numKey !== idKey) {
+            locationsMap.set(numKey, {
+              latitude: lat,
+              longitude: lon,
+              municipalityName: data.municipalityName,
+            });
+          }
+        }
+      });
+
+      // Filter installations by sensor reading range
+      const filteredInstallations: Installation[] = [];
+      installationsSnap.forEach((doc) => {
+        const data = doc.data() as Installation;
+        const sensorReading =
+          typeof data.sensorReading === "number"
+            ? data.sensorReading
+            : data.sensorReading
+            ? parseFloat(String(data.sensorReading))
+            : null;
+
+        if (
+          sensorReading != null &&
+          !isNaN(sensorReading) &&
+          sensorReading >= min &&
+          sensorReading <= max
+        ) {
+          filteredInstallations.push({
+            id: doc.id,
+            ...data,
+            createdAt: data.createdAt?.toDate?.() || data.createdAt,
+            updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+            verifiedAt: data.verifiedAt?.toDate?.() || data.verifiedAt,
+          });
+        }
+      });
+
+      if (filteredInstallations.length === 0) {
+        toast({
+          title: "No Data Found",
+          description: `No devices found with sensor readings between ${minSensorReading || "any"} and ${maxSensorReading || "any"}.`,
+        });
+        setLoadingSensorRange(false);
+        return;
+      }
+
+      // Generate CSV rows
+      const rows: string[][] = [];
+      filteredInstallations.forEach((inst) => {
+        const locationId = inst.locationId ? String(inst.locationId).trim() : "";
+        const isLocation9999 = locationId === "9999";
+
+        // Get coordinates
+        let latitude: number | null = null;
+        let longitude: number | null = null;
+        if (isLocation9999) {
+          // For location 9999, use user-entered coordinates
+          latitude = inst.latitude ?? null;
+          longitude = inst.longitude ?? null;
+        } else {
+          // For other locations, use coordinates from locations collection
+          const location = locationsMap.get(locationId);
+          latitude = location?.latitude ?? null;
+          longitude = location?.longitude ?? null;
+        }
+
+        const coordinates =
+          latitude != null && longitude != null
+            ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
+            : "-";
+
+        // Get amanah name
+        const team = inst.teamId ? teamsMap.get(inst.teamId) : undefined;
+        const teamName = team?.name || "";
+        const amanahName = translateTeamNameToArabic(teamName) || teamName || "-";
+
+        // Get municipality name
+        const location = locationsMap.get(locationId);
+        const municipalityName = location?.municipalityName || "-";
+
+        // Get installer name
+        const installerName = inst.installedByName || "-";
+
+        // Get sensor reading (user entered by installer)
+        const sensorReading = inst.sensorReading != null ? inst.sensorReading.toString() : "-";
+
+        rows.push([
+          inst.deviceId,
+          locationId || "-",
+          coordinates,
+          amanahName,
+          municipalityName,
+          installerName,
+          sensorReading,
+        ]);
+      });
+
+      // Create CSV
+      const headers = [
+        "Device ID",
+        "Location ID",
+        "Coordinates",
+        "Amanah Name",
+        "Municipality Name",
+        "Installer Name",
+        "Sensor Reading",
+      ];
+      const csvRows = [headers, ...rows];
+      const csvContent = csvRows
+        .map((row) =>
+          row
+            .map((val) => `"${(val ?? "").replace(/"/g, '""')}"`)
+            .join(",")
+        )
+        .join("\r\n");
+
+      const blob = new Blob(["\ufeff", csvContent], {
+        type: "text/csv;charset=utf-8;",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const dateStr = new Date().toISOString().slice(0, 10);
+      link.setAttribute(
+        "download",
+        `sensor-reading-range-${minSensorReading || "min"}-${maxSensorReading || "max"}-${dateStr}.csv`
+      );
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Export Successful",
+        description: `Exported ${filteredInstallations.length} devices to CSV.`,
+      });
+
+      setSensorRangeDialogOpen(false);
+      setMinSensorReading("");
+      setMaxSensorReading("");
+    } catch (e) {
+      console.error("Failed to export sensor reading range CSV:", e);
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: e instanceof Error ? e.message : "Failed to export data. Please try again.",
+      });
+    } finally {
+      setLoadingSensorRange(false);
+    }
+  };
+
+  // Check for pending installations and redirect installers accordingly
+  useEffect(() => {
+    if (!userProfile || userProfile.role !== "installer") {
+      return;
+    }
+
+    const checkPendingInstallations = async () => {
+      try {
+        const installationsQuery = query(
+          collection(db, "installations"),
+          where("installedBy", "==", userProfile.uid),
+          where("status", "==", "pending")
+        );
+
+        const snapshot = await getDocs(installationsQuery);
+        
+        // Check if there's a pending installation that is not system pre-verified
+        for (const doc of snapshot.docs) {
+          const data = doc.data();
+          if (data.status === "pending" && !data.systemPreVerified) {
+            // Has pending installation, redirect to verification screen
+            setLocation("/installation-verification");
+            return;
+          }
+        }
+
+        // No pending installations, redirect to new installation page
+        setLocation("/new-installation");
+      } catch (error) {
+        console.error("Error checking pending installations:", error);
+        // On error, still redirect to new installation page
+        setLocation("/new-installation");
+      }
+    };
+
+    checkPendingInstallations();
   }, [userProfile, setLocation]);
 
   // Fetch teams count in real-time
@@ -183,6 +568,32 @@ export default function Dashboard() {
               <Button 
                 variant="outline" 
                 className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={handleDeviceLocationCsv}
+              >
+                <div className="h-12 w-12 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mr-4">
+                  <FileDown className="h-6 w-6 text-slate-600 dark:text-slate-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Export Device Locations</div>
+                  <div className="text-sm text-muted-foreground">Device ID + user & mapped coordinates</div>
+                </div>
+              </Button>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setSensorRangeDialogOpen(true)}
+              >
+                <div className="h-12 w-12 rounded-xl bg-orange-100 dark:bg-orange-950 flex items-center justify-center mr-4">
+                  <Gauge className="h-6 w-6 text-orange-600 dark:text-orange-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Filter by Sensor Reading Range</div>
+                  <div className="text-sm text-muted-foreground">Export devices by sensor reading range</div>
+                </div>
+              </Button>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
                 onClick={() => setLocation("/verification")}
               >
                 <div className="h-12 w-12 rounded-xl bg-green-100 dark:bg-green-950 flex items-center justify-center mr-4">
@@ -336,6 +747,77 @@ export default function Dashboard() {
           </Button>
         </CardContent>
       </Card>
+
+      {/* Sensor Reading Range Filter Dialog */}
+      <Dialog open={sensorRangeDialogOpen} onOpenChange={setSensorRangeDialogOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Filter by Sensor Reading Range</DialogTitle>
+            <DialogDescription>
+              Enter a range of sensor readings to export device data. Leave either field empty to search from/to that value.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="min-reading">Minimum Sensor Reading</Label>
+              <Input
+                id="min-reading"
+                type="number"
+                placeholder="e.g., 100"
+                value={minSensorReading}
+                onChange={(e) => setMinSensorReading(e.target.value)}
+                disabled={loadingSensorRange}
+              />
+              <p className="text-xs text-muted-foreground">
+                Leave empty to search from any minimum value
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="max-reading">Maximum Sensor Reading</Label>
+              <Input
+                id="max-reading"
+                type="number"
+                placeholder="e.g., 500"
+                value={maxSensorReading}
+                onChange={(e) => setMaxSensorReading(e.target.value)}
+                disabled={loadingSensorRange}
+              />
+              <p className="text-xs text-muted-foreground">
+                Leave empty to search up to any maximum value
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setSensorRangeDialogOpen(false);
+                setMinSensorReading("");
+                setMaxSensorReading("");
+              }}
+              disabled={loadingSensorRange}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSensorReadingRangeExport}
+              disabled={loadingSensorRange}
+            >
+              {loadingSensorRange ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Exporting...
+                </>
+              ) : (
+                <>
+                  <FileDown className="h-4 w-4 mr-2" />
+                  Export CSV
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

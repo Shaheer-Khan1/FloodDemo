@@ -22,6 +22,7 @@ import OpenBoxes from "@/pages/open-boxes";
 import NewInstallation from "@/pages/new-installation";
 import MySubmissions from "@/pages/my-submissions";
 import Verification from "@/pages/verification";
+import InstallationVerification from "@/pages/installation-verification";
 import CreateUser from "@/pages/create-user";
 import MinistryDevices from "@/pages/ministry-devices";
 import MinistryStats from "@/pages/ministry-stats";
@@ -102,6 +103,14 @@ function Router() {
         <ProtectedRoute>
           <AppLayout>
             <NewInstallation />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/installation-verification">
+        <ProtectedRoute>
+          <AppLayout>
+            <InstallationVerification />
           </AppLayout>
         </ProtectedRoute>
       </Route>
