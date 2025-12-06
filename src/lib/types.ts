@@ -114,7 +114,10 @@ export interface Installation {
   updatedAt?: Date;
   deviceInputMethod?: "qr" | "manual";
   serverRefreshedAt?: Date; // last time we attempted a server fetch
-  tags?: string[]; // Tags for tracking special states (e.g., "edited by verifier")
+  tags?: string[]; // Tags for tracking special states (e.g., "edited by verifier", "escalated to manager")
+  escalatedBy?: string; // User who escalated
+  escalatedAt?: Date; // When it was escalated
+  escalateReason?: string; // Reason for escalation
 }
 
 export interface ServerData {

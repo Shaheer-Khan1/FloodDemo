@@ -80,6 +80,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       ? [
           { title: "Teams", icon: Users, url: "/teams" },
           { title: "Assign Box", icon: Box, url: "/assign-box" },
+          { title: "Verification", icon: CheckSquare, url: "/verification" },
         ]
       : []),
     // Ministry-specific menu items

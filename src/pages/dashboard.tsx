@@ -368,42 +368,11 @@ export default function Dashboard() {
     }
   };
 
-  // Check for pending installations and redirect installers accordingly
+  // Redirect installers to their installation page
   useEffect(() => {
-    if (!userProfile || userProfile.role !== "installer") {
-      return;
+    if (userProfile?.role === "installer") {
+      setLocation("/new-installation");
     }
-
-    const checkPendingInstallations = async () => {
-      try {
-        const installationsQuery = query(
-          collection(db, "installations"),
-          where("installedBy", "==", userProfile.uid),
-          where("status", "==", "pending")
-        );
-
-        const snapshot = await getDocs(installationsQuery);
-        
-        // Check if there's a pending installation that is not system pre-verified
-        for (const doc of snapshot.docs) {
-          const data = doc.data();
-          if (data.status === "pending" && !data.systemPreVerified) {
-            // Has pending installation, redirect to verification screen
-            setLocation("/installation-verification");
-            return;
-          }
-        }
-
-        // No pending installations, redirect to new installation page
-        setLocation("/new-installation");
-      } catch (error) {
-        console.error("Error checking pending installations:", error);
-        // On error, still redirect to new installation page
-        setLocation("/new-installation");
-      }
-    };
-
-    checkPendingInstallations();
   }, [userProfile, setLocation]);
 
   // Fetch teams count in real-time

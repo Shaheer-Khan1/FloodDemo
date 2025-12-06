@@ -67,7 +67,10 @@ export default function Verification() {
   const [processing, setProcessing] = useState(false);
   const [fetchingMap, setFetchingMap] = useState<Record<string, boolean>>({});
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
-  const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'highVariance' | 'withServerData' | 'noServerData' | 'preVerified' | 'verified'>('all');
+  // Set initial filter based on role - managers should only see escalated items
+  const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'highVariance' | 'withServerData' | 'noServerData' | 'preVerified' | 'verified' | 'flagged' | 'escalated'>(
+    userProfile?.role === "manager" && !userProfile?.isAdmin ? 'escalated' : 'all'
+  );
   
   // Filter states
   const [installerNameFilter, setInstallerNameFilter] = useState<string>("");
@@ -97,13 +100,26 @@ export default function Verification() {
   // Edit confirmation states
   const [editConfirmDialogOpen, setEditConfirmDialogOpen] = useState(false);
   const [pendingChanges, setPendingChanges] = useState<Array<{field: string, oldValue: string, newValue: string}>>([]);
+  const [verifyAfterEdit, setVerifyAfterEdit] = useState(false);
+  const [escalateDialogOpen, setEscalateDialogOpen] = useState(false);
+  const [escalateReason, setEscalateReason] = useState("");
+
+  // Auto-set filter to escalated for managers (cannot be changed)
+  useEffect(() => {
+    if (userProfile?.role === "manager" && !userProfile?.isAdmin && activeFilter !== 'escalated') {
+      setActiveFilter('escalated');
+    }
+  }, [userProfile, activeFilter]);
 
   // Real-time installations listener (pending verification)
   useEffect(() => {
     if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
 
-    // Fetch installations; filter by team for manager/verifier
-    const installationsQuery = userProfile.isAdmin
+    // Fetch installations
+    // - Admins: All installations
+    // - Managers: All installations (to see escalated items from any team)
+    // - Verifiers: Filter by team
+    const installationsQuery = (userProfile.isAdmin || userProfile.role === "manager")
       ? collection(db, "installations")
       : query(collection(db, "installations"), where("teamId", "==", userProfile.teamId || null));
 
@@ -461,6 +477,10 @@ export default function Verification() {
       filtered = verificationItems.filter(i => !i.serverData || i.installation.latestDisCm == null);
     } else if (activeFilter === 'preVerified') {
       filtered = verificationItems.filter(i => i.installation.systemPreVerified === true);
+    } else if (activeFilter === 'flagged') {
+      filtered = verificationItems.filter(i => i.installation.status === "flagged");
+    } else if (activeFilter === 'escalated') {
+      filtered = verificationItems.filter(i => i.installation.tags?.includes("escalated to manager"));
     } else if (activeFilter === 'verified') {
       // For verified filter, return empty array for pending items (verified items shown in separate table)
       filtered = [];
@@ -930,14 +950,48 @@ export default function Verification() {
       // Update installation with edited values, versioned originals, and tag
       await updateDoc(doc(db, "installations", selectedItem.installation.id), updateData);
 
-      toast({
-        title: "Installation Updated",
-        description: newImageFile 
-          ? "The installation has been successfully updated with version history and new image."
-          : "The installation has been successfully updated with version history.",
-      });
+      // If verifyAfterEdit is true and installation is flagged/escalated, verify it (for admins and managers)
+      const isEscalated = selectedItem.installation.tags?.includes("escalated to manager");
+      const isFlagged = selectedItem.installation.status === "flagged";
+      
+      if (verifyAfterEdit && (isFlagged || isEscalated)) {
+        // Get existing tags and remove escalated tag if present
+        const existingTags = selectedItem.installation.tags || [];
+        const updatedTags = existingTags.filter(tag => tag !== "escalated to manager");
+        
+        await updateDoc(doc(db, "installations", selectedItem.installation.id), {
+          status: "verified",
+          verifiedBy: userProfile.displayName,
+          verifiedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          flaggedReason: null, // Clear the flag reason since we're verifying
+          tags: updatedTags, // Remove escalated tag
+        });
+
+        // Update device status
+        await updateDoc(doc(db, "devices", selectedItem.installation.deviceId), {
+          status: "verified",
+          updatedAt: serverTimestamp(),
+        });
+
+        toast({
+          title: "Installation Updated and Verified",
+          description: "The installation has been updated and verified. The installer can now proceed.",
+        });
+
+        setDialogOpen(false);
+        setSelectedItem(null);
+      } else {
+        toast({
+          title: "Installation Updated",
+          description: newImageFile 
+            ? "The installation has been successfully updated with version history and new image."
+            : "The installation has been successfully updated with version history.",
+        });
+      }
 
       setIsEditMode(false);
+      setVerifyAfterEdit(false);
       setNewImageFile(null);
       setNewImagePreview(null);
     } catch (error) {
@@ -963,6 +1017,13 @@ export default function Verification() {
 
     setProcessing(true);
     try {
+      // Get existing tags or initialize empty array
+      const existingTags = selectedItem.installation.tags || [];
+      const tagsToUpdate = [...existingTags];
+      
+      // Remove escalated tag if present (reset escalation on new flag)
+      const filteredTags = tagsToUpdate.filter(tag => tag !== "escalated to manager");
+
       // Update installation status
       await updateDoc(doc(db, "installations", selectedItem.installation.id), {
         status: "flagged",
@@ -970,6 +1031,7 @@ export default function Verification() {
         verifiedBy: userProfile.displayName,
         verifiedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
+        tags: filteredTags,
       });
 
       // Update device status
@@ -992,6 +1054,56 @@ export default function Verification() {
       toast({
         variant: "destructive",
         title: "Rejection Failed",
+        description: error instanceof Error ? error.message : "An error occurred.",
+      });
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleEscalate = async () => {
+    if (!selectedItem || !userProfile || !escalateReason.trim()) {
+      toast({
+        variant: "destructive",
+        title: "Reason Required",
+        description: "Please provide a reason for escalation.",
+      });
+      return;
+    }
+
+    setProcessing(true);
+    try {
+      // Get existing tags or initialize empty array
+      const existingTags = selectedItem.installation.tags || [];
+      const tagsToUpdate = [...existingTags];
+      
+      // Add "escalated to manager" tag if not already present
+      if (!tagsToUpdate.includes("escalated to manager")) {
+        tagsToUpdate.push("escalated to manager");
+      }
+
+      // Update installation with escalation tag and reason
+      await updateDoc(doc(db, "installations", selectedItem.installation.id), {
+        tags: tagsToUpdate,
+        escalatedBy: userProfile.displayName,
+        escalatedAt: serverTimestamp(),
+        escalateReason: escalateReason.trim(),
+        updatedAt: serverTimestamp(),
+      });
+
+      toast({
+        title: "Installation Escalated",
+        description: "The installation has been escalated to a manager for review.",
+      });
+
+      setEscalateDialogOpen(false);
+      setEscalateReason("");
+      setDialogOpen(false);
+      setSelectedItem(null);
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Escalation Failed",
         description: error instanceof Error ? error.message : "An error occurred.",
       });
     } finally {
@@ -1389,9 +1501,13 @@ export default function Verification() {
     <div className="space-y-8">
       <div>
         <h1 className="text-4xl font-bold text-slate-900 dark:text-white">
-          Verification Queue
+          {userProfile?.role === "manager" && !userProfile?.isAdmin ? "Escalated Verifications" : "Verification Queue"}
         </h1>
-        <p className="text-muted-foreground mt-2">Review and verify installation submissions</p>
+        <p className="text-muted-foreground mt-2">
+          {userProfile?.role === "manager" && !userProfile?.isAdmin 
+            ? "Review installations escalated by verifiers" 
+            : "Review and verify installation submissions"}
+        </p>
       </div>
 
       {/* Filters Section (now before stats; stats react to filters) */}
@@ -1467,7 +1583,7 @@ export default function Verification() {
           </div>
 
           {/* Clear Filters Button */}
-          {(installerNameFilter || deviceIdFilter || teamIdFilter || dateFilter || activeFilter !== 'all') && (
+          {(installerNameFilter || deviceIdFilter || teamIdFilter || dateFilter || (activeFilter !== 'all' && !(userProfile?.role === "manager" && !userProfile?.isAdmin))) && (
             <div className="mt-4 flex items-center gap-2 flex-wrap">
               <Button
                 variant="outline"
@@ -1477,7 +1593,12 @@ export default function Verification() {
                   setDeviceIdFilter("");
                   setTeamIdFilter("");
                   setDateFilter("");
-                  setActiveFilter('all');
+                  if (userProfile?.role === "manager" && !userProfile?.isAdmin) {
+                    // Managers should stay on escalated filter
+                    setActiveFilter('escalated');
+                  } else {
+                    setActiveFilter('all');
+                  }
                 }}
               >
                 <X className="h-4 w-4 mr-2" />
@@ -1504,14 +1625,17 @@ export default function Verification() {
                     Date: {format(new Date(dateFilter), "MMM d, yyyy")}
                   </Badge>
                 )}
-                {activeFilter !== 'all' && (
+                {(activeFilter !== 'all' || (userProfile?.role === "manager" && !userProfile?.isAdmin)) && (
                   <Badge variant="secondary" className="text-xs">
                     {activeFilter === 'pending' ? 'Pending' : 
                      activeFilter === 'highVariance' ? 'High Variance' : 
                      activeFilter === 'withServerData' ? 'With Server Data' :
                      activeFilter === 'noServerData' ? 'No Server Data' :
                      activeFilter === 'preVerified' ? 'Pre-verified' :
-                     activeFilter === 'verified' ? 'Verified' : ''}
+                     activeFilter === 'verified' ? 'Verified' :
+                     activeFilter === 'flagged' ? 'Flagged' :
+                     activeFilter === 'escalated' ? 'Escalated to Manager' : 
+                     (userProfile?.role === "manager" && !userProfile?.isAdmin) ? 'Escalated to Manager' : ''}
                   </Badge>
                 )}
               </div>
@@ -1642,7 +1766,9 @@ export default function Verification() {
           <CardHeader>
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <CardTitle className="text-2xl font-bold">
-                Pending Installations ({displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}{displayedItems.length})
+                {userProfile?.role === "manager" && !userProfile?.isAdmin 
+                  ? `Escalated Installations (${displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}${displayedItems.length})`
+                  : `Pending Installations (${displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}${displayedItems.length})`}
               </CardTitle>
               <div className="flex items-center gap-2">
                 <Button
@@ -1667,9 +1793,15 @@ export default function Verification() {
             {displayedItems.length === 0 ? (
               <div className="text-center py-12">
                 <CheckCircle2 className="h-12 w-12 mx-auto mb-4 text-green-500" />
-                <h3 className="text-lg font-semibold mb-2">All Caught Up!</h3>
+                <h3 className="text-lg font-semibold mb-2">
+                  {userProfile?.role === "manager" && !userProfile?.isAdmin 
+                    ? "No Escalated Installations" 
+                    : "All Caught Up!"}
+                </h3>
                 <p className="text-muted-foreground">
-                  There are no installations pending verification at the moment.
+                  {userProfile?.role === "manager" && !userProfile?.isAdmin
+                    ? "There are no installations escalated for review at the moment."
+                    : "There are no installations pending verification at the moment."}
                 </p>
               </div>
             ) : (
@@ -2130,7 +2262,7 @@ export default function Verification() {
           <DialogHeader>
             <div className="flex items-center justify-between">
               <DialogTitle>Verify Installation</DialogTitle>
-              {(userProfile?.isAdmin || userProfile?.role === "verifier") && !isEditMode && (
+              {((userProfile?.isAdmin) || (userProfile?.role === "verifier" && !userProfile?.isAdmin && !selectedItem?.installation.tags?.includes("escalated to manager")) || (userProfile?.role === "manager" && !userProfile?.isAdmin)) && !isEditMode && (
                 <Button
                   variant="outline"
                   size="sm"
@@ -2142,11 +2274,19 @@ export default function Verification() {
                 </Button>
               )}
             </div>
-            {selectedItem?.installation.tags?.includes("edited by verifier") && (
-              <Badge variant="secondary" className="mt-2 w-fit">
-                Edited by Verifier
-              </Badge>
-            )}
+            <div className="flex gap-2 flex-wrap mt-2">
+              {selectedItem?.installation.tags?.includes("edited by verifier") && (
+                <Badge variant="secondary" className="w-fit">
+                  Edited by Verifier
+                </Badge>
+              )}
+              {selectedItem?.installation.tags?.includes("escalated to manager") && (
+                <Badge variant="outline" className="border-orange-500 text-orange-600 w-fit">
+                  <AlertTriangle className="h-3 w-3 mr-1" />
+                  Escalated to Manager
+                </Badge>
+              )}
+            </div>
           </DialogHeader>
           {selectedItem && (
             <div className="space-y-6">
@@ -2528,8 +2668,67 @@ export default function Verification() {
                 >
                   {userProfile?.role === "manager" ? "Close" : "Cancel"}
                 </Button>
-                {(userProfile?.isAdmin || userProfile?.role === "verifier") && (
+                {/* Verifiers can only approve or escalate - but NOT if already escalated */}
+                {userProfile?.role === "verifier" && !userProfile?.isAdmin && !selectedItem?.installation.tags?.includes("escalated to manager") && (
                   <>
+                    <Button
+                      variant="outline"
+                      onClick={() => setEscalateDialogOpen(true)}
+                      disabled={processing}
+                      className="border-orange-500 text-orange-600 hover:bg-orange-50"
+                    >
+                      <AlertTriangle className="h-4 w-4 mr-2" />
+                      Escalate to Manager
+                    </Button>
+                    <Button
+                      onClick={handleApprove}
+                      disabled={processing}
+                      className="bg-green-600 hover:bg-green-700"
+                    >
+                      {processing ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="h-4 w-4 mr-2" />
+                      )}
+                      Approve Installation
+                    </Button>
+                  </>
+                )}
+                {/* Show message if verifier tries to access escalated installation */}
+                {userProfile?.role === "verifier" && !userProfile?.isAdmin && selectedItem?.installation.tags?.includes("escalated to manager") && (
+                  <div className="text-sm text-muted-foreground text-center py-2">
+                    This installation has been escalated to a manager and can no longer be modified by verifiers.
+                  </div>
+                )}
+                {/* Managers can only edit and approve escalated installations (cannot flag) */}
+                {userProfile?.role === "manager" && !userProfile?.isAdmin && (
+                  <Button
+                    onClick={handleApprove}
+                    disabled={processing}
+                    className="bg-green-600 hover:bg-green-700"
+                  >
+                    {processing ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="h-4 w-4 mr-2" />
+                    )}
+                    Approve Installation
+                  </Button>
+                )}
+                {/* Admins can approve, flag, or escalate */}
+                {userProfile?.isAdmin && (
+                  <>
+                    {selectedItem?.installation.status === "flagged" && (
+                      <Button
+                        variant="outline"
+                        onClick={() => setEscalateDialogOpen(true)}
+                        disabled={processing}
+                        className="border-orange-500 text-orange-600 hover:bg-orange-50"
+                      >
+                        <AlertTriangle className="h-4 w-4 mr-2" />
+                        Escalate to Manager
+                      </Button>
+                    )}
                     <Button
                       variant="destructive"
                       onClick={handleReject}
@@ -2615,6 +2814,20 @@ export default function Verification() {
                 Original values will be preserved in version history. This action can be tracked but not automatically undone.
               </AlertDescription>
             </Alert>
+            {/* Verify after edit option - show for admins and managers if installation is flagged or escalated */}
+            {(selectedItem?.installation.status === "flagged" || selectedItem?.installation.tags?.includes("escalated to manager")) && (userProfile?.isAdmin || (userProfile?.role === "manager" && !userProfile?.isAdmin)) && (
+              <div className="flex items-center space-x-2 p-4 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+                <Checkbox
+                  id="verify-after-edit"
+                  checked={verifyAfterEdit}
+                  onCheckedChange={(checked) => setVerifyAfterEdit(checked === true)}
+                  disabled={processing || uploadingImage}
+                />
+                <Label htmlFor="verify-after-edit" className="text-sm font-medium cursor-pointer">
+                  Verify installation after saving (if edit fixes the issue)
+                </Label>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button
@@ -2622,6 +2835,7 @@ export default function Verification() {
               onClick={() => {
                 setEditConfirmDialogOpen(false);
                 setPendingChanges([]);
+                setVerifyAfterEdit(false);
               }}
               disabled={processing || uploadingImage}
             >
@@ -2630,7 +2844,7 @@ export default function Verification() {
             <Button
               onClick={handleEditConfirmed}
               disabled={processing || uploadingImage}
-              className="bg-blue-600 hover:bg-blue-700"
+              className={verifyAfterEdit ? "bg-green-600 hover:bg-green-700" : "bg-blue-600 hover:bg-blue-700"}
             >
               {(processing || uploadingImage) ? (
                 <>
@@ -2640,7 +2854,64 @@ export default function Verification() {
               ) : (
                 <>
                   <Save className="h-4 w-4 mr-2" />
-                  Confirm Changes
+                  {verifyAfterEdit ? "Save & Verify" : "Confirm Changes"}
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Escalate to Manager Dialog */}
+      <Dialog open={escalateDialogOpen} onOpenChange={setEscalateDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-orange-600">
+              <AlertTriangle className="h-5 w-5" />
+              Escalate to Manager
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              This installation will be escalated to a manager for review. Please provide a reason for escalation.
+            </p>
+            <div>
+              <Label htmlFor="escalate-reason">Reason for Escalation</Label>
+              <Textarea
+                id="escalate-reason"
+                value={escalateReason}
+                onChange={(e) => setEscalateReason(e.target.value)}
+                placeholder="Enter reason for escalation..."
+                rows={3}
+                className="mt-2"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEscalateDialogOpen(false);
+                setEscalateReason("");
+              }}
+              disabled={processing}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleEscalate}
+              disabled={processing || !escalateReason.trim()}
+              className="bg-orange-600 hover:bg-orange-700"
+            >
+              {processing ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Escalating...
+                </>
+              ) : (
+                <>
+                  <AlertTriangle className="h-4 w-4 mr-2" />
+                  Escalate to Manager
                 </>
               )}
             </Button>
