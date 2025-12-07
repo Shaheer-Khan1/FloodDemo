@@ -11,6 +11,8 @@ import { db } from "@/lib/firebase";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { translateTeamNameToArabic } from "@/lib/amanah-translations";
 import type { Installation, Team } from "@/lib/types";
@@ -26,6 +28,14 @@ export default function Dashboard() {
   const [minSensorReading, setMinSensorReading] = useState("");
   const [maxSensorReading, setMaxSensorReading] = useState("");
   const [loadingSensorRange, setLoadingSensorRange] = useState(false);
+
+  // Variance filter state
+  const [varianceFilterDialogOpen, setVarianceFilterDialogOpen] = useState(false);
+  const [selectedTeamId, setSelectedTeamId] = useState<string>("");
+  const [varianceThreshold, setVarianceThreshold] = useState<string>("");
+  const [deviceIdsInput, setDeviceIdsInput] = useState<string>("");
+  const [loadingVarianceFilter, setLoadingVarianceFilter] = useState(false);
+  const [teams, setTeams] = useState<Team[]>([]);
 
   const handleDeviceLocationCsv = async () => {
     try {
@@ -368,6 +378,264 @@ export default function Dashboard() {
     }
   };
 
+  const handleVarianceFilterExport = async () => {
+    if (!selectedTeamId) {
+      toast({
+        variant: "destructive",
+        title: "Validation Error",
+        description: "Please select a team.",
+      });
+      return;
+    }
+
+    if (!varianceThreshold || isNaN(parseFloat(varianceThreshold))) {
+      toast({
+        variant: "destructive",
+        title: "Validation Error",
+        description: "Please enter a valid variance threshold.",
+      });
+      return;
+    }
+
+    const threshold = parseFloat(varianceThreshold);
+    if (threshold < 0) {
+      toast({
+        variant: "destructive",
+        title: "Validation Error",
+        description: "Variance threshold must be a positive number.",
+      });
+      return;
+    }
+
+    // Parse device IDs from input (split by newline, comma, or space)
+    const deviceIdsList = deviceIdsInput
+      .split(/[\n,\s]+/)
+      .map(id => id.trim().toUpperCase())
+      .filter(id => id.length > 0);
+
+    if (deviceIdsList.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "Validation Error",
+        description: "Please paste at least one device ID.",
+      });
+      return;
+    }
+
+    setLoadingVarianceFilter(true);
+    try {
+      // Fetch all required data
+      const [installationsSnap, teamsSnap, locationsSnap] = await Promise.all([
+        getDocs(collection(db, "installations")),
+        getDocs(collection(db, "teams")),
+        getDocs(collection(db, "locations")),
+      ]);
+
+      // Create maps for quick lookup
+      const teamsMap = new Map<string, Team>();
+      teamsSnap.forEach((doc) => {
+        teamsMap.set(doc.id, { id: doc.id, ...doc.data() } as Team);
+      });
+
+      const locationsMap = new Map<
+        string,
+        { latitude: number; longitude: number; municipalityName?: string }
+      >();
+      locationsSnap.forEach((d) => {
+        const data: any = d.data();
+        const rawId: string = data.locationId || d.id;
+        const lat =
+          typeof data.latitude === "number"
+            ? data.latitude
+            : data.latitude
+            ? parseFloat(String(data.latitude))
+            : null;
+        const lon =
+          typeof data.longitude === "number"
+            ? data.longitude
+            : data.longitude
+            ? parseFloat(String(data.longitude))
+            : null;
+        if (lat == null || lon == null || isNaN(lat) || isNaN(lon)) return;
+        const idKey = String(rawId).trim();
+        locationsMap.set(idKey, {
+          latitude: lat,
+          longitude: lon,
+          municipalityName: data.municipalityName,
+        });
+        // Also add numeric key variant if applicable
+        if (/^\d+$/.test(idKey)) {
+          const numKey = String(Number(idKey)).trim();
+          if (numKey !== idKey) {
+            locationsMap.set(numKey, {
+              latitude: lat,
+              longitude: lon,
+              municipalityName: data.municipalityName,
+            });
+          }
+        }
+      });
+
+      // Filter installations by team, device IDs, and variance
+      const filteredInstallations: Array<{
+        installation: Installation;
+        variance: number;
+        sensorHeight: number;
+        serverHeight: number | null;
+      }> = [];
+
+      installationsSnap.forEach((doc) => {
+        const data = doc.data() as Installation;
+        
+        // Filter by team
+        if (data.teamId !== selectedTeamId) return;
+        
+        // Filter by device IDs
+        const deviceIdUpper = (data.deviceId || "").toUpperCase().trim();
+        if (!deviceIdsList.includes(deviceIdUpper)) return;
+        
+        // Check if we have both sensor reading and server data
+        const sensorHeight = data.sensorReading;
+        const serverHeight = data.latestDisCm;
+        
+        if (sensorHeight == null || sensorHeight <= 0) return;
+        if (serverHeight == null || serverHeight <= 0) return;
+        
+        // Calculate variance percentage
+        const variance = (Math.abs(serverHeight - sensorHeight) / sensorHeight) * 100;
+        
+        // Filter by variance threshold
+        if (variance <= threshold) return;
+        
+        filteredInstallations.push({
+          installation: {
+            id: doc.id,
+            ...data,
+            createdAt: data.createdAt?.toDate?.() || data.createdAt,
+            updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+            verifiedAt: data.verifiedAt?.toDate?.() || data.verifiedAt,
+          },
+          variance,
+          sensorHeight,
+          serverHeight,
+        });
+      });
+
+      if (filteredInstallations.length === 0) {
+        toast({
+          title: "No Data Found",
+          description: `No devices found matching the criteria (team, variance > ${threshold}%, and device IDs).`,
+        });
+        setLoadingVarianceFilter(false);
+        return;
+      }
+
+      // Generate CSV rows
+      const rows: string[][] = [];
+      filteredInstallations.forEach((item, index) => {
+        const inst = item.installation;
+        const locationId = inst.locationId ? String(inst.locationId).trim() : "";
+        const isLocation9999 = locationId === "9999";
+
+        // Get coordinates
+        let latitude: number | null = null;
+        let longitude: number | null = null;
+        if (isLocation9999) {
+          // For location 9999, use user-entered coordinates
+          latitude = inst.latitude ?? null;
+          longitude = inst.longitude ?? null;
+        } else {
+          // For other locations, use coordinates from locations collection
+          const location = locationsMap.get(locationId);
+          latitude = location?.latitude ?? null;
+          longitude = location?.longitude ?? null;
+        }
+
+        const coordinates =
+          latitude != null && longitude != null
+            ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
+            : "-";
+
+        // Get amanah name
+        const team = inst.teamId ? teamsMap.get(inst.teamId) : undefined;
+        const teamName = team?.name || "";
+        const amanahName = translateTeamNameToArabic(teamName) || teamName || "-";
+
+        // Get municipality name
+        const location = locationsMap.get(locationId);
+        const municipalityName = location?.municipalityName || "-";
+
+        rows.push([
+          (index + 1).toString(), // Serial No
+          locationId || "-", // Location ID
+          coordinates, // Coordinates
+          inst.deviceId, // Device ID
+          amanahName, // Amanah
+          municipalityName, // Municipality
+          item.sensorHeight.toString(), // Sensor Height
+          item.serverHeight?.toString() || "-", // Server Height
+          item.variance.toFixed(2) + "%", // Variance
+        ]);
+      });
+
+      // Create CSV
+      const headers = [
+        "Serial No",
+        "Location ID",
+        "Coordinates",
+        "Device ID",
+        "Amanah",
+        "Municipality",
+        "Sensor Height",
+        "Server Height",
+        "Variance",
+      ];
+      const csvRows = [headers, ...rows];
+      const csvContent = csvRows
+        .map((row) =>
+          row
+            .map((val) => `"${(val ?? "").replace(/"/g, '""')}"`)
+            .join(",")
+        )
+        .join("\r\n");
+
+      const blob = new Blob(["\ufeff", csvContent], {
+        type: "text/csv;charset=utf-8;",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const dateStr = new Date().toISOString().slice(0, 10);
+      link.setAttribute(
+        "download",
+        `variance-filter-team-${selectedTeamId}-threshold-${threshold}-${dateStr}.csv`
+      );
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Export Successful",
+        description: `Exported ${filteredInstallations.length} devices to CSV.`,
+      });
+
+      setVarianceFilterDialogOpen(false);
+      setSelectedTeamId("");
+      setVarianceThreshold("");
+      setDeviceIdsInput("");
+    } catch (e) {
+      console.error("Failed to export variance filter CSV:", e);
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: e instanceof Error ? e.message : "Failed to export data. Please try again.",
+      });
+    } finally {
+      setLoadingVarianceFilter(false);
+    }
+  };
+
   // Redirect installers to their installation page
   useEffect(() => {
     if (userProfile?.role === "installer") {
@@ -390,6 +658,24 @@ export default function Dashboard() {
 
     return () => unsubscribe();
   }, [userProfile?.uid]);
+
+  // Fetch all teams for admin (for variance filter)
+  useEffect(() => {
+    if (!userProfile?.isAdmin) return;
+
+    const unsubscribe = onSnapshot(collection(db, "teams"), (snapshot) => {
+      const teamsData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        createdAt: doc.data().createdAt?.toDate(),
+        updatedAt: doc.data().updatedAt?.toDate(),
+      })) as Team[];
+      teamsData.sort((a, b) => a.name.localeCompare(b.name));
+      setTeams(teamsData);
+    });
+
+    return () => unsubscribe();
+  }, [userProfile?.isAdmin]);
 
   if (!userProfile) {
     return (
@@ -600,6 +886,19 @@ export default function Dashboard() {
                   <div className="text-sm text-muted-foreground">Manage users and teams</div>
                 </div>
               </Button>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setVarianceFilterDialogOpen(true)}
+              >
+                <div className="h-12 w-12 rounded-xl bg-red-100 dark:bg-red-950 flex items-center justify-center mr-4">
+                  <Gauge className="h-6 w-6 text-red-600 dark:text-red-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Filter by Variance & Device IDs</div>
+                  <div className="text-sm text-muted-foreground">Export devices by team, variance threshold, and device IDs</div>
+                </div>
+              </Button>
             </>
           )}
 
@@ -773,6 +1072,100 @@ export default function Dashboard() {
               disabled={loadingSensorRange}
             >
               {loadingSensorRange ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Exporting...
+                </>
+              ) : (
+                <>
+                  <FileDown className="h-4 w-4 mr-2" />
+                  Export CSV
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Variance Filter Dialog */}
+      <Dialog open={varianceFilterDialogOpen} onOpenChange={setVarianceFilterDialogOpen}>
+        <DialogContent className="sm:max-w-[600px]">
+          <DialogHeader>
+            <DialogTitle>Filter by Variance & Device IDs</DialogTitle>
+            <DialogDescription>
+              Select a team, enter a variance threshold, and paste device IDs to export matching devices.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="team-select">Team</Label>
+              <Select
+                value={selectedTeamId}
+                onValueChange={setSelectedTeamId}
+                disabled={loadingVarianceFilter}
+              >
+                <SelectTrigger id="team-select">
+                  <SelectValue placeholder="Select a team" />
+                </SelectTrigger>
+                <SelectContent>
+                  {teams.map((team) => (
+                    <SelectItem key={team.id} value={team.id}>
+                      {team.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="variance-threshold">Variance Threshold (%)</Label>
+              <Input
+                id="variance-threshold"
+                type="number"
+                placeholder="e.g., 10"
+                value={varianceThreshold}
+                onChange={(e) => setVarianceThreshold(e.target.value)}
+                disabled={loadingVarianceFilter}
+                min="0"
+                step="0.1"
+              />
+              <p className="text-xs text-muted-foreground">
+                Only devices with variance above this threshold will be exported
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="device-ids">Device IDs</Label>
+              <Textarea
+                id="device-ids"
+                placeholder="Paste device IDs here (one per line, or separated by commas)"
+                value={deviceIdsInput}
+                onChange={(e) => setDeviceIdsInput(e.target.value)}
+                disabled={loadingVarianceFilter}
+                rows={6}
+                className="font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                Paste device IDs separated by newlines, commas, or spaces
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setVarianceFilterDialogOpen(false);
+                setSelectedTeamId("");
+                setVarianceThreshold("");
+                setDeviceIdsInput("");
+              }}
+              disabled={loadingVarianceFilter}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleVarianceFilterExport}
+              disabled={loadingVarianceFilter}
+            >
+              {loadingVarianceFilter ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   Exporting...

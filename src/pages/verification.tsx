@@ -91,6 +91,7 @@ export default function Verification() {
   const [newImageFile, setNewImageFile] = useState<File | null>(null);
   const [newImagePreview, setNewImagePreview] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [deletedImageUrls, setDeletedImageUrls] = useState<string[]>([]);
 
   // Delete states
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -824,6 +825,14 @@ export default function Verification() {
       });
     }
 
+    if (deletedImageUrls.length > 0) {
+      changes.push({
+        field: "Images",
+        oldValue: `${originalInstallation.imageUrls?.length || 0} images`,
+        newValue: `${(originalInstallation.imageUrls?.length || 0) - deletedImageUrls.length} images (${deletedImageUrls.length} deleted)`
+      });
+    }
+
     if (changes.length === 0) {
         toast({
           title: "No Changes",
@@ -920,6 +929,10 @@ export default function Verification() {
         updateData.longitude = longitude;
       }
 
+      // Handle image deletions and additions
+      const currentImageUrls = originalInstallation.imageUrls || [];
+      let updatedImageUrls = currentImageUrls.filter(url => !deletedImageUrls.includes(url));
+      
       // Upload new image if one was selected
       if (newImageFile) {
         setUploadingImage(true);
@@ -930,9 +943,8 @@ export default function Verification() {
           await uploadBytes(imageRef, newImageFile);
           const imageUrl = await getDownloadURL(imageRef);
           
-          // Add new image URL to existing imageUrls array
-          const currentImageUrls = originalInstallation.imageUrls || [];
-          updateData.imageUrls = [...currentImageUrls, imageUrl];
+          // Add new image URL to filtered array
+          updatedImageUrls = [...updatedImageUrls, imageUrl];
         } catch (error) {
           toast({
             variant: "destructive",
@@ -945,6 +957,11 @@ export default function Verification() {
         } finally {
           setUploadingImage(false);
         }
+      }
+      
+      // Update imageUrls if there were any changes
+      if (deletedImageUrls.length > 0 || newImageFile) {
+        updateData.imageUrls = updatedImageUrls;
       }
 
       // Update installation with edited values, versioned originals, and tag
@@ -994,6 +1011,7 @@ export default function Verification() {
       setVerifyAfterEdit(false);
       setNewImageFile(null);
       setNewImagePreview(null);
+      setDeletedImageUrls([]);
     } catch (error) {
       toast({
         variant: "destructive",
@@ -2256,6 +2274,7 @@ export default function Verification() {
           setRejectReason("");
           setNewImageFile(null);
           setNewImagePreview(null);
+          setDeletedImageUrls([]);
         }
       }}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
@@ -2552,15 +2571,48 @@ export default function Verification() {
                     <p className="text-sm font-medium">Installation Photos ({selectedItem.installation.imageUrls?.length || 0})</p>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
-                    {selectedItem.installation.imageUrls?.map((url, index) => (
-                      <img
-                        key={index}
-                        src={url}
-                        alt={`Installation photo ${index + 1}`}
-                        className="w-full h-48 object-cover rounded-lg border cursor-zoom-in"
-                        onClick={() => setImagePreviewUrl(url)}
-                      />
-                    ))}
+                    {selectedItem.installation.imageUrls?.map((url, index) => {
+                      const isDeleted = deletedImageUrls.includes(url);
+                      return (
+                        <div key={index} className="relative">
+                          <img
+                            src={url}
+                            alt={`Installation photo ${index + 1}`}
+                            className={`w-full h-48 object-cover rounded-lg border ${
+                              isEditMode ? "cursor-default" : "cursor-zoom-in"
+                            } ${isDeleted ? "opacity-50" : ""}`}
+                            onClick={() => !isEditMode && setImagePreviewUrl(url)}
+                          />
+                          {isEditMode && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="destructive"
+                              className="absolute top-2 right-2 h-8 w-8 p-0"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (isDeleted) {
+                                  setDeletedImageUrls(prev => prev.filter(u => u !== url));
+                                } else {
+                                  setDeletedImageUrls(prev => [...prev, url]);
+                                }
+                              }}
+                            >
+                              {isDeleted ? (
+                                <X className="h-4 w-4" />
+                              ) : (
+                                <Trash2 className="h-4 w-4" />
+                              )}
+                            </Button>
+                          )}
+                          {isDeleted && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-lg">
+                              <span className="text-white text-sm font-medium">Deleted</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                     {isEditMode && (
                       <div className="w-full h-48 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-lg hover:border-primary transition-colors cursor-pointer">
                         <input
@@ -2640,6 +2692,7 @@ export default function Verification() {
                       setEditedLongitude(selectedItem.installation.longitude?.toString() || "");
                       setNewImageFile(null);
                       setNewImagePreview(null);
+                      setDeletedImageUrls([]);
                     }
                   }}
                   disabled={processing}
