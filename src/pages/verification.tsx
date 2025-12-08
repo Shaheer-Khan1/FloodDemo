@@ -1479,9 +1479,10 @@ export default function Verification() {
     
     setRefreshingAll(true);
     
-    // Filter installations: only refresh if server data is empty or not from today
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // Filter installations: only refresh if server data is missing or older than 5 days
+    const cutoff = new Date();
+    cutoff.setHours(0, 0, 0, 0);
+    cutoff.setDate(cutoff.getDate() - 5);
     
     const installationsToRefresh = allInstallations.filter((installation) => {
       // If no server data, include it
@@ -1489,21 +1490,25 @@ export default function Verification() {
         return true;
       }
       
-      // If we have serverRefreshedAt, check if it's from today
+      // If we have serverRefreshedAt, check if it's older than cutoff
       if (installation.serverRefreshedAt) {
         const refreshedDate = new Date(installation.serverRefreshedAt);
         refreshedDate.setHours(0, 0, 0, 0);
-        // Only refresh if not from today
-        return refreshedDate.getTime() !== today.getTime();
+        // Only refresh if older than cutoff
+        if (refreshedDate.getTime() < cutoff.getTime()) {
+          return true;
+        }
       }
       
-      // If we have latestDisTimestamp, check if it's from today
+      // If we have latestDisTimestamp, check if it's older than cutoff
       if (installation.latestDisTimestamp) {
         try {
           const timestampDate = new Date(installation.latestDisTimestamp);
           timestampDate.setHours(0, 0, 0, 0);
-          // Only refresh if not from today
-          return timestampDate.getTime() !== today.getTime();
+          // Only refresh if older than cutoff
+          if (timestampDate.getTime() < cutoff.getTime()) {
+            return true;
+          }
         } catch {
           // If we can't parse the timestamp, refresh it
           return true;
@@ -1530,15 +1535,15 @@ export default function Verification() {
     
     toast({
       title: "Refreshing Server Data",
-      description: `Refreshing ${installationsToRefresh.length} of ${allInstallations.length} installations that need updates.`,
+      description: `Refreshing ${installationsToRefresh.length} of ${allInstallations.length} installations (missing or older than 5 days).`,
     });
 
     let successCount = 0;
     let errorCount = 0;
     let skippedCount = 0;
 
-    // Process in batches of 100 at once
-    const batchSize = 100;
+    // Process in batches of 500 at once
+    const batchSize = 500;
     for (let i = 0; i < installationsToRefresh.length; i += batchSize) {
       const batch = installationsToRefresh.slice(i, i + batchSize);
       
