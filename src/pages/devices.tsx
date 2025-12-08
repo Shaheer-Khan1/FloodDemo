@@ -697,9 +697,6 @@ export default function Devices() {
                   <TableHead className="px-2 py-2 w-[110px]">
                     <div className="truncate">Created At</div>
                   </TableHead>
-                  <TableHead className="px-2 py-2 w-[100px]">
-                    <div className="truncate">Timestamp</div>
-                  </TableHead>
                   <TableHead className="px-2 py-2 w-[90px]">Status</TableHead>
                   <TableHead className="px-2 py-2 w-[100px]">
                     <div className="truncate">Installed By</div>
@@ -718,7 +715,7 @@ export default function Devices() {
               <TableBody>
                 {filteredDevices.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
                       No devices found
                     </TableCell>
                   </TableRow>
@@ -742,8 +739,8 @@ export default function Devices() {
                             const original = device.boxCode || "-";
                             const identifier = device.boxNumber;
                             return (
-                              <div className="max-w-[90px] space-y-0.5">
-                                <div className="truncate" title={original}>
+                              <div className="space-y-0.5">
+                                <div className="break-words" title={original}>
                                   {original}
                                 </div>
                                 {identifier && (
@@ -764,15 +761,6 @@ export default function Devices() {
                           <div className="truncate max-w-[110px]" title={device.createdAt ? format(device.createdAt, "MMM d, yyyy HH:mm") : "-"}>
                             {device.createdAt 
                               ? format(device.createdAt, "MMM d, yyyy HH:mm")
-                              : "-"}
-                          </div>
-                        </TableCell>
-                        <TableCell className="px-2 py-2 text-muted-foreground">
-                          <div className="truncate max-w-[100px]" title={device.timestamp ? (typeof device.timestamp === 'string' ? device.timestamp : format(device.timestamp instanceof Date ? device.timestamp : new Date(device.timestamp), "MMM d, yyyy")) : "-"}>
-                            {device.timestamp 
-                              ? (typeof device.timestamp === 'string' 
-                                  ? device.timestamp.split(' ')[0] 
-                                  : format(device.timestamp instanceof Date ? device.timestamp : new Date(device.timestamp), "MMM d, yyyy"))
                               : "-"}
                           </div>
                         </TableCell>

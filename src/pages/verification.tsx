@@ -42,6 +42,7 @@ import {
   Upload,
   Trash2,
   Package,
+  RefreshCw,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -66,6 +67,7 @@ export default function Verification() {
   const [rejectReason, setRejectReason] = useState("");
   const [processing, setProcessing] = useState(false);
   const [fetchingMap, setFetchingMap] = useState<Record<string, boolean>>({});
+  const [refreshingAll, setRefreshingAll] = useState(false);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   // Set initial filter based on role - managers should only see escalated items
   const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'highVariance' | 'withServerData' | 'noServerData' | 'preVerified' | 'verified' | 'flagged' | 'escalated'>(
@@ -1472,6 +1474,177 @@ export default function Verification() {
     }
   };
 
+  const refreshAllServerData = async () => {
+    if (refreshingAll) return;
+    
+    setRefreshingAll(true);
+    
+    // Filter installations: only refresh if server data is empty or not from today
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const installationsToRefresh = allInstallations.filter((installation) => {
+      // If no server data, include it
+      if (!installation.latestDisCm && !installation.latestDisTimestamp && !installation.serverRefreshedAt) {
+        return true;
+      }
+      
+      // If we have serverRefreshedAt, check if it's from today
+      if (installation.serverRefreshedAt) {
+        const refreshedDate = new Date(installation.serverRefreshedAt);
+        refreshedDate.setHours(0, 0, 0, 0);
+        // Only refresh if not from today
+        return refreshedDate.getTime() !== today.getTime();
+      }
+      
+      // If we have latestDisTimestamp, check if it's from today
+      if (installation.latestDisTimestamp) {
+        try {
+          const timestampDate = new Date(installation.latestDisTimestamp);
+          timestampDate.setHours(0, 0, 0, 0);
+          // Only refresh if not from today
+          return timestampDate.getTime() !== today.getTime();
+        } catch {
+          // If we can't parse the timestamp, refresh it
+          return true;
+        }
+      }
+      
+      // If we have latestDisCm but no timestamp, refresh it to get the timestamp
+      if (installation.latestDisCm && !installation.latestDisTimestamp) {
+        return true;
+      }
+      
+      // Default: don't refresh if we have data but can't determine date
+      return false;
+    });
+    
+    if (installationsToRefresh.length === 0) {
+      toast({
+        title: "No Installations to Refresh",
+        description: "All installations already have today's server data.",
+      });
+      setRefreshingAll(false);
+      return;
+    }
+    
+    toast({
+      title: "Refreshing Server Data",
+      description: `Refreshing ${installationsToRefresh.length} of ${allInstallations.length} installations that need updates.`,
+    });
+
+    let successCount = 0;
+    let errorCount = 0;
+    let skippedCount = 0;
+
+    // Process in batches of 100 at once
+    const batchSize = 100;
+    for (let i = 0; i < installationsToRefresh.length; i += batchSize) {
+      const batch = installationsToRefresh.slice(i, i + batchSize);
+      
+      await Promise.all(
+        batch.map(async (installation) => {
+          if (!installation.deviceId) {
+            skippedCount++;
+            return;
+          }
+
+          try {
+            const apiResponse = await fetch(
+              `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`,
+              {
+                method: 'GET',
+                headers: {
+                  'X-API-KEY': import.meta.env.VITE_API_KEY || ''
+                }
+              }
+            );
+
+            if (apiResponse.status === 404) {
+              await updateDoc(doc(db, "installations", installation.id), {
+                serverRefreshedAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+              skippedCount++;
+              return;
+            }
+
+            if (!apiResponse.ok) {
+              errorCount++;
+              return;
+            }
+
+            const apiData = await apiResponse.json();
+            const latestRecord = apiData?.records?.[0];
+            const latestDistance = latestRecord?.dis_cm ?? null;
+
+            // Consider null or 0 as "no server data yet"
+            const hasServerData = latestDistance !== null && Number(latestDistance) > 0;
+            const hasSensor = !!installation.sensorReading;
+            const variancePct = (hasServerData && hasSensor)
+              ? (Math.abs(latestDistance - installation.sensorReading) / installation.sensorReading) * 100
+              : undefined;
+
+            if (hasServerData) {
+              // Update with server data, but don't change status for verified/system-approved installations
+              const updateData: any = {
+                latestDisCm: latestDistance,
+                latestDisTimestamp: latestRecord?.timestamp ?? null,
+                serverRefreshedAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              };
+
+              // Only update systemPreVerified for pending installations
+              if (installation.status === "pending") {
+                const preVerified = variancePct !== undefined && variancePct < 5;
+                updateData.systemPreVerified = preVerified;
+                updateData.systemPreVerifiedAt = preVerified ? serverTimestamp() : null;
+
+                // Auto-reject pending installations with high variance
+                if (variancePct !== undefined && variancePct > 10) {
+                  updateData.status = "flagged";
+                  updateData.flaggedReason = `Auto-rejected: variance ${variancePct.toFixed(2)}% > 10%`;
+                  updateData.verifiedBy = "System (Auto-rejected)";
+                  updateData.verifiedAt = serverTimestamp();
+                  
+                  await updateDoc(doc(db, "devices", installation.deviceId), {
+                    status: "flagged",
+                    updatedAt: serverTimestamp(),
+                  });
+                }
+              }
+
+              await updateDoc(doc(db, "installations", installation.id), updateData);
+              successCount++;
+            } else {
+              // No valid server data, still mark refresh attempt
+              await updateDoc(doc(db, "installations", installation.id), {
+                serverRefreshedAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+              skippedCount++;
+            }
+          } catch (error) {
+            console.error(`Failed to refresh installation ${installation.id}:`, error);
+            errorCount++;
+          }
+        })
+      );
+
+      // Small delay between batches to avoid overwhelming the API
+      if (i + batchSize < installationsToRefresh.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+
+    toast({
+      title: "Refresh Complete",
+      description: `Success: ${successCount}, Errors: ${errorCount}, Skipped: ${skippedCount}`,
+    });
+
+    setRefreshingAll(false);
+  };
+
   // Auto-refresh every 24h for high variance and no-data items (best-effort while page is open)
   const inFlightAuto = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -1789,6 +1962,24 @@ export default function Verification() {
                   : `Pending Installations (${displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}${displayedItems.length})`}
               </CardTitle>
               <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  onClick={refreshAllServerData}
+                  disabled={refreshingAll || allInstallations.length === 0}
+                >
+                  {refreshingAll ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Refreshing...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="h-4 w-4" />
+                      Refresh All Server Data
+                    </>
+                  )}
+                </Button>
                 <Button
                   variant="outline"
                   className="flex items-center gap-2"

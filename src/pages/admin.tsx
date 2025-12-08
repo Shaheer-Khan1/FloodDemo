@@ -15,7 +15,7 @@ import { Search, Loader2, Shield, MapPin, Smartphone, Ruler, Users, Filter, X, U
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import type { UserProfile, Team, TeamMember, Installation } from "@/lib/types";
+import type { UserProfile, Team, TeamMember, Installation, Device } from "@/lib/types";
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
 
@@ -51,6 +51,15 @@ export default function Admin() {
   const [uploadingMunicipalities, setUploadingMunicipalities] = useState(false);
   const [municipalityProgress, setMunicipalityProgress] = useState(0);
   const [municipalityResult, setMunicipalityResult] = useState<{ success: number; failed: number; errors: string[] } | null>(null);
+  
+  // Box Code Update State
+  const [boxCodeFile, setBoxCodeFile] = useState<File | null>(null);
+  const [uploadingBoxCodes, setUploadingBoxCodes] = useState(false);
+  const [boxCodeProgress, setBoxCodeProgress] = useState(0);
+  const [boxCodeResult, setBoxCodeResult] = useState<{ success: number; failed: number; notFound: number; errors: string[] } | null>(null);
+  
+  // Export Devices by Box State
+  const [exportingDevicesByBox, setExportingDevicesByBox] = useState(false);
   
   // Location ID Bulk Update State
   const [targetTeamId, setTargetTeamId] = useState("ttaMvVwJTIpXIJ5NTmee");
@@ -1026,6 +1035,234 @@ export default function Admin() {
     } finally {
       setUploadingMunicipalities(false);
       setMunicipalityProgress(0);
+    }
+  };
+
+  // Box Code Update Functions
+  const handleBoxCodeFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setBoxCodeFile(file);
+      setBoxCodeResult(null);
+    }
+  };
+
+  const handleBoxCodeUpload = async () => {
+    if (!boxCodeFile || !userProfile?.isAdmin) return;
+
+    setUploadingBoxCodes(true);
+    setBoxCodeProgress(0);
+    setBoxCodeResult(null);
+
+    try {
+      const result = {
+        success: 0,
+        failed: 0,
+        notFound: 0,
+        errors: [] as string[],
+      };
+
+      // Read file
+      const fileData = await boxCodeFile.arrayBuffer();
+      const workbook = XLSX.read(fileData, { type: 'array' });
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 }) as any[][];
+
+      if (jsonData.length < 2) {
+        throw new Error("File must contain at least a header row and one data row");
+      }
+
+      // Find column indices
+      const headerRow = jsonData[0].map((h: any) => String(h || "").trim().toUpperCase());
+      const deviceUidIndex = headerRow.findIndex(h => 
+        h.includes("DEVICE UID") || h === "DEVICE UID" || h === "DEVICEUID"
+      );
+      const boxCodeIndex = headerRow.findIndex(h => 
+        h.includes("ORIGINAL BOX CODE") || h.includes("BOX CODE") || h === "ORIGINALBOXCODE" || h === "BOXCODE"
+      );
+
+      if (deviceUidIndex === -1) {
+        throw new Error("Could not find 'DEVICE UID' column in the file");
+      }
+      if (boxCodeIndex === -1) {
+        throw new Error("Could not find 'ORIGINAL BOX CODE' column in the file");
+      }
+
+      // Get all devices to create a lookup map
+      const devicesSnapshot = await getDocs(collection(db, "devices"));
+      const devicesMap = new Map<string, any>();
+      devicesSnapshot.forEach((doc) => {
+        const data = doc.data();
+        const deviceUid = (data.id || doc.id).toUpperCase().trim();
+        devicesMap.set(deviceUid, { id: doc.id, ...data });
+      });
+
+      // Process data rows
+      const dataRows = jsonData.slice(1);
+      const totalRows = dataRows.length;
+
+      for (let i = 0; i < dataRows.length; i++) {
+        const row = dataRows[i];
+        const deviceUid = String(row[deviceUidIndex] || "").trim().toUpperCase();
+        const boxCode = String(row[boxCodeIndex] || "").trim();
+
+        if (!deviceUid) {
+          result.failed++;
+          result.errors.push(`Row ${i + 2}: Missing DEVICE UID`);
+          continue;
+        }
+
+        if (!boxCode) {
+          result.failed++;
+          result.errors.push(`Row ${i + 2}: Missing ORIGINAL BOX CODE for device ${deviceUid}`);
+          continue;
+        }
+
+        const device = devicesMap.get(deviceUid);
+        if (!device) {
+          result.notFound++;
+          result.errors.push(`Row ${i + 2}: Device ${deviceUid} not found in database`);
+          continue;
+        }
+
+        try {
+          await updateDoc(doc(db, "devices", device.id), {
+            boxCode: boxCode,
+            updatedAt: serverTimestamp(),
+          });
+          result.success++;
+        } catch (error: any) {
+          result.failed++;
+          result.errors.push(`Row ${i + 2}: Failed to update device ${deviceUid} - ${error.message}`);
+        }
+
+        // Update progress
+        setBoxCodeProgress(Math.round(((i + 1) / totalRows) * 100));
+      }
+
+      setBoxCodeResult(result);
+      toast({
+        title: "Box Code Update Complete",
+        description: `Updated ${result.success} devices. ${result.notFound} not found. ${result.failed} failed.`,
+        variant: result.failed > 0 || result.notFound > 0 ? "destructive" : "default",
+      });
+
+      if (result.success > 0) {
+        setBoxCodeFile(null);
+      }
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Upload Failed",
+        description: error.message || "An error occurred during upload.",
+      });
+    } finally {
+      setUploadingBoxCodes(false);
+      setBoxCodeProgress(0);
+    }
+  };
+
+  const exportDevicesByBox = async () => {
+    if (!userProfile?.isAdmin) return;
+
+    setExportingDevicesByBox(true);
+    try {
+      // Get all devices
+      const devicesSnapshot = await getDocs(collection(db, "devices"));
+      const devices: Device[] = [];
+      
+      devicesSnapshot.forEach((doc) => {
+        const data = doc.data();
+        const device: Device = {
+          id: doc.id,
+          ...data,
+          createdAt: data.createdAt?.toDate(),
+          updatedAt: data.updatedAt?.toDate(),
+        } as Device;
+        devices.push(device);
+      });
+
+      // Filter devices created on December 7, 2025
+      const targetDate = new Date(2025, 11, 7); // Month is 0-indexed, so 11 = December
+      targetDate.setHours(0, 0, 0, 0);
+      const nextDay = new Date(targetDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+
+      const filteredDevices = devices.filter((device) => {
+        if (!device.createdAt) return false;
+        const deviceDate = new Date(device.createdAt);
+        deviceDate.setHours(0, 0, 0, 0);
+        return deviceDate.getTime() >= targetDate.getTime() && deviceDate.getTime() < nextDay.getTime();
+      });
+
+      if (filteredDevices.length === 0) {
+        toast({
+          title: "No Devices Found",
+          description: "No devices were created on December 7, 2025.",
+        });
+        setExportingDevicesByBox(false);
+        return;
+      }
+
+      // Group devices by box code
+      const devicesByBox = new Map<string, Device[]>();
+      
+      filteredDevices.forEach((device) => {
+        const boxCode = device.boxCode || "Unknown";
+        if (!devicesByBox.has(boxCode)) {
+          devicesByBox.set(boxCode, []);
+        }
+        devicesByBox.get(boxCode)!.push(device);
+      });
+
+      // Generate and download CSV for each box
+      let exportedCount = 0;
+      for (const [boxCode, boxDevices] of devicesByBox.entries()) {
+        // Create CSV with device IDs only
+        const deviceIds = boxDevices.map(d => d.id);
+        const csvContent = [
+          "Device ID",
+          ...deviceIds
+        ].join("\r\n");
+
+        // Sanitize box code for filename (remove invalid characters)
+        const sanitizedBoxCode = boxCode
+          .replace(/[<>:"/\\|?*]/g, "_")
+          .replace(/\s+/g, "_")
+          .substring(0, 100); // Limit filename length
+
+        const blob = new Blob(["\ufeff", csvContent], {
+          type: "text/csv;charset=utf-8;",
+        });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.setAttribute("download", `${sanitizedBoxCode}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        
+        exportedCount++;
+        
+        // Small delay between downloads to avoid browser blocking
+        if (exportedCount < devicesByBox.size) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+      }
+
+      toast({
+        title: "Export Complete",
+        description: `Exported ${exportedCount} CSV files (one for each box) with ${filteredDevices.length} total devices.`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error.message || "An error occurred during export.",
+      });
+    } finally {
+      setExportingDevicesByBox(false);
     }
   };
 
@@ -2450,6 +2687,130 @@ export default function Admin() {
                 </div>
               )}
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Box Code Update Upload */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle>Update Device Box Codes</CardTitle>
+          <CardDescription>
+            Upload a CSV or Excel file with DEVICE UID and ORIGINAL BOX CODE columns to update box codes for existing devices.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-col sm:flex-row gap-4 items-start">
+            <div className="flex-1 space-y-2">
+              <Input
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                onChange={handleBoxCodeFileChange}
+                disabled={uploadingBoxCodes}
+                className="cursor-pointer"
+              />
+              <p className="text-xs text-muted-foreground">
+                Accepted formats: CSV, Excel (.xlsx, .xls). Required columns: DEVICE UID, ORIGINAL BOX CODE
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                onClick={handleBoxCodeUpload}
+                disabled={!boxCodeFile || uploadingBoxCodes}
+              >
+                {uploadingBoxCodes ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Updating...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-4 w-4 mr-2" />
+                    Update Box Codes
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+
+          {uploadingBoxCodes && (
+            <div className="space-y-2">
+              <Progress value={boxCodeProgress} />
+              <p className="text-sm text-muted-foreground text-center">
+                {boxCodeProgress}% complete
+              </p>
+            </div>
+          )}
+
+          {boxCodeResult && (
+            <div className="space-y-2 p-4 rounded-lg border">
+              <div className="flex items-center gap-4 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-green-600" />
+                  <span className="font-semibold text-green-600">{boxCodeResult.success} updated</span>
+                </div>
+                {boxCodeResult.notFound > 0 && (
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="h-5 w-5 text-orange-600" />
+                    <span className="font-semibold text-orange-600">{boxCodeResult.notFound} not found</span>
+                  </div>
+                )}
+                {boxCodeResult.failed > 0 && (
+                  <div className="flex items-center gap-2">
+                    <XCircle className="h-5 w-5 text-red-600" />
+                    <span className="font-semibold text-red-600">{boxCodeResult.failed} failed</span>
+                  </div>
+                )}
+              </div>
+              {boxCodeResult.errors.length > 0 && (
+                <div className="mt-2 max-h-32 overflow-y-auto">
+                  <p className="text-xs font-semibold text-muted-foreground mb-1">Errors:</p>
+                  <ul className="text-xs text-muted-foreground space-y-1">
+                    {boxCodeResult.errors.slice(0, 10).map((error, idx) => (
+                      <li key={idx}>{error}</li>
+                    ))}
+                    {boxCodeResult.errors.length > 10 && (
+                      <li className="text-muted-foreground italic">
+                        ... and {boxCodeResult.errors.length - 10} more errors
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Export Devices by Box */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle>Export Devices by Box (Dec 7, 2025)</CardTitle>
+          <CardDescription>
+            Export devices created on December 7, 2025, grouped by box code. Each box will generate a separate CSV file containing only device IDs.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Button
+            onClick={exportDevicesByBox}
+            disabled={exportingDevicesByBox}
+          >
+            {exportingDevicesByBox ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Exporting...
+              </>
+            ) : (
+              <>
+                <FileDown className="h-4 w-4 mr-2" />
+                Export Devices by Box
+              </>
+            )}
+          </Button>
+          {exportingDevicesByBox && (
+            <p className="text-sm text-muted-foreground">
+              Generating CSV files for each box. Multiple files will download automatically.
+            </p>
           )}
         </CardContent>
       </Card>
