@@ -68,6 +68,9 @@ export default function Verification() {
   const [processing, setProcessing] = useState(false);
   const [fetchingMap, setFetchingMap] = useState<Record<string, boolean>>({});
   const [refreshingAll, setRefreshingAll] = useState(false);
+  const [refreshDialogOpen, setRefreshDialogOpen] = useState(false);
+  const [refreshTargets, setRefreshTargets] = useState<Installation[]>([]);
+  const [refreshStatuses, setRefreshStatuses] = useState<Record<string, "pending" | "success" | "error" | "skipped">>({});
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   // Set initial filter based on role - managers should only see escalated items
   const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'highVariance' | 'withServerData' | 'noServerData' | 'preVerified' | 'verified' | 'flagged' | 'escalated'>(
@@ -1227,9 +1230,16 @@ export default function Verification() {
         }
       }
 
-      // Only use coordinates from Firestore locations; do not fall back to installer-provided ones
-      const latitude = location?.latitude ?? null;
-      const longitude = location?.longitude ?? null;
+      // Coordinates: if locationId is 9999, use installer-entered coords; otherwise use Firestore location coords
+      let latitude: number | null = null;
+      let longitude: number | null = null;
+      if (rawLocationId === "9999") {
+        latitude = installation?.latitude ?? null;
+        longitude = installation?.longitude ?? null;
+      } else {
+        latitude = location?.latitude ?? null;
+        longitude = location?.longitude ?? null;
+      }
       const coordinates =
         latitude != null && longitude != null
           ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
@@ -1538,109 +1548,114 @@ export default function Verification() {
       description: `Refreshing ${installationsToRefresh.length} of ${allInstallations.length} installations (missing or older than 5 days).`,
     });
 
+    // Open dialog and set pending statuses
+    const pendingStatuses: Record<string, "pending" | "success" | "error" | "skipped"> = {};
+    installationsToRefresh.forEach(inst => {
+      pendingStatuses[inst.id] = "pending";
+    });
+    setRefreshTargets(installationsToRefresh);
+    setRefreshStatuses(pendingStatuses);
+    setRefreshDialogOpen(true);
+
     let successCount = 0;
     let errorCount = 0;
     let skippedCount = 0;
 
-    // Process in batches of 500 at once
-    const batchSize = 500;
-    for (let i = 0; i < installationsToRefresh.length; i += batchSize) {
-      const batch = installationsToRefresh.slice(i, i + batchSize);
-      
-      await Promise.all(
-        batch.map(async (installation) => {
-          if (!installation.deviceId) {
-            skippedCount++;
-            return;
-          }
-
-          try {
-            const apiResponse = await fetch(
-              `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`,
-              {
-                method: 'GET',
-                headers: {
-                  'X-API-KEY': import.meta.env.VITE_API_KEY || ''
-                }
-              }
-            );
-
-            if (apiResponse.status === 404) {
-              await updateDoc(doc(db, "installations", installation.id), {
-                serverRefreshedAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              });
-              skippedCount++;
-              return;
-            }
-
-            if (!apiResponse.ok) {
-              errorCount++;
-              return;
-            }
-
-            const apiData = await apiResponse.json();
-            const latestRecord = apiData?.records?.[0];
-            const latestDistance = latestRecord?.dis_cm ?? null;
-
-            // Consider null or 0 as "no server data yet"
-            const hasServerData = latestDistance !== null && Number(latestDistance) > 0;
-            const hasSensor = !!installation.sensorReading;
-            const variancePct = (hasServerData && hasSensor)
-              ? (Math.abs(latestDistance - installation.sensorReading) / installation.sensorReading) * 100
-              : undefined;
-
-            if (hasServerData) {
-              // Update with server data, but don't change status for verified/system-approved installations
-              const updateData: any = {
-                latestDisCm: latestDistance,
-                latestDisTimestamp: latestRecord?.timestamp ?? null,
-                serverRefreshedAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              };
-
-              // Only update systemPreVerified for pending installations
-              if (installation.status === "pending") {
-                const preVerified = variancePct !== undefined && variancePct < 5;
-                updateData.systemPreVerified = preVerified;
-                updateData.systemPreVerifiedAt = preVerified ? serverTimestamp() : null;
-
-                // Auto-reject pending installations with high variance
-                if (variancePct !== undefined && variancePct > 10) {
-                  updateData.status = "flagged";
-                  updateData.flaggedReason = `Auto-rejected: variance ${variancePct.toFixed(2)}% > 10%`;
-                  updateData.verifiedBy = "System (Auto-rejected)";
-                  updateData.verifiedAt = serverTimestamp();
-                  
-                  await updateDoc(doc(db, "devices", installation.deviceId), {
-                    status: "flagged",
-                    updatedAt: serverTimestamp(),
-                  });
-                }
-              }
-
-              await updateDoc(doc(db, "installations", installation.id), updateData);
-              successCount++;
-            } else {
-              // No valid server data, still mark refresh attempt
-              await updateDoc(doc(db, "installations", installation.id), {
-                serverRefreshedAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              });
-              skippedCount++;
-            }
-          } catch (error) {
-            console.error(`Failed to refresh installation ${installation.id}:`, error);
-            errorCount++;
-          }
-        })
-      );
-
-      // Small delay between batches to avoid overwhelming the API
-      if (i + batchSize < installationsToRefresh.length) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+    // Send all requests at once for speed
+    await Promise.all(
+      installationsToRefresh.map(async (installation) => {
+      if (!installation.deviceId) {
+        skippedCount++;
+        setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
+          return;
       }
-    }
+
+      try {
+        const apiResponse = await fetch(
+          `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`,
+          {
+            method: 'GET',
+            headers: {
+              'X-API-KEY': import.meta.env.VITE_API_KEY || ''
+            }
+          }
+        );
+
+        if (apiResponse.status === 404) {
+          await updateDoc(doc(db, "installations", installation.id), {
+            serverRefreshedAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          skippedCount++;
+          setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
+            return;
+        }
+
+        if (!apiResponse.ok) {
+          errorCount++;
+          setRefreshStatuses(prev => ({ ...prev, [installation.id]: "error" }));
+            return;
+        }
+
+        const apiData = await apiResponse.json();
+        const latestRecord = apiData?.records?.[0];
+        const latestDistance = latestRecord?.dis_cm ?? null;
+
+        // Consider null or 0 as "no server data yet"
+        const hasServerData = latestDistance !== null && Number(latestDistance) > 0;
+        const hasSensor = !!installation.sensorReading;
+        const variancePct = (hasServerData && hasSensor)
+          ? (Math.abs(latestDistance - installation.sensorReading) / installation.sensorReading) * 100
+          : undefined;
+
+        if (hasServerData) {
+          // Update with server data, but don't change status for verified/system-approved installations
+          const updateData: any = {
+            latestDisCm: latestDistance,
+            latestDisTimestamp: latestRecord?.timestamp ?? null,
+            serverRefreshedAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          };
+
+          // Only update systemPreVerified for pending installations
+          if (installation.status === "pending") {
+            const preVerified = variancePct !== undefined && variancePct < 5;
+            updateData.systemPreVerified = preVerified;
+            updateData.systemPreVerifiedAt = preVerified ? serverTimestamp() : null;
+
+            // Auto-reject pending installations with high variance
+            if (variancePct !== undefined && variancePct > 10) {
+              updateData.status = "flagged";
+              updateData.flaggedReason = `Auto-rejected: variance ${variancePct.toFixed(2)}% > 10%`;
+              updateData.verifiedBy = "System (Auto-rejected)";
+              updateData.verifiedAt = serverTimestamp();
+              
+              await updateDoc(doc(db, "devices", installation.deviceId), {
+                status: "flagged",
+                updatedAt: serverTimestamp(),
+              });
+            }
+          }
+
+          await updateDoc(doc(db, "installations", installation.id), updateData);
+          successCount++;
+          setRefreshStatuses(prev => ({ ...prev, [installation.id]: "success" }));
+        } else {
+          // No valid server data, still mark refresh attempt
+          await updateDoc(doc(db, "installations", installation.id), {
+            serverRefreshedAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          skippedCount++;
+          setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
+        }
+      } catch (error) {
+        console.error(`Failed to refresh installation ${installation.id}:`, error);
+        errorCount++;
+        setRefreshStatuses(prev => ({ ...prev, [installation.id]: "error" }));
+      }
+      })
+    );
 
     toast({
       title: "Refresh Complete",
@@ -1695,6 +1710,74 @@ export default function Verification() {
 
   return (
     <div className="space-y-8">
+      {/* Refresh Queue Dialog */}
+      <Dialog open={refreshDialogOpen} onOpenChange={setRefreshDialogOpen}>
+        <DialogContent className="sm:max-w-[700px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Database className="h-5 w-5" />
+              Refresh Queue
+            </DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              Showing installations being refreshed (missing data or older than 5 days).
+            </p>
+          </DialogHeader>
+          <div className="max-h-[420px] overflow-y-auto space-y-3">
+            {refreshTargets.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No refreshes in progress.</p>
+            ) : (
+              refreshTargets.map((inst) => {
+                const status = refreshStatuses[inst.id] || "pending";
+                return (
+                  <div
+                    key={inst.id}
+                    className="flex items-center justify-between rounded-md border px-3 py-2"
+                  >
+                    <div className="flex flex-col">
+                      <span className="font-mono text-sm font-semibold">{inst.deviceId || "Unknown Device"}</span>
+                      <span className="text-xs text-muted-foreground">{inst.locationId || "-"}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {status === "pending" && (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                          <span className="text-xs text-blue-600">Fetching…</span>
+                        </>
+                      )}
+                      {status === "success" && (
+                        <>
+                          <CheckCircle2 className="h-4 w-4 text-green-600" />
+                          <span className="text-xs text-green-700">Updated</span>
+                        </>
+                      )}
+                      {status === "skipped" && (
+                        <>
+                          <Minus className="h-4 w-4 text-amber-600" />
+                          <span className="text-xs text-amber-700">Skipped</span>
+                        </>
+                      )}
+                      {status === "error" && (
+                        <>
+                          <XCircle className="h-4 w-4 text-red-600" />
+                          <span className="text-xs text-red-700">Error</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+          <DialogFooter className="flex items-center justify-between">
+            <div className="text-xs text-muted-foreground">
+              {refreshingAll ? "Refreshing in progress…" : "Refresh completed."}
+            </div>
+            <Button variant="outline" onClick={() => setRefreshDialogOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <div>
         <h1 className="text-4xl font-bold text-slate-900 dark:text-white">
           {userProfile?.role === "manager" && !userProfile?.isAdmin ? "Escalated Verifications" : "Verification Queue"}
@@ -1984,6 +2067,15 @@ export default function Verification() {
                       Refresh All Server Data
                     </>
                   )}
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  onClick={() => setRefreshDialogOpen(true)}
+                  disabled={refreshTargets.length === 0}
+                >
+                  <Database className="h-4 w-4" />
+                  View Refresh Queue
                 </Button>
                 <Button
                   variant="outline"

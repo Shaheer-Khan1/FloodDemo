@@ -18,6 +18,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import type { UserProfile, Team, TeamMember, Installation, Device } from "@/lib/types";
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
+import { translateTeamNameToArabic } from "@/lib/amanah-translations";
 
 const parseDeviceIdsList = (input: string) => {
   return Array.from(
@@ -93,6 +94,9 @@ export default function Admin() {
   const [exportMatchingInstallations, setExportMatchingInstallations] = useState<Installation[]>([]);
   const [loadingExportMatches, setLoadingExportMatches] = useState(false);
   const [exportingSelectedInstallations, setExportingSelectedInstallations] = useState(false);
+
+  // Export Variance/Issue Installations State
+  const [exportingVarianceIssues, setExportingVarianceIssues] = useState(false);
 
   // Bulk Location Change State
   const [bulkLocationDeviceIdsInput, setBulkLocationDeviceIdsInput] = useState("");
@@ -1217,9 +1221,11 @@ export default function Admin() {
 
       // Generate and download CSV for each box
       let exportedCount = 0;
-      for (const [boxCode, boxDevices] of devicesByBox.entries()) {
+      const boxEntries = Array.from(devicesByBox.entries());
+      for (let i = 0; i < boxEntries.length; i++) {
+        const [boxCode, boxDevices] = boxEntries[i];
         // Create CSV with device IDs only
-        const deviceIds = boxDevices.map(d => d.id);
+        const deviceIds = boxDevices.map((d: Device) => d.id);
         const csvContent = [
           "Device ID",
           ...deviceIds
@@ -1246,7 +1252,7 @@ export default function Admin() {
         exportedCount++;
         
         // Small delay between downloads to avoid browser blocking
-        if (exportedCount < devicesByBox.size) {
+        if (i < boxEntries.length - 1) {
           await new Promise(resolve => setTimeout(resolve, 200));
         }
       }
@@ -2317,78 +2323,137 @@ export default function Admin() {
       const teamsMap = new Map<string, string>();
       teamsSnapshot.docs.forEach(doc => teamsMap.set(doc.id, doc.data().name));
 
-      // Sort by deviceId and then by createdAt
-      const sortedInstallations = [...exportMatchingInstallations].sort((a, b) => {
-        if (a.deviceId < b.deviceId) return -1;
-        if (a.deviceId > b.deviceId) return 1;
-        return (a.createdAt?.getTime() || 0) - (b.createdAt?.getTime() || 0);
+      // Fetch all locations to resolve GPS coordinates
+      const locationsSnapshot = await getDocs(collection(db, "locations"));
+      const locationMap = new Map<string, { latitude: number; longitude: number }>();
+      locationsSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        if (data.locationId && data.latitude != null && data.longitude != null) {
+          locationMap.set(String(data.locationId), {
+            latitude: data.latitude,
+            longitude: data.longitude,
+          });
+        }
       });
 
+      // Group installations by team
+      const installationsByTeam = new Map<string, Installation[]>();
+      exportMatchingInstallations.forEach(inst => {
+        const teamId = inst.teamId || "no-team";
+        if (!installationsByTeam.has(teamId)) {
+          installationsByTeam.set(teamId, []);
+        }
+        installationsByTeam.get(teamId)!.push(inst);
+      });
+
+      // Headers: Installation ID, Device UID, Location ID, GPS Coordinates, Sensor readings, server data, variance, server fetch timestamp
       const headers = [
-        "Serial No", "Installation ID", "Device UID", "Location ID", "Original Location ID",
-        "Latitude", "Longitude", "Sensor Reading (cm)", "Latest Server Reading (cm)", "Latest Server Timestamp",
-        "Installed By Name", "Installed By UID", "Team Name", "Team ID", "Status", "Flagged Reason",
-        "Verified By", "Verified At", "System Pre-Verified", "System Pre-Verified At",
-        "Created At", "Updated At", "Device Input Method", "Server Refreshed At",
-        "Image URLs", "Video URL", "Tags"
+        "Installation ID",
+        "Device UID",
+        "Location ID",
+        "Latitude",
+        "Longitude",
+        "Sensor Reading (cm)",
+        "Server Data (cm)",
+        "Variance (%)",
+        "Server Fetch Timestamp"
       ];
 
-      const csvRows = sortedInstallations.map((inst, index) => [
-        (index + 1).toString(),
-        inst.id,
-        inst.deviceId,
-        inst.locationId,
-        inst.originalLocationId || "-",
-        inst.latitude != null ? inst.latitude.toFixed(6) : "-",
-        inst.longitude != null ? inst.longitude.toFixed(6) : "-",
-        inst.sensorReading != null ? inst.sensorReading.toString() : "-",
-        inst.latestDisCm != null ? inst.latestDisCm.toString() : "-",
-        inst.latestDisTimestamp || "-",
-        inst.installedByName || "-",
-        inst.installedBy || "-",
-        teamsMap.get(inst.teamId || "") || "-",
-        inst.teamId || "-",
-        inst.status,
-        inst.flaggedReason || "-",
-        inst.verifiedBy || "-",
-        inst.verifiedAt ? format(inst.verifiedAt, "yyyy-MM-dd HH:mm:ss") : "-",
-        inst.systemPreVerified ? "Yes" : "No",
-        inst.systemPreVerifiedAt ? format(inst.systemPreVerifiedAt, "yyyy-MM-dd HH:mm:ss") : "-",
-        inst.createdAt ? format(inst.createdAt, "yyyy-MM-dd HH:mm:ss") : "-",
-        inst.updatedAt ? format(inst.updatedAt, "yyyy-MM-dd HH:mm:ss") : "-",
-        inst.deviceInputMethod || "-",
-        inst.serverRefreshedAt ? format(inst.serverRefreshedAt, "yyyy-MM-dd HH:mm:ss") : "-",
-        inst.imageUrls?.join("; ") || "-",
-        inst.videoUrl || "-",
-        inst.tags?.join("; ") || "-",
-      ]);
-
-      const allRows = [headers, ...csvRows];
-      const csvContent = allRows
-        .map((row) =>
-          row
-            .map((value) => {
-              const safeValue = value ?? "";
-              return `"${safeValue.replace(/"/g, '""')}"`;
-            })
-            .join(",")
-        )
-        .join("\r\n");
-
-      const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
+      let totalExported = 0;
       const dateStr = new Date().toISOString().split('T')[0];
-      link.setAttribute("download", `selected-installations-${dateStr}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+
+      // Generate separate CSV for each team
+      const teamEntries = Array.from(installationsByTeam.entries());
+      for (let i = 0; i < teamEntries.length; i++) {
+        const [teamId, teamInstallations] = teamEntries[i];
+        // Sort by deviceId and then by createdAt
+        const sortedInstallations = [...teamInstallations].sort((a, b) => {
+          if (a.deviceId < b.deviceId) return -1;
+          if (a.deviceId > b.deviceId) return 1;
+          return (a.createdAt?.getTime() || 0) - (b.createdAt?.getTime() || 0);
+        });
+
+        const csvRows = sortedInstallations.map((inst) => {
+          // Determine GPS coordinates
+          // For location 9999, use installation's coordinates; otherwise use location's coordinates
+          const locationIdStr = String(inst.locationId || "");
+          const isLocation9999 = locationIdStr === "9999";
+          let latitude: number | null = null;
+          let longitude: number | null = null;
+
+          if (isLocation9999) {
+            latitude = inst.latitude ?? null;
+            longitude = inst.longitude ?? null;
+          } else {
+            const location = locationMap.get(locationIdStr);
+            if (location) {
+              latitude = location.latitude;
+              longitude = location.longitude;
+            }
+          }
+
+          // Calculate variance
+          let variance: string = "-";
+          if (inst.sensorReading != null && inst.latestDisCm != null && inst.sensorReading > 0) {
+            const diff = Math.abs(inst.latestDisCm - inst.sensorReading);
+            const variancePct = (diff / inst.sensorReading) * 100;
+            variance = variancePct.toFixed(2);
+          }
+
+          return [
+            inst.id,
+            inst.deviceId || "-",
+            inst.locationId || "-",
+            latitude != null ? latitude.toFixed(6) : "-",
+            longitude != null ? longitude.toFixed(6) : "-",
+            inst.sensorReading != null ? inst.sensorReading.toString() : "-",
+            inst.latestDisCm != null ? inst.latestDisCm.toString() : "-",
+            variance,
+            inst.serverRefreshedAt ? format(inst.serverRefreshedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+          ];
+        });
+
+        const allRows = [headers, ...csvRows];
+        const csvContent = allRows
+          .map((row) =>
+            row
+              .map((value) => {
+                const safeValue = value ?? "";
+                return `"${safeValue.replace(/"/g, '""')}"`;
+              })
+              .join(",")
+          )
+          .join("\r\n");
+
+        const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        
+        // Sanitize team name for filename
+        const teamName = teamsMap.get(teamId) || "Unknown Team";
+        const sanitizedTeamName = teamName
+          .replace(/[<>:"/\\|?*]/g, "_")
+          .replace(/\s+/g, "_")
+          .substring(0, 100);
+        
+        link.setAttribute("download", `${sanitizedTeamName}_${dateStr}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        
+        totalExported += sortedInstallations.length;
+        
+        // Small delay between downloads to avoid browser blocking
+        if (i < teamEntries.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+      }
 
       toast({
         title: "Export Complete",
-        description: `Exported ${sortedInstallations.length} installation(s) successfully.`,
+        description: `Exported ${totalExported} installation(s) across ${installationsByTeam.size} team(s).`,
       });
 
       // Clear the results after successful export
@@ -2402,6 +2467,215 @@ export default function Admin() {
       });
     } finally {
       setExportingSelectedInstallations(false);
+    }
+  };
+
+  const exportVarianceIssueInstallations = async () => {
+    if (!userProfile?.isAdmin) return;
+
+    setExportingVarianceIssues(true);
+
+    try {
+      // Fetch all installations
+      const installationsSnapshot = await getDocs(collection(db, "installations"));
+      const allInstallations: Installation[] = [];
+      
+      installationsSnapshot.forEach((doc) => {
+        const data = doc.data();
+        allInstallations.push({
+          ...data,
+          id: doc.id,
+          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : data.createdAt,
+          updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : data.updatedAt,
+          verifiedAt: data.verifiedAt?.toDate ? data.verifiedAt.toDate() : data.verifiedAt,
+          systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate ? data.systemPreVerifiedAt.toDate() : data.systemPreVerifiedAt,
+          serverRefreshedAt: data.serverRefreshedAt?.toDate ? data.serverRefreshedAt.toDate() : data.serverRefreshedAt,
+        } as Installation);
+      });
+
+      // Fetch all teams to resolve amanah names
+      const teamsSnapshot = await getDocs(collection(db, "teams"));
+      const teamsMap = new Map<string, string>();
+      teamsSnapshot.docs.forEach(doc => teamsMap.set(doc.id, doc.data().name));
+
+      // Fetch all locations to resolve GPS coordinates
+      const locationsSnapshot = await getDocs(collection(db, "locations"));
+      const locationMap = new Map<string, { latitude: number; longitude: number }>();
+      locationsSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        if (data.locationId && data.latitude != null && data.longitude != null) {
+          locationMap.set(String(data.locationId), {
+            latitude: data.latitude,
+            longitude: data.longitude,
+          });
+        }
+      });
+
+      // Filter installations based on criteria:
+      // 1. Variance > 5% OR
+      // 2. Server reading = 25 OR
+      // 3. No data from server (latestDisCm is null/undefined)
+      const filteredInstallations = allInstallations.filter((inst) => {
+        // Check if no server data
+        if (inst.latestDisCm == null) {
+          return true;
+        }
+
+        // Check if server reading is 25
+        if (inst.latestDisCm === 25) {
+          return true;
+        }
+
+        // Check variance > 5%
+        if (inst.sensorReading != null && inst.latestDisCm != null && inst.sensorReading > 0) {
+          const diff = Math.abs(inst.latestDisCm - inst.sensorReading);
+          const variancePct = (diff / inst.sensorReading) * 100;
+          if (variancePct > 5) {
+            return true;
+          }
+        }
+
+        return false;
+      });
+
+      if (filteredInstallations.length === 0) {
+        toast({
+          title: "No Installations Found",
+          description: "No installations match the criteria (variance > 5%, server reading = 25, or no server data).",
+        });
+        setExportingVarianceIssues(false);
+        return;
+      }
+
+      // Group installations by amanah (team)
+      const installationsByAmanah = new Map<string, Installation[]>();
+      filteredInstallations.forEach(inst => {
+        const teamId = inst.teamId || "no-team";
+        const teamName = teamsMap.get(teamId) || "";
+        const amanahName = translateTeamNameToArabic(teamName) || teamName || "Unknown Amanah";
+        
+        if (!installationsByAmanah.has(amanahName)) {
+          installationsByAmanah.set(amanahName, []);
+        }
+        installationsByAmanah.get(amanahName)!.push(inst);
+      });
+
+      // Headers
+      const headers = [
+        "Installation ID",
+        "Device UID",
+        "Location ID",
+        "Latitude",
+        "Longitude",
+        "Sensor Reading (cm)",
+        "Server Data (cm)",
+        "Variance (%)",
+        "Server Fetch Timestamp"
+      ];
+
+      let totalExported = 0;
+      const dateStr = new Date().toISOString().split('T')[0];
+
+      // Generate separate CSV for each amanah
+      const amanahEntries = Array.from(installationsByAmanah.entries());
+      for (let i = 0; i < amanahEntries.length; i++) {
+        const [amanahName, amanahInstallations] = amanahEntries[i];
+
+        // Sort by deviceId and then by createdAt
+        const sortedInstallations = [...amanahInstallations].sort((a, b) => {
+          if (a.deviceId < b.deviceId) return -1;
+          if (a.deviceId > b.deviceId) return 1;
+          return (a.createdAt?.getTime() || 0) - (b.createdAt?.getTime() || 0);
+        });
+
+        const csvRows = sortedInstallations.map((inst) => {
+          // Determine GPS coordinates
+          const locationIdStr = String(inst.locationId || "");
+          const isLocation9999 = locationIdStr === "9999";
+          let latitude: number | null = null;
+          let longitude: number | null = null;
+
+          if (isLocation9999) {
+            latitude = inst.latitude ?? null;
+            longitude = inst.longitude ?? null;
+          } else {
+            const location = locationMap.get(locationIdStr);
+            if (location) {
+              latitude = location.latitude;
+              longitude = location.longitude;
+            }
+          }
+
+          // Calculate variance
+          let variance: string = "-";
+          if (inst.sensorReading != null && inst.latestDisCm != null && inst.sensorReading > 0) {
+            const diff = Math.abs(inst.latestDisCm - inst.sensorReading);
+            const variancePct = (diff / inst.sensorReading) * 100;
+            variance = variancePct.toFixed(2);
+          }
+
+          return [
+            inst.id,
+            inst.deviceId || "-",
+            inst.locationId || "-",
+            latitude != null ? latitude.toFixed(6) : "-",
+            longitude != null ? longitude.toFixed(6) : "-",
+            inst.sensorReading != null ? inst.sensorReading.toString() : "-",
+            inst.latestDisCm != null ? inst.latestDisCm.toString() : "-",
+            variance,
+            inst.serverRefreshedAt ? format(inst.serverRefreshedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+          ];
+        });
+
+        const allRows = [headers, ...csvRows];
+        const csvContent = allRows
+          .map((row) =>
+            row
+              .map((value) => {
+                const safeValue = value ?? "";
+                return `"${safeValue.replace(/"/g, '""')}"`;
+              })
+              .join(",")
+          )
+          .join("\r\n");
+
+        const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        
+        // Sanitize amanah name for filename
+        const sanitizedAmanahName = amanahName
+          .replace(/[<>:"/\\|?*]/g, "_")
+          .replace(/\s+/g, "_")
+          .substring(0, 100);
+        
+        link.setAttribute("download", `${sanitizedAmanahName}_${dateStr}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        
+        totalExported += sortedInstallations.length;
+        
+        // Small delay between downloads to avoid browser blocking
+        if (i < amanahEntries.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+      }
+
+      toast({
+        title: "Export Complete",
+        description: `Exported ${totalExported} installation(s) across ${amanahEntries.length} amanah(s) with variance issues, server reading 25, or no server data.`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error.message || "An error occurred during export.",
+      });
+    } finally {
+      setExportingVarianceIssues(false);
     }
   };
 
@@ -4098,6 +4372,59 @@ export default function Admin() {
               </div>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Export Variance/Issue Installations */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <AlertTriangle className="h-5 w-5" />
+            Export Variance/Issue Installations
+          </CardTitle>
+          <CardDescription>
+            Export installations with variance &gt; 5%, server reading = 25, or no server data
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              This will export all installations that meet any of the following criteria:
+            </p>
+            <ul className="list-disc list-inside ml-4 text-sm text-muted-foreground space-y-1">
+              <li>Variance between sensor reading and server data is greater than 5%</li>
+              <li>Server reading equals 25 cm</li>
+              <li>No server data available</li>
+            </ul>
+          </div>
+
+          <Button
+            onClick={exportVarianceIssueInstallations}
+            disabled={exportingVarianceIssues}
+            variant="default"
+          >
+            {exportingVarianceIssues ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Exporting...
+              </>
+            ) : (
+              <>
+                <FileDown className="h-4 w-4 mr-2" />
+                Export Variance/Issue Installations
+              </>
+            )}
+          </Button>
+
+          <div className="text-xs text-muted-foreground space-y-1">
+            <p><strong>CSV will include:</strong></p>
+            <ul className="list-disc list-inside ml-2">
+              <li>Installation ID, Device UID, Location ID</li>
+              <li>GPS Coordinates (Latitude, Longitude)</li>
+              <li>Sensor Reading (cm), Server Data (cm)</li>
+              <li>Variance (%), Server Fetch Timestamp</li>
+            </ul>
+          </div>
         </CardContent>
       </Card>
 
