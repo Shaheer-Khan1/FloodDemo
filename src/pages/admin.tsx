@@ -2366,12 +2366,12 @@ export default function Admin() {
       const teamEntries = Array.from(installationsByTeam.entries());
       for (let i = 0; i < teamEntries.length; i++) {
         const [teamId, teamInstallations] = teamEntries[i];
-        // Sort by deviceId and then by createdAt
+      // Sort by deviceId and then by createdAt
         const sortedInstallations = [...teamInstallations].sort((a, b) => {
-          if (a.deviceId < b.deviceId) return -1;
-          if (a.deviceId > b.deviceId) return 1;
-          return (a.createdAt?.getTime() || 0) - (b.createdAt?.getTime() || 0);
-        });
+        if (a.deviceId < b.deviceId) return -1;
+        if (a.deviceId > b.deviceId) return 1;
+        return (a.createdAt?.getTime() || 0) - (b.createdAt?.getTime() || 0);
+      });
 
         const csvRows = sortedInstallations.map((inst) => {
           // Determine GPS coordinates
@@ -2401,34 +2401,34 @@ export default function Admin() {
           }
 
           return [
-            inst.id,
+        inst.id,
             inst.deviceId || "-",
             inst.locationId || "-",
             latitude != null ? latitude.toFixed(6) : "-",
             longitude != null ? longitude.toFixed(6) : "-",
-            inst.sensorReading != null ? inst.sensorReading.toString() : "-",
-            inst.latestDisCm != null ? inst.latestDisCm.toString() : "-",
+        inst.sensorReading != null ? inst.sensorReading.toString() : "-",
+        inst.latestDisCm != null ? inst.latestDisCm.toString() : "-",
             variance,
-            inst.serverRefreshedAt ? format(inst.serverRefreshedAt, "yyyy-MM-dd HH:mm:ss") : "-",
+        inst.serverRefreshedAt ? format(inst.serverRefreshedAt, "yyyy-MM-dd HH:mm:ss") : "-",
           ];
         });
 
-        const allRows = [headers, ...csvRows];
-        const csvContent = allRows
-          .map((row) =>
-            row
-              .map((value) => {
-                const safeValue = value ?? "";
-                return `"${safeValue.replace(/"/g, '""')}"`;
-              })
-              .join(",")
-          )
-          .join("\r\n");
+      const allRows = [headers, ...csvRows];
+      const csvContent = allRows
+        .map((row) =>
+          row
+            .map((value) => {
+              const safeValue = value ?? "";
+              return `"${safeValue.replace(/"/g, '""')}"`;
+            })
+            .join(",")
+        )
+        .join("\r\n");
 
-        const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
+      const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
         
         // Sanitize team name for filename
         const teamName = teamsMap.get(teamId) || "Unknown Team";
@@ -2438,10 +2438,10 @@ export default function Admin() {
           .substring(0, 100);
         
         link.setAttribute("download", `${sanitizedTeamName}_${dateStr}.csv`);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
         
         totalExported += sortedInstallations.length;
         
@@ -2589,20 +2589,18 @@ export default function Admin() {
         });
 
         const csvRows = sortedInstallations.map((inst) => {
-          // Determine GPS coordinates
+          // Prefer user-entered coordinates; fallback to location lookup and mark as fallback
           const locationIdStr = String(inst.locationId || "");
-          const isLocation9999 = locationIdStr === "9999";
-          let latitude: number | null = null;
-          let longitude: number | null = null;
+          let latitude: number | null = inst.latitude ?? null;
+          let longitude: number | null = inst.longitude ?? null;
+          let usedFallback = false;
 
-          if (isLocation9999) {
-            latitude = inst.latitude ?? null;
-            longitude = inst.longitude ?? null;
-          } else {
+          if ((latitude == null || longitude == null) && locationIdStr) {
             const location = locationMap.get(locationIdStr);
-            if (location) {
+            if (location && location.latitude != null && location.longitude != null) {
               latitude = location.latitude;
               longitude = location.longitude;
+              usedFallback = true;
             }
           }
 
@@ -2618,8 +2616,8 @@ export default function Admin() {
             inst.id,
             inst.deviceId || "-",
             inst.locationId || "-",
-            latitude != null ? latitude.toFixed(6) : "-",
-            longitude != null ? longitude.toFixed(6) : "-",
+            latitude != null ? `${latitude.toFixed(6)}${usedFallback ? " (fallback)" : ""}` : "-",
+            longitude != null ? `${longitude.toFixed(6)}${usedFallback ? " (fallback)" : ""}` : "-",
             inst.sensorReading != null ? inst.sensorReading.toString() : "-",
             inst.latestDisCm != null ? inst.latestDisCm.toString() : "-",
             variance,

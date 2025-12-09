@@ -93,8 +93,8 @@ export default function Verification() {
   const [editedLocationId, setEditedLocationId] = useState<string>("");
   const [editedLatitude, setEditedLatitude] = useState<string>("");
   const [editedLongitude, setEditedLongitude] = useState<string>("");
-  const [newImageFile, setNewImageFile] = useState<File | null>(null);
-  const [newImagePreview, setNewImagePreview] = useState<string | null>(null);
+  const [newImageFiles, setNewImageFiles] = useState<File[]>([]);
+  const [newImagePreviews, setNewImagePreviews] = useState<string[]>([]);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [deletedImageUrls, setDeletedImageUrls] = useState<string[]>([]);
 
@@ -650,18 +650,23 @@ export default function Verification() {
     setEditedLocationId(item.installation.locationId || "");
     setEditedLatitude(item.installation.latitude?.toString() || "");
     setEditedLongitude(item.installation.longitude?.toString() || "");
-    setNewImageFile(null);
-    setNewImagePreview(null);
+    setNewImageFiles([]);
+    setNewImagePreviews([]);
   };
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    if (!files.length) return;
+
+    const validFiles: File[] = [];
+    const previews: string[] = [];
+
+    files.forEach((file) => {
       if (file.size > 10 * 1024 * 1024) { // 10MB limit
         toast({
           variant: "destructive",
           title: "File too large",
-          description: "Please select an image smaller than 10MB.",
+          description: `${file.name} exceeds 10MB. Please select a smaller image.`,
         });
         return;
       }
@@ -669,13 +674,18 @@ export default function Verification() {
         toast({
           variant: "destructive",
           title: "Invalid file type",
-          description: "Please select an image file.",
+          description: `${file.name} is not an image.`,
         });
         return;
       }
-      setNewImageFile(file);
-      setNewImagePreview(URL.createObjectURL(file));
-    }
+      validFiles.push(file);
+      previews.push(URL.createObjectURL(file));
+    });
+
+    if (validFiles.length === 0) return;
+
+    setNewImageFiles(prev => [...prev, ...validFiles]);
+    setNewImagePreviews(prev => [...prev, ...previews]);
   };
 
   // Box opening is handled on the dedicated Open Boxes page
@@ -710,6 +720,47 @@ export default function Verification() {
       toast({
         variant: "destructive",
         title: "Approval Failed",
+        description: error instanceof Error ? error.message : "An error occurred.",
+      });
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleUnverify = async () => {
+    if (!selectedItem || !userProfile) return;
+
+    setProcessing(true);
+    try {
+      const filteredTags = (selectedItem.installation.tags || []).filter(
+        (tag) => tag !== "escalated to manager"
+      );
+
+      await updateDoc(doc(db, "installations", selectedItem.installation.id), {
+        status: "pending",
+        verifiedBy: null,
+        verifiedAt: null,
+        flaggedReason: null,
+        updatedAt: serverTimestamp(),
+        tags: filteredTags,
+      });
+
+      await updateDoc(doc(db, "devices", selectedItem.installation.deviceId), {
+        status: "installed",
+        updatedAt: serverTimestamp(),
+      });
+
+      toast({
+        title: "Installation Unverified",
+        description: "Status set back to pending for re-review.",
+      });
+
+      setDialogOpen(false);
+      setSelectedItem(null);
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Unverify Failed",
         description: error instanceof Error ? error.message : "An error occurred.",
       });
     } finally {
@@ -822,11 +873,11 @@ export default function Verification() {
       });
     }
     
-    if (newImageFile) {
+    if (newImageFiles.length > 0) {
       changes.push({
         field: "Image",
         oldValue: "Current images",
-        newValue: `Add new image: ${newImageFile.name}`
+        newValue: `Add ${newImageFiles.length} new image${newImageFiles.length > 1 ? "s" : ""}`
       });
     }
 
@@ -938,18 +989,20 @@ export default function Verification() {
       const currentImageUrls = originalInstallation.imageUrls || [];
       let updatedImageUrls = currentImageUrls.filter(url => !deletedImageUrls.includes(url));
       
-      // Upload new image if one was selected
-      if (newImageFile) {
+      // Upload new images (support multiple additions)
+      if (newImageFiles.length > 0) {
         setUploadingImage(true);
         try {
           const storage = getStorage();
-          const timestamp = Date.now();
-          const imageRef = storageRef(storage, `installations/${selectedItem.installation.id}/additional_${timestamp}_${newImageFile.name}`);
-          await uploadBytes(imageRef, newImageFile);
-          const imageUrl = await getDownloadURL(imageRef);
-          
-          // Add new image URL to filtered array
-          updatedImageUrls = [...updatedImageUrls, imageUrl];
+          for (const file of newImageFiles) {
+            const timestamp = Date.now();
+            const imageRef = storageRef(storage, `installations/${selectedItem.installation.id}/additional_${timestamp}_${file.name}`);
+            await uploadBytes(imageRef, file);
+            const imageUrl = await getDownloadURL(imageRef);
+            
+            // Add new image URL to filtered array
+            updatedImageUrls = [...updatedImageUrls, imageUrl];
+          }
         } catch (error) {
           toast({
             variant: "destructive",
@@ -965,7 +1018,7 @@ export default function Verification() {
       }
       
       // Update imageUrls if there were any changes
-      if (deletedImageUrls.length > 0 || newImageFile) {
+      if (deletedImageUrls.length > 0 || newImageFiles.length > 0) {
         updateData.imageUrls = updatedImageUrls;
       }
 
@@ -1006,16 +1059,16 @@ export default function Verification() {
       } else {
         toast({
           title: "Installation Updated",
-          description: newImageFile 
-            ? "The installation has been successfully updated with version history and new image."
+          description: newImageFiles.length > 0 
+            ? `The installation has been successfully updated with version history and ${newImageFiles.length} new image${newImageFiles.length > 1 ? "s" : ""}.`
             : "The installation has been successfully updated with version history.",
         });
       }
 
       setIsEditMode(false);
       setVerifyAfterEdit(false);
-      setNewImageFile(null);
-      setNewImagePreview(null);
+      setNewImageFiles([]);
+      setNewImagePreviews([]);
       setDeletedImageUrls([]);
     } catch (error) {
       toast({
@@ -2560,8 +2613,8 @@ export default function Verification() {
           setIsEditMode(false);
           setSelectedItem(null);
           setRejectReason("");
-          setNewImageFile(null);
-          setNewImagePreview(null);
+        setNewImageFiles([]);
+        setNewImagePreviews([]);
           setDeletedImageUrls([]);
         }
       }}>
@@ -2906,6 +2959,7 @@ export default function Verification() {
                         <input
                           type="file"
                           accept="image/*"
+                          multiple
                           onChange={handleImageSelect}
                           className="hidden"
                           id="additional-image-upload"
@@ -2915,17 +2969,27 @@ export default function Verification() {
                           htmlFor="additional-image-upload"
                           className="flex flex-col items-center justify-center w-full h-full cursor-pointer"
                         >
-                          {newImagePreview ? (
-                            <img
-                              src={newImagePreview}
-                              alt="New preview"
-                              className="w-full h-full object-cover rounded-lg"
-                            />
+                          {newImagePreviews.length > 0 ? (
+                            <div className="w-full h-full flex flex-col items-center justify-center gap-2">
+                              <div className="grid grid-cols-3 gap-2 w-full h-full overflow-auto p-2">
+                                {newImagePreviews.map((preview, idx) => (
+                                  <img
+                                    key={idx}
+                                    src={preview}
+                                    alt={`New preview ${idx + 1}`}
+                                    className="w-full h-full object-cover rounded-lg"
+                                  />
+                                ))}
+                              </div>
+                              <p className="text-sm text-muted-foreground">
+                                {uploadingImage ? "Uploading..." : "Add more photos"}
+                              </p>
+                            </div>
                           ) : (
                             <>
                               <Upload className="h-8 w-8 text-muted-foreground mb-2" />
                               <p className="text-sm text-muted-foreground text-center px-2">
-                                {uploadingImage ? "Uploading..." : "Add Photo"}
+                                {uploadingImage ? "Uploading..." : "Add Photos"}
                               </p>
                             </>
                           )}
@@ -2978,8 +3042,8 @@ export default function Verification() {
                       setEditedLocationId(selectedItem.installation.locationId || "");
                       setEditedLatitude(selectedItem.installation.latitude?.toString() || "");
                       setEditedLongitude(selectedItem.installation.longitude?.toString() || "");
-                      setNewImageFile(null);
-                      setNewImagePreview(null);
+                      setNewImageFiles([]);
+                      setNewImagePreviews([]);
                       setDeletedImageUrls([]);
                     }
                   }}
@@ -3059,6 +3123,21 @@ export default function Verification() {
                 {/* Admins can approve, flag, or escalate */}
                 {userProfile?.isAdmin && (
                   <>
+                    {selectedItem?.installation.status === "verified" && (
+                      <Button
+                        variant="outline"
+                        onClick={handleUnverify}
+                        disabled={processing}
+                        className="border-amber-500 text-amber-600 hover:bg-amber-50"
+                      >
+                        {processing ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : (
+                          <XCircle className="h-4 w-4 mr-2" />
+                        )}
+                        Unverify (Back to Pending)
+                      </Button>
+                    )}
                     {selectedItem?.installation.status === "flagged" && (
                       <Button
                         variant="outline"
