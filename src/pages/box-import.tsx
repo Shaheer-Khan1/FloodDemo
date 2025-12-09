@@ -34,6 +34,7 @@ export default function BoxImport() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const [selectedBoxCode, setSelectedBoxCode] = useState<string>("");
   const [boxIdentifier, setBoxIdentifier] = useState<string>("");
@@ -252,6 +253,74 @@ export default function BoxImport() {
       });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDeleteAssignment = async () => {
+    if (!userProfile || !isManager) return;
+
+    if (!selectedTeamId || !selectedAssignedBox) {
+      toast({
+        variant: "destructive",
+        title: "Select a box first",
+        description: "Choose a team box assignment to delete.",
+      });
+      return;
+    }
+
+    const devicesInAssignment = devices.filter(
+      (d) => d.teamId === selectedTeamId && d.boxNumber === selectedAssignedBox
+    );
+
+    if (devicesInAssignment.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No devices found",
+        description: "This box assignment no longer has devices to remove.",
+      });
+      return;
+    }
+
+    const teamName =
+      teams.find((t) => t.id === selectedTeamId)?.name || selectedTeamId;
+    const confirmed = window.confirm(
+      `Remove box ${selectedAssignedBox} from ${teamName}? All devices will return to the unassigned pool and installer assignments will be cleared.`
+    );
+    if (!confirmed) return;
+
+    setDeleting(true);
+    try {
+      const updates = devicesInAssignment.map((d) =>
+        updateDoc(doc(db, "devices", d.id), {
+          teamId: null,
+          boxNumber: null,
+          boxOpened: null,
+          assignedInstallerId: null,
+          assignedInstallerName: null,
+          updatedAt: serverTimestamp(),
+        })
+      );
+
+      await Promise.all(updates);
+
+      toast({
+        title: "Box assignment removed",
+        description: `Box ${selectedAssignedBox} is now unassigned and can be reassigned.`,
+      });
+
+      setSelectedAssignedBox("");
+    } catch (error) {
+      console.error(error);
+      toast({
+        variant: "destructive",
+        title: "Delete failed",
+        description:
+          error instanceof Error
+            ? error.message
+            : "Failed to delete this box assignment.",
+      });
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -528,12 +597,32 @@ export default function BoxImport() {
 
               {selectedTeamId && selectedAssignedBox && (
                 <div className="space-y-2">
-                  <h3 className="text-sm font-semibold">
-                    Devices in box {selectedAssignedBox} for{" "}
-                    {teams.find((t) => t.id === selectedTeamId)?.name ||
-                      selectedTeamId}{" "}
-                    ({assignedDevicesForSelectedBox.length})
-                  </h3>
+                  <div className="flex items-start justify-between gap-2 flex-wrap">
+                    <h3 className="text-sm font-semibold">
+                      Devices in box {selectedAssignedBox} for{" "}
+                      {teams.find((t) => t.id === selectedTeamId)?.name ||
+                        selectedTeamId}{" "}
+                      ({assignedDevicesForSelectedBox.length})
+                    </h3>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={handleDeleteAssignment}
+                      disabled={deleting}
+                    >
+                      {deleting ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Deleting...
+                        </>
+                      ) : (
+                        "Delete assignment"
+                      )}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Deletes this box/team mapping and returns its devices to the unassigned pool.
+                  </p>
                   {assignedDevicesForSelectedBox.length === 0 ? (
                     <p className="text-xs text-muted-foreground">
                       No devices currently assigned to this box for the selected team.
