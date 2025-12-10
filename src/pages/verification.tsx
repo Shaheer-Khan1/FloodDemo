@@ -658,6 +658,18 @@ export default function Verification() {
     const files = e.target.files ? Array.from(e.target.files) : [];
     if (!files.length) return;
 
+    const MAX_NEW_IMAGES = 3;
+    const remainingSlots = Math.max(0, MAX_NEW_IMAGES - newImageFiles.length);
+
+    if (remainingSlots === 0) {
+      toast({
+        variant: "destructive",
+        title: "Image limit reached",
+        description: "You can add up to 3 new photos per edit.",
+      });
+      return;
+    }
+
     const validFiles: File[] = [];
     const previews: string[] = [];
 
@@ -684,8 +696,19 @@ export default function Verification() {
 
     if (validFiles.length === 0) return;
 
-    setNewImageFiles(prev => [...prev, ...validFiles]);
-    setNewImagePreviews(prev => [...prev, ...previews]);
+    const limitedFiles = validFiles.slice(0, remainingSlots);
+    const limitedPreviews = previews.slice(0, remainingSlots);
+
+    if (validFiles.length > remainingSlots) {
+      toast({
+        variant: "destructive",
+        title: "Image limit reached",
+        description: "Only the first 3 new photos were added.",
+      });
+    }
+
+    setNewImageFiles(prev => [...prev, ...limitedFiles]);
+    setNewImagePreviews(prev => [...prev, ...limitedPreviews]);
   };
 
   // Box opening is handled on the dedicated Open Boxes page
@@ -2955,7 +2978,7 @@ export default function Verification() {
                       );
                     })}
                     {isEditMode && (
-                      <div className="w-full h-48 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-lg hover:border-primary transition-colors cursor-pointer">
+                      <div className="w-full h-48 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-lg hover:border-primary transition-colors cursor-pointer relative">
                         <input
                           type="file"
                           accept="image/*"
@@ -2963,7 +2986,7 @@ export default function Verification() {
                           onChange={handleImageSelect}
                           className="hidden"
                           id="additional-image-upload"
-                          disabled={uploadingImage}
+                          disabled={uploadingImage || newImagePreviews.length >= 3}
                         />
                         <label
                           htmlFor="additional-image-upload"
@@ -2973,23 +2996,44 @@ export default function Verification() {
                             <div className="w-full h-full flex flex-col items-center justify-center gap-2">
                               <div className="grid grid-cols-3 gap-2 w-full h-full overflow-auto p-2">
                                 {newImagePreviews.map((preview, idx) => (
-                                  <img
-                                    key={idx}
-                                    src={preview}
-                                    alt={`New preview ${idx + 1}`}
-                                    className="w-full h-full object-cover rounded-lg"
-                                  />
+                                  <div key={idx} className="relative group">
+                                    <img
+                                      src={preview}
+                                      alt={`New preview ${idx + 1}`}
+                                      className="w-full h-full object-cover rounded-lg"
+                                    />
+                                    <button
+                                      type="button"
+                                      className="absolute top-1 right-1 h-7 w-7 rounded-full bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setNewImageFiles((prev) =>
+                                          prev.filter((_, i) => i !== idx)
+                                        );
+                                        setNewImagePreviews((prev) =>
+                                          prev.filter((_, i) => i !== idx)
+                                        );
+                                      }}
+                                    >
+                                      <X className="h-4 w-4" />
+                                    </button>
+                                  </div>
                                 ))}
                               </div>
-                              <p className="text-sm text-muted-foreground">
-                                {uploadingImage ? "Uploading..." : "Add more photos"}
+                              <p className="text-sm text-muted-foreground text-center px-2">
+                                {uploadingImage
+                                  ? "Uploading..."
+                                  : newImagePreviews.length >= 3
+                                  ? "Maximum of 3 new photos"
+                                  : "Add more photos (up to 3)"}
                               </p>
                             </div>
                           ) : (
                             <>
                               <Upload className="h-8 w-8 text-muted-foreground mb-2" />
                               <p className="text-sm text-muted-foreground text-center px-2">
-                                {uploadingImage ? "Uploading..." : "Add Photos"}
+                                {uploadingImage ? "Uploading..." : "Add Photos (up to 3)"}
                               </p>
                             </>
                           )}
