@@ -565,7 +565,15 @@ export default function OpenBoxes() {
                   <Button
                     size="sm"
                     onClick={async () => {
-                      if (!userProfile?.teamId) return;
+                      if (!activeTeamId) {
+                        toast({
+                          variant: "destructive",
+                          title: "Select a team first",
+                          description:
+                            "Choose a team (or ensure your account is assigned to one) before saving assignments.",
+                        });
+                        return;
+                      }
                       setSavingAssignments(true);
                       try {
                         const updates: Promise<void>[] = [];
@@ -621,136 +629,142 @@ export default function OpenBoxes() {
                   </Button>
 
                   {/* Read-only table for already assigned devices */}
-                  {assignedDevicesInBox.length > 0 && (
-                    <div className="space-y-2 pt-4 border-t mt-4">
-                      <h3 className="text-sm font-semibold">
-                        Already Assigned Devices
-                      </h3>
-                      <div className="max-h-64 overflow-y-auto rounded-md border bg-slate-50 dark:bg-slate-950/40">
-                        <table className="w-full text-xs">
-                          <thead className="bg-slate-100 dark:bg-slate-900">
-                            <tr>
-                              <th className="text-left px-3 py-2">Device UID</th>
-                              <th className="text-left px-3 py-2">Opened?</th>
-                              <th className="text-left px-3 py-2">Installer</th>
-                              <th className="text-left px-3 py-2 w-20">Actions</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {assignedDevicesInBox.map((d) => {
-                              const currentId =
-                                editingAssigned[d.id] ?? d.assignedInstallerId ?? "";
-                              return (
-                                <tr key={d.id} className="border-t">
-                                  <td className="px-3 py-2 font-mono">{d.id}</td>
-                                  <td className="px-3 py-2">
-                                    {d.boxOpened ? (
-                                      <span className="text-green-600">Yes</span>
-                                    ) : (
-                                      <span className="text-yellow-700">No</span>
-                                    )}
-                                  </td>
-                                  <td className="px-3 py-2">
-                                    <select
-                                      className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
-                                      value={currentId}
-                                      onChange={(e) =>
-                                        setEditingAssigned((prev) => ({
-                                          ...prev,
-                                          [d.id]: e.target.value,
-                                        }))
-                                      }
-                                    >
-                                      <option value="">Unassigned</option>
-                                      {installers.map((inst) => (
-                                        <option
-                                          key={inst.id}
-                                          value={(inst as any).userId || inst.id}
-                                        >
-                                          {inst.displayName ||
-                                            inst.name ||
-                                            inst.email}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </td>
-                                  <td className="px-3 py-2">
-                                    <Button
-                                      size="xs"
-                                      variant="outline"
-                                      disabled={savingAssignedId === d.id}
-                                      onClick={async () => {
-                                        const newInstallerId =
-                                          editingAssigned[d.id] ??
-                                          d.assignedInstallerId ??
-                                          "";
-                                        const normalizedNew =
-                                          newInstallerId || undefined;
-                                        const original = d.assignedInstallerId;
-                                        if (normalizedNew === original) return;
-
-                                        setSavingAssignedId(d.id);
-                                        try {
-                                          const installer =
-                                            installers.find(
-                                              (i) =>
-                                                i.id === newInstallerId ||
-                                                (i as any).userId ===
-                                                  newInstallerId
-                                            ) || null;
-                                          await updateDoc(
-                                            doc(db, "devices", d.id),
-                                            {
-                                              assignedInstallerId:
-                                                normalizedNew || null,
-                                              assignedInstallerName: installer
-                                                ? installer.displayName ||
-                                                  installer.name ||
-                                                  installer.email
-                                                : null,
-                                              updatedAt: serverTimestamp(),
-                                            }
-                                          );
-                                          toast({
-                                            title: "Assignment updated",
-                                            description:
-                                              "Installer assignment has been updated for this device.",
-                                          });
-                                        } catch (error) {
-                                          console.error(
-                                            "Failed to update assignment:",
-                                            error
-                                          );
-                                          toast({
-                                            variant: "destructive",
-                                            title: "Failed to update assignment",
-                                            description:
-                                              error instanceof Error
-                                                ? error.message
-                                                : "An error occurred while updating the assignment.",
-                                          });
-                                        } finally {
-                                          setSavingAssignedId(null);
-                                        }
-                                      }}
-                                    >
-                                      {savingAssignedId === d.id
-                                        ? "Saving..."
-                                        : "Save"}
-                                    </Button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
+                  <div className="space-y-2 pt-4 border-t mt-4">
+                    <h3 className="text-sm font-semibold">
+                      Saved Assignments for this Box
+                    </h3>
+                    {assignedDevicesInBox.length === 0 ? (
                       <p className="text-xs text-muted-foreground">
-                        Use the dropdown and Save button in each row to update an
-                        existing assignment or clear it (set to Unassigned).
+                        No saved installer assignments yet for this box.
                       </p>
-                    </div>
-                  )}
+                    ) : (
+                      <>
+                        <div className="max-h-64 overflow-y-auto rounded-md border bg-slate-50 dark:bg-slate-950/40">
+                          <table className="w-full text-xs">
+                            <thead className="bg-slate-100 dark:bg-slate-900">
+                              <tr>
+                                <th className="text-left px-3 py-2">Device UID</th>
+                                <th className="text-left px-3 py-2">Opened?</th>
+                                <th className="text-left px-3 py-2">Installer</th>
+                                <th className="text-left px-3 py-2 w-20">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {assignedDevicesInBox.map((d) => {
+                                const currentId =
+                                  editingAssigned[d.id] ?? d.assignedInstallerId ?? "";
+                                return (
+                                  <tr key={d.id} className="border-t">
+                                    <td className="px-3 py-2 font-mono">{d.id}</td>
+                                    <td className="px-3 py-2">
+                                      {d.boxOpened ? (
+                                        <span className="text-green-600">Yes</span>
+                                      ) : (
+                                        <span className="text-yellow-700">No</span>
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      <select
+                                        className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
+                                        value={currentId}
+                                        onChange={(e) =>
+                                          setEditingAssigned((prev) => ({
+                                            ...prev,
+                                            [d.id]: e.target.value,
+                                          }))
+                                        }
+                                      >
+                                        <option value="">Unassigned</option>
+                                        {installers.map((inst) => (
+                                          <option
+                                            key={inst.id}
+                                            value={(inst as any).userId || inst.id}
+                                          >
+                                            {inst.displayName ||
+                                              inst.name ||
+                                              inst.email}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      <Button
+                                        size="xs"
+                                        variant="outline"
+                                        disabled={savingAssignedId === d.id}
+                                        onClick={async () => {
+                                          const newInstallerId =
+                                            editingAssigned[d.id] ??
+                                            d.assignedInstallerId ??
+                                            "";
+                                          const normalizedNew =
+                                            newInstallerId || undefined;
+                                          const original = d.assignedInstallerId;
+                                          if (normalizedNew === original) return;
+
+                                          setSavingAssignedId(d.id);
+                                          try {
+                                            const installer =
+                                              installers.find(
+                                                (i) =>
+                                                  i.id === newInstallerId ||
+                                                  (i as any).userId ===
+                                                    newInstallerId
+                                              ) || null;
+                                            await updateDoc(
+                                              doc(db, "devices", d.id),
+                                              {
+                                                assignedInstallerId:
+                                                  normalizedNew || null,
+                                                assignedInstallerName: installer
+                                                  ? installer.displayName ||
+                                                    installer.name ||
+                                                    installer.email
+                                                  : null,
+                                                updatedAt: serverTimestamp(),
+                                              }
+                                            );
+                                            toast({
+                                              title: "Assignment updated",
+                                              description:
+                                                "Installer assignment has been updated for this device.",
+                                            });
+                                          } catch (error) {
+                                            console.error(
+                                              "Failed to update assignment:",
+                                              error
+                                            );
+                                            toast({
+                                              variant: "destructive",
+                                              title: "Failed to update assignment",
+                                              description:
+                                                error instanceof Error
+                                                  ? error.message
+                                                  : "An error occurred while updating the assignment.",
+                                            });
+                                          } finally {
+                                            setSavingAssignedId(null);
+                                          }
+                                        }}
+                                      >
+                                        {savingAssignedId === d.id
+                                          ? "Saving..."
+                                          : "Save"}
+                                      </Button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Use the dropdown and Save button in each row to update an
+                          existing assignment or clear it (set to Unassigned).
+                        </p>
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
             </>
