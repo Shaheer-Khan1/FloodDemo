@@ -144,6 +144,21 @@ export default function OpenBoxes() {
     };
   }, [devices]);
 
+  // Map box -> unique installer names (assigned) for display
+  const installerNamesByBox = useMemo(() => {
+    const map: Record<string, Set<string>> = {};
+    devices.forEach((d) => {
+      if (!d.boxNumber) return;
+      const name = d.assignedInstallerName?.trim();
+      if (!name) return;
+      if (!map[d.boxNumber]) {
+        map[d.boxNumber] = new Set<string>();
+      }
+      map[d.boxNumber].add(name);
+    });
+    return map;
+  }, [devices]);
+
   const devicesInSelectedAssignmentBox = useMemo(
     () =>
       selectedBoxForAssignment
@@ -374,7 +389,15 @@ export default function OpenBoxes() {
                   >
                     <div>
                       <div className="font-semibold">{box.boxNumber}</div>
-                      <div className="text-muted-foreground">{box.count} devices</div>
+                    <div className="text-muted-foreground">{box.count} devices</div>
+                    <div className="text-xs text-muted-foreground">
+                      {installerNamesByBox[box.boxNumber] &&
+                      installerNamesByBox[box.boxNumber].size > 0
+                        ? `Installer${installerNamesByBox[box.boxNumber].size > 1 ? "s" : ""}: ${Array.from(
+                            installerNamesByBox[box.boxNumber]
+                          ).join(", ")}`
+                        : "Installer: Unassigned"}
+                    </div>
                     </div>
                   </div>
                 ))}
