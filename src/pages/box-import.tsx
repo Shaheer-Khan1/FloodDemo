@@ -150,6 +150,7 @@ export default function BoxImport() {
     },
     [devices, selectedTeamId]
   );
+  const assignedBoxCount = assignedBoxes.length;
 
   const assignedDevicesForSelectedBox = useMemo(() => {
     if (!selectedTeamId || !selectedAssignedBox) return [];
@@ -558,6 +559,13 @@ export default function BoxImport() {
             {selectedTeamId
               ? " (Filtered to the selected Amanah team.)"
               : " (Showing boxes for all teams.)"}
+            <div className="mt-1 text-xs text-muted-foreground">
+              {assignedBoxCount} box{assignedBoxCount === 1 ? "" : "es"} found
+              {selectedTeamId
+                ? ` for ${teams.find((t) => t.id === selectedTeamId)?.name || "selected team"}`
+                : " across all teams"}
+              .
+            </div>
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
