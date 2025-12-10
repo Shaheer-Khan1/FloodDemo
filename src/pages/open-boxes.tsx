@@ -159,6 +159,39 @@ export default function OpenBoxes() {
     return map;
   }, [devices]);
 
+  const openedBoxCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    groupedBoxes.opened.forEach(({ boxNumber, count }) => {
+      counts[boxNumber] = count;
+    });
+    return counts;
+  }, [groupedBoxes]);
+
+  const openedBoxesByInstaller = useMemo(() => {
+    const map: Record<string, { installerName: string; boxSet: Set<string> }> = {};
+
+    devices.forEach((d) => {
+      if (!d.boxOpened || !d.boxNumber) return;
+      const installerName = d.assignedInstallerName?.trim() || "Unassigned";
+      if (!map[installerName]) {
+        map[installerName] = { installerName, boxSet: new Set<string>() };
+      }
+      map[installerName].boxSet.add(d.boxNumber);
+    });
+
+    return Object.values(map)
+      .map((entry) => ({
+        installerName: entry.installerName,
+        boxes: Array.from(entry.boxSet)
+          .sort()
+          .map((boxNumber) => ({
+            boxNumber,
+            count: openedBoxCounts[boxNumber] || 0,
+          })),
+      }))
+      .sort((a, b) => a.installerName.localeCompare(b.installerName));
+  }, [devices, openedBoxCounts]);
+
   const devicesInSelectedAssignmentBox = useMemo(
     () =>
       selectedBoxForAssignment
@@ -369,7 +402,7 @@ export default function OpenBoxes() {
           <CardHeader>
             <CardTitle className="text-lg">Opened Boxes</CardTitle>
             <CardDescription>
-              Boxes already marked as opened. Installers can install devices from these boxes.
+              Boxes already marked as opened, grouped by installer assignment (if any).
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
@@ -381,23 +414,21 @@ export default function OpenBoxes() {
             ) : groupedBoxes.opened.length === 0 ? (
               <p className="text-sm text-muted-foreground">No opened boxes for your team yet.</p>
             ) : (
-              <div className="space-y-1 text-xs font-mono">
-                {groupedBoxes.opened.map((box) => (
-                  <div
-                    key={box.boxNumber}
-                    className="flex items-center justify-between rounded border px-3 py-2 bg-slate-50 dark:bg-slate-950/30"
-                  >
-                    <div>
-                      <div className="font-semibold">{box.boxNumber}</div>
-                    <div className="text-muted-foreground">{box.count} devices</div>
-                    <div className="text-xs text-muted-foreground">
-                      {installerNamesByBox[box.boxNumber] &&
-                      installerNamesByBox[box.boxNumber].size > 0
-                        ? `Installer${installerNamesByBox[box.boxNumber].size > 1 ? "s" : ""}: ${Array.from(
-                            installerNamesByBox[box.boxNumber]
-                          ).join(", ")}`
-                        : "Installer: Unassigned"}
+              <div className="space-y-3 text-xs font-mono">
+                {openedBoxesByInstaller.map((entry) => (
+                  <div key={entry.installerName} className="space-y-1 rounded border p-3 bg-slate-50 dark:bg-slate-950/30">
+                    <div className="font-semibold text-sm">
+                      {entry.installerName === "Unassigned" ? "Unassigned installer" : entry.installerName}
                     </div>
+                    <div className="flex flex-wrap gap-2">
+                      {entry.boxes.map((box) => (
+                        <span
+                          key={`${entry.installerName}-${box.boxNumber}`}
+                          className="px-2 py-1 rounded-full border bg-background"
+                        >
+                          {box.boxNumber} · {box.count} devices
+                        </span>
+                      ))}
                     </div>
                   </div>
                 ))}
