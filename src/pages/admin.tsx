@@ -61,6 +61,11 @@ export default function Admin() {
   
   // Export Devices by Box State
   const [exportingDevicesByBox, setExportingDevicesByBox] = useState(false);
+  const [exportingAssignmentsByAmanah, setExportingAssignmentsByAmanah] = useState(false);
+  const [assignmentSummary, setAssignmentSummary] = useState<
+    { teamId: string; teamName: string; installers: { installerName: string; boxNumbers: string[] }[] }[]
+  >([]);
+  const [assignmentSummaryLoading, setAssignmentSummaryLoading] = useState(false);
   
   // Location ID Bulk Update State
   const [targetTeamId, setTargetTeamId] = useState("ttaMvVwJTIpXIJ5NTmee");
@@ -162,6 +167,66 @@ export default function Admin() {
 
     return () => unsubscribe();
   }, [userProfile, toast]);
+
+  // Real-time assignment summary (team -> installer -> boxes)
+  useEffect(() => {
+    if (!userProfile?.isAdmin) return;
+    setAssignmentSummaryLoading(true);
+    const unsubscribe = onSnapshot(
+      collection(db, "devices"),
+      (snapshot) => {
+        const grouped = new Map<
+          string,
+          Map<string, Set<string>>
+        >(); // teamId -> installerName -> boxNumbers
+
+        snapshot.forEach((doc) => {
+          const data = doc.data() as any;
+          const teamId = data.teamId;
+          const boxNumber = data.boxNumber;
+          if (!teamId || !boxNumber) return;
+
+          const installerName =
+            data.assignedInstallerName ||
+            "Unassigned installer";
+
+          if (!grouped.has(teamId)) {
+            grouped.set(teamId, new Map());
+          }
+          const installerMap = grouped.get(teamId)!;
+          if (!installerMap.has(installerName)) {
+            installerMap.set(installerName, new Set());
+          }
+          installerMap.get(installerName)!.add(String(boxNumber));
+        });
+
+        const summary = Array.from(grouped.entries())
+          .map(([teamId, installerMap]) => {
+            const installers = Array.from(installerMap.entries())
+              .map(([installerName, boxSet]) => ({
+                installerName,
+                boxNumbers: Array.from(boxSet).sort(),
+              }))
+              .sort((a, b) => a.installerName.localeCompare(b.installerName));
+
+            const teamName = teams.find((t) => t.id === teamId)?.name || teamId;
+
+            return { teamId, teamName, installers };
+          })
+          .sort((a, b) => a.teamName.localeCompare(b.teamName));
+
+        setAssignmentSummary(summary);
+        setAssignmentSummaryLoading(false);
+      },
+      (error) => {
+        console.error("Failed to load assignment summary:", error);
+        setAssignmentSummary([]);
+        setAssignmentSummaryLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [userProfile, teams]);
 
   // Real-time teams listener
   useEffect(() => {
@@ -1269,6 +1334,211 @@ export default function Admin() {
       });
     } finally {
       setExportingDevicesByBox(false);
+    }
+  };
+
+  const exportAssignmentsByAmanah = async () => {
+    if (!userProfile?.isAdmin) return;
+    setExportingAssignmentsByAmanah(true);
+
+    try {
+      const [devicesSnapshot, installationsSnapshot, locationsSnapshot, teamsSnapshot] =
+        await Promise.all([
+          getDocs(collection(db, "devices")),
+          getDocs(collection(db, "installations")),
+          getDocs(collection(db, "locations")),
+          getDocs(collection(db, "teams")),
+        ]);
+
+      // Map teamId -> team name
+      const teamNameMap: Record<string, string> = {};
+      teamsSnapshot.forEach((doc) => {
+        const data = doc.data();
+        teamNameMap[doc.id] = data.name || doc.id;
+      });
+
+      // Map locationId -> municipality name
+      const locationMunicipalityMap: Record<string, string> = {};
+      locationsSnapshot.forEach((doc) => {
+        const data = doc.data() as any;
+        const municipality =
+          data.municipalityName ||
+          data.municipality ||
+          data["MunicipalityName"] ||
+          "";
+        if (data.locationId) {
+          locationMunicipalityMap[data.locationId] = municipality;
+        }
+      });
+
+      // Map deviceId -> latest installation (by createdAt)
+      const installationByDevice: Record<string, Installation> = {};
+      installationsSnapshot.forEach((doc) => {
+        const data = doc.data() as any;
+        const installation: Installation = {
+          ...data,
+          id: doc.id,
+          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : data.createdAt,
+          updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : data.updatedAt,
+        };
+        const deviceId = installation.deviceId;
+        if (!deviceId) return;
+        const existing = installationByDevice[deviceId];
+        const existingTime =
+          existing?.createdAt instanceof Date ? existing.createdAt.getTime() : -Infinity;
+        const currentTime =
+          installation.createdAt instanceof Date ? installation.createdAt.getTime() : -Infinity;
+        if (!existing || currentTime > existingTime) {
+          installationByDevice[deviceId] = installation;
+        }
+      });
+
+      // Group rows by team
+      const rowsByTeam: Record<string, string[][]> = {};
+      devicesSnapshot.forEach((doc) => {
+        const data = doc.data() as any;
+        const teamId = data.teamId;
+        if (!teamId) return; // only include devices assigned to a team
+
+        const deviceId = doc.id;
+        const installation = installationByDevice[deviceId];
+
+        const locationId = installation?.locationId || "";
+        const lat = installation?.latitude;
+        const lon = installation?.longitude;
+        const coordinates =
+          typeof lat === "number" && typeof lon === "number"
+            ? `${lat}, ${lon}`
+            : "";
+        const municipality =
+          installation?.municipalityName ||
+          (locationId ? locationMunicipalityMap[locationId] : "") ||
+          "";
+        const sensorHeight =
+          installation?.sensorReading != null ? String(installation.sensorReading) : "";
+
+        const teamName = teamNameMap[teamId] || teamId;
+        const amanah = translateTeamNameToArabic(teamName) || teamName || "";
+
+        const assignedTo =
+          data.assignedInstallerName ||
+          installation?.installedByName ||
+          "";
+
+        if (!rowsByTeam[teamId]) {
+          rowsByTeam[teamId] = [];
+        }
+        rowsByTeam[teamId].push([
+          "", // placeholder for Serial No (will fill after)
+          locationId || "",
+          coordinates,
+          deviceId,
+          amanah,
+          municipality,
+          sensorHeight,
+          assignedTo,
+        ]);
+      });
+
+      if (Object.keys(rowsByTeam).length === 0) {
+        toast({
+          title: "No Assignments Found",
+          description: "No devices with team assignments were found.",
+        });
+        setExportingAssignmentsByAmanah(false);
+        return;
+      }
+
+      const workbook = XLSX.utils.book_new();
+      const headers = [
+        "Serial No",
+        "Location ID",
+        "Coordinates",
+        "DEVICE ID",
+        "Amanah",
+        "Municipality",
+        "Sensor Height",
+        "Assigned to",
+      ];
+
+      const boxSummary: Record<
+        string,
+        { count: number; teamNames: Set<string>; installerNames: Set<string> }
+      > = {};
+
+      Object.entries(rowsByTeam).forEach(([teamId, rows]) => {
+        const sheetRows = [headers];
+        rows.forEach((row, idx) => {
+          const serial = (idx + 1).toString();
+          sheetRows.push([serial, ...row.slice(1)]);
+        });
+
+        const sheet = XLSX.utils.aoa_to_sheet(sheetRows);
+        const rawName = teamNameMap[teamId] || teamId;
+        const amanahName = translateTeamNameToArabic(rawName) || rawName;
+        const safeSheetName = (amanahName || "Sheet").substring(0, 30) || "Sheet";
+        XLSX.utils.book_append_sheet(workbook, sheet, safeSheetName);
+      });
+
+      // Build box summary sheet
+      devicesSnapshot.forEach((doc) => {
+        const data = doc.data() as any;
+        const boxNumber = data.boxNumber || "(no box)";
+        if (!boxSummary[boxNumber]) {
+          boxSummary[boxNumber] = {
+            count: 0,
+            teamNames: new Set<string>(),
+            installerNames: new Set<string>(),
+          };
+        }
+        boxSummary[boxNumber].count += 1;
+        const teamName = data.teamId ? teamNameMap[data.teamId] || data.teamId : "";
+        if (teamName) boxSummary[boxNumber].teamNames.add(teamName);
+        const installerName = data.assignedInstallerName || "";
+        if (installerName) boxSummary[boxNumber].installerNames.add(installerName);
+      });
+
+      const boxSummaryRows = [
+        ["BoxNumber", "Number of Devices", "Assigned to team", "Assigned to Installer"],
+      ];
+
+      Object.entries(boxSummary)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .forEach(([boxNumber, info]) => {
+          const teamJoined = Array.from(info.teamNames).join("; ");
+          const installerJoined = Array.from(info.installerNames).join("; ");
+          boxSummaryRows.push([
+            boxNumber,
+            info.count.toString(),
+            teamJoined,
+            installerJoined,
+          ]);
+        });
+
+      const boxSheet = XLSX.utils.aoa_to_sheet(boxSummaryRows);
+      XLSX.utils.book_append_sheet(workbook, boxSheet, "Box Summary");
+
+      const dateStr = new Date().toISOString().split("T")[0];
+      XLSX.writeFile(workbook, `assignments-by-amanah-${dateStr}.xlsx`);
+
+      const totalDevices = Object.values(rowsByTeam).reduce(
+        (sum, rows) => sum + rows.length,
+        0
+      );
+
+      toast({
+        title: "Export Complete",
+        description: `Exported ${totalDevices} devices across ${Object.keys(rowsByTeam).length} Amanah sheets.`,
+      });
+    } catch (error: any) {
+      console.error("Failed to export assignments:", error);
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error?.message || "An error occurred during export.",
+      });
+    } finally {
+      setExportingAssignmentsByAmanah(false);
     }
   };
 
@@ -3083,6 +3353,87 @@ export default function Admin() {
             <p className="text-sm text-muted-foreground">
               Generating CSV files for each box. Multiple files will download automatically.
             </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Export assignments by Amanah */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle>Export Assignments by Amanah</CardTitle>
+          <CardDescription>
+            Generates an Excel workbook with one sheet per Amanah. Each sheet lists devices that have been assigned to a team, including location, coordinates, municipality, sensor height, and installer assignment. Empty fields are left blank.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Button onClick={exportAssignmentsByAmanah} disabled={exportingAssignmentsByAmanah}>
+            {exportingAssignmentsByAmanah ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Exporting...
+              </>
+            ) : (
+              <>
+                <FileDown className="h-4 w-4 mr-2" />
+                Export assignments (per Amanah)
+              </>
+            )}
+          </Button>
+          {exportingAssignmentsByAmanah && (
+            <p className="text-sm text-muted-foreground">
+              Building one sheet per Amanah. Large exports may take a moment.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Assignment summary grouped by team and installer */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle>Current Box Assignments</CardTitle>
+          <CardDescription>
+            Grouped by team, then installer. Shows which boxes are assigned. Entries with missing data stay blank.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {assignmentSummaryLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Loading assignments...</span>
+            </div>
+          ) : assignmentSummary.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No box assignments found.</p>
+          ) : (
+            <div className="space-y-4">
+              {assignmentSummary.map((team) => (
+                <div key={team.teamId} className="space-y-2">
+                  <div className="font-semibold text-sm">{team.teamName}</div>
+                  <div className="space-y-2 pl-2 border-l">
+                    {team.installers.map((inst) => (
+                      <div key={`${team.teamId}-${inst.installerName}`} className="space-y-1">
+                        <div className="text-sm text-muted-foreground flex items-center gap-2">
+                          <Users className="h-4 w-4" />
+                          <span>{inst.installerName}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {inst.boxNumbers.length} box{inst.boxNumbers.length !== 1 ? "es" : ""}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {inst.boxNumbers.map((box) => (
+                            <span
+                              key={`${team.teamId}-${inst.installerName}-${box}`}
+                              className="px-2 py-1 text-xs rounded-full border bg-slate-50 dark:bg-slate-950/30"
+                            >
+                              {box}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>
