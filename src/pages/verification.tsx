@@ -80,7 +80,7 @@ export default function Verification() {
   // Filter states
   const [installerNameFilter, setInstallerNameFilter] = useState<string>("");
   const [teamIdFilter, setTeamIdFilter] = useState<string>("");
-  const [dateFilter, setDateFilter] = useState<string>("");
+  const [dateFilter, setDateFilter] = useState<string>(() => format(new Date(), "yyyy-MM-dd"));
   const [deviceIdFilter, setDeviceIdFilter] = useState<string>("");
   const [displayLimit, setDisplayLimit] = useState(500);
   const [exportDate, setExportDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
