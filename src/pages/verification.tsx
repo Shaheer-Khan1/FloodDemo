@@ -124,7 +124,7 @@ export default function Verification() {
     // Update local state immediately
     setFieldCheckStates(newStates);
     
-    // Build metadata for this field
+    // Update metadata
     const newMetadata = { ...(selectedItem.installation.fieldCheckMetadata || {}) };
     if (checked) {
       newMetadata[key] = {
@@ -157,41 +157,30 @@ export default function Verification() {
   const allMandatoryChecksCompleted = useMemo(() => {
     if (!selectedItem) return false;
 
+    // Only 5 mandatory fields for approval
     const keys: string[] = [
-      // Installer data (essential fields only)
       "installer_deviceId",
-      "installer_installer",
       "installer_locationId",
       "installer_sensorReading",
       "installer_coordinates",
-      // Removed: installer_submitted (date not required to review)
     ];
 
-    // Server data is MANDATORY - cannot approve without it
-    if (!selectedItem.serverData) {
-      return false; // Block approval if no server data
-    }
-
-    // Server data fields (all mandatory)
-    keys.push(
-      "server_deviceId",
-      "server_sensorData",
-      "server_receivedAt",
-      "server_variance"
-    );
-
-    // One checkbox per installation image
-    (selectedItem.installation.imageUrls || []).forEach((_, index) => {
-      keys.push(`image_${index}`);
-    });
-
-    // Checkbox for video if present
-    if (selectedItem.installation.videoUrl) {
-      keys.push("video");
+    // Server sensor data is mandatory if server data exists
+    if (selectedItem.serverData) {
+      keys.push("server_sensorData");
     }
 
     if (keys.length === 0) return false;
-    return keys.every((key) => fieldCheckStates[key]);
+    const allChecked = keys.every((key) => fieldCheckStates[key]);
+    
+    // Debug: Log which fields are missing
+    if (!allChecked) {
+      const missing = keys.filter(key => !fieldCheckStates[key]);
+      console.log("Missing mandatory checks:", missing);
+      console.log("Current fieldCheckStates:", fieldCheckStates);
+    }
+    
+    return allChecked;
   }, [selectedItem, fieldCheckStates]);
 
   // Auto-set filter to escalated for managers (cannot be changed)
@@ -804,10 +793,29 @@ export default function Verification() {
 
     // Validate that all mandatory checks are completed
     if (!allMandatoryChecksCompleted) {
+      const keys: string[] = [
+        "installer_deviceId",
+        "installer_locationId",
+        "installer_sensorReading",
+        "installer_coordinates",
+      ];
+      if (selectedItem.serverData) {
+        keys.push("server_sensorData");
+      }
+      const missing = keys.filter(key => !fieldCheckStates[key]);
+      const missingLabels = missing.map(key => {
+        if (key === "installer_deviceId") return "Device ID";
+        if (key === "installer_locationId") return "Location ID";
+        if (key === "installer_sensorReading") return "Sensor Reading";
+        if (key === "installer_coordinates") return "Coordinates";
+        if (key === "server_sensorData") return "Server Sensor Data";
+        return key;
+      });
+      
       toast({
         variant: "destructive",
         title: "Cannot Approve",
-        description: "All data fields must be checked before approval. Please review all items and use 'Unreview' to reset if needed.",
+        description: `Please check the following fields: ${missingLabels.join(", ")}`,
       });
       return;
     }
@@ -2812,64 +2820,6 @@ export default function Verification() {
                 </Alert>
               )}
 
-              {/* Server Data Required Warning */}
-              {!selectedItem.serverData && (
-                <Alert variant="destructive">
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertTitle>Server Data Required</AlertTitle>
-                  <AlertDescription>
-                    This installation cannot be approved without server data. Please fetch the latest server readings using the "Fetch" or "Refresh" button in the table, then re-open this review.
-                  </AlertDescription>
-                </Alert>
-              )}
-
-              {/* Review Progress Indicator */}
-              {!isEditMode && (() => {
-                const keys: string[] = [
-                  // Essential installer data only
-                  "installer_deviceId",
-                  "installer_installer",
-                  "installer_locationId",
-                  "installer_sensorReading",
-                  "installer_coordinates",
-                ];
-                // Server data is mandatory
-                if (selectedItem.serverData) {
-                  keys.push("server_deviceId", "server_sensorData", "server_receivedAt", "server_variance");
-                }
-                (selectedItem.installation.imageUrls || []).forEach((_, index) => {
-                  keys.push(`image_${index}`);
-                });
-                if (selectedItem.installation.videoUrl) {
-                  keys.push("video");
-                }
-                const checkedCount = keys.filter(key => fieldCheckStates[key]).length;
-                const totalCount = keys.length;
-                const isComplete = checkedCount === totalCount && selectedItem.serverData; // Must have server data
-
-                return (
-                  <Alert className={isComplete ? "bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800" : "bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800"}>
-                    <CircleCheck className={`h-4 w-4 ${isComplete ? "text-green-600" : "text-blue-600"}`} />
-                    <AlertTitle className={isComplete ? "text-green-900 dark:text-green-100" : "text-blue-900 dark:text-blue-100"}>
-                      Review Progress: {checkedCount} / {totalCount} items checked {!selectedItem.serverData && "(Server data missing)"}
-                    </AlertTitle>
-                    <AlertDescription className={isComplete ? "text-green-800 dark:text-green-200" : "text-blue-800 dark:text-blue-200"}>
-                      {!selectedItem.serverData 
-                        ? "⚠️ Server data is required before approval. Please fetch server data first."
-                        : isComplete 
-                          ? "All items have been reviewed. You can now approve this installation."
-                          : "Please review and check all data fields before approving. Use 'Unreview' to reset all checkboxes if needed."}
-                    </AlertDescription>
-                    <div className="mt-2 w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                      <div 
-                        className={`h-2 rounded-full transition-all ${isComplete ? "bg-green-600" : selectedItem.serverData ? "bg-blue-600" : "bg-red-600"}`}
-                        style={{ width: `${selectedItem.serverData ? (checkedCount / totalCount) * 100 : 0}%` }}
-                      />
-                    </div>
-                  </Alert>
-                );
-              })()}
-
               {/* Data Comparison */}
               <div className="grid grid-cols-2 gap-6">
                 {/* Installer Data */}
@@ -2914,28 +2864,16 @@ export default function Verification() {
                       )}
                     </div>
                     {/* Installer */}
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <p className="text-sm text-muted-foreground">Installer</p>
-                        <div className="flex flex-col gap-1 mt-1">
-                          <p className="text-base font-medium">{selectedItem.installation.installedByName}</p>
-                          {selectedItem.installation.teamId && getTeamName(selectedItem.installation.teamId) && (
-                            <Badge variant="outline" className="text-xs w-fit">
-                              {getTeamName(selectedItem.installation.teamId)}
-                            </Badge>
-                          )}
-                        </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Installer</p>
+                      <div className="flex flex-col gap-1 mt-1">
+                        <p className="text-base font-medium">{selectedItem.installation.installedByName}</p>
+                        {selectedItem.installation.teamId && getTeamName(selectedItem.installation.teamId) && (
+                          <Badge variant="outline" className="text-xs w-fit">
+                            {getTeamName(selectedItem.installation.teamId)}
+                          </Badge>
+                        )}
                       </div>
-                      {!isEditMode && (
-                        <Checkbox
-                          checked={!!fieldCheckStates["installer_installer"]}
-                          onCheckedChange={(checked) =>
-                            toggleFieldCheck("installer_installer", checked === true)
-                          }
-                          disabled={processing}
-                          aria-label="Mark installer as checked"
-                        />
-                      )}
                     </div>
                     {/* Location ID */}
                     <div className="flex items-start justify-between gap-2">
@@ -3086,15 +3024,15 @@ export default function Verification() {
                       ) : null;
                     })()}
                     <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <p className="text-sm text-muted-foreground">Submitted</p>
-                        <p className="text-base font-medium flex items-center gap-1">
-                          <Calendar className="h-4 w-4 text-muted-foreground" />
-                          {selectedItem.installation.createdAt 
-                            ? format(selectedItem.installation.createdAt, "MMM d, yyyy HH:mm")
-                            : "-"}
-                        </p>
-                      </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Submitted</p>
+                      <p className="text-base font-medium flex items-center gap-1">
+                        <Calendar className="h-4 w-4 text-muted-foreground" />
+                        {selectedItem.installation.createdAt 
+                          ? format(selectedItem.installation.createdAt, "MMM d, yyyy HH:mm")
+                          : "-"}
+                      </p>
+                    </div>
                     </div>
                   </CardContent>
                 </Card>
@@ -3107,19 +3045,9 @@ export default function Verification() {
                   <CardContent className="space-y-3">
                     {selectedItem.serverData ? (
                       <>
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <p className="text-sm text-muted-foreground">Device ID</p>
-                            <p className="text-base font-mono font-medium">{selectedItem.serverData.deviceId}</p>
-                          </div>
-                          <Checkbox
-                            checked={!!fieldCheckStates["server_deviceId"]}
-                            onCheckedChange={(checked) =>
-                              toggleFieldCheck("server_deviceId", checked === true)
-                            }
-                            disabled={processing}
-                            aria-label="Mark server device ID as checked"
-                          />
+                        <div>
+                          <p className="text-sm text-muted-foreground">Device ID</p>
+                          <p className="text-base font-mono font-medium">{selectedItem.serverData.deviceId}</p>
                         </div>
                         <div className="flex items-start justify-between gap-2">
                           <div>
@@ -3132,54 +3060,36 @@ export default function Verification() {
                               <p className="text-xs text-muted-foreground mt-1">{selectedItem.installation.latestDisTimestamp}</p>
                             )}
                           </div>
-                          <Checkbox
-                            checked={!!fieldCheckStates["server_sensorData"]}
-                            onCheckedChange={(checked) =>
-                              toggleFieldCheck("server_sensorData", checked === true)
-                            }
-                            disabled={processing}
-                            aria-label="Mark server sensor data as checked"
-                          />
+                          {!isEditMode && (
+                            <Checkbox
+                              checked={!!fieldCheckStates["server_sensorData"]}
+                              onCheckedChange={(checked) =>
+                                toggleFieldCheck("server_sensorData", checked === true)
+                              }
+                              disabled={processing}
+                              aria-label="Verify server sensor data"
+                            />
+                          )}
                         </div>
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <p className="text-sm text-muted-foreground">Received At</p>
-                            <p className="text-base font-medium flex items-center gap-1">
-                              <Calendar className="h-4 w-4 text-muted-foreground" />
-                              {selectedItem.installation.latestDisTimestamp
-                                ? selectedItem.installation.latestDisTimestamp
-                                : (selectedItem.serverData.receivedAt
-                                    ? format(selectedItem.serverData.receivedAt, "MMM d, yyyy HH:mm")
-                                    : "-")}
-                            </p>
-                          </div>
-                          <Checkbox
-                            checked={!!fieldCheckStates["server_receivedAt"]}
-                            onCheckedChange={(checked) =>
-                              toggleFieldCheck("server_receivedAt", checked === true)
-                            }
-                            disabled={processing}
-                            aria-label="Mark server received at as checked"
-                          />
+                        <div>
+                          <p className="text-sm text-muted-foreground">Received At</p>
+                          <p className="text-base font-medium flex items-center gap-1">
+                            <Calendar className="h-4 w-4 text-muted-foreground" />
+                            {selectedItem.installation.latestDisTimestamp
+                              ? selectedItem.installation.latestDisTimestamp
+                              : (selectedItem.serverData.receivedAt
+                                  ? format(selectedItem.serverData.receivedAt, "MMM d, yyyy HH:mm")
+                                  : "-")}
+                          </p>
                         </div>
-                        {selectedItem.percentageDifference !== undefined && (
-                          <div className="flex items-start justify-between gap-2">
+                          {selectedItem.percentageDifference !== undefined && (
                             <div>
                               <p className="text-sm text-muted-foreground">Variance</p>
                               <p className={`text-2xl font-bold ${selectedItem.percentageDifference > 5 ? 'text-red-600' : 'text-green-600'}`}>
                                 {selectedItem.percentageDifference.toFixed(2)}%
                               </p>
                             </div>
-                            <Checkbox
-                              checked={!!fieldCheckStates["server_variance"]}
-                              onCheckedChange={(checked) =>
-                                toggleFieldCheck("server_variance", checked === true)
-                              }
-                              disabled={processing}
-                              aria-label="Mark variance as checked"
-                            />
-                          </div>
-                        )}
+                          )}
                       </>
                     ) : (
                       <div className="text-center py-8">
@@ -3238,18 +3148,6 @@ export default function Verification() {
                             } ${isDeleted ? "opacity-50" : ""}`}
                             onClick={() => !isEditMode && setImagePreviewUrl(url)}
                           />
-                          {!isEditMode && (
-                            <div className="absolute top-2 left-2 bg-white/80 rounded p-1">
-                              <Checkbox
-                                checked={!!fieldCheckStates[`image_${index}`]}
-                                onCheckedChange={(checked) =>
-                                  toggleFieldCheck(`image_${index}`, checked === true)
-                                }
-                                disabled={processing}
-                                aria-label={`Mark image ${index + 1} as checked`}
-                              />
-                            </div>
-                          )}
                           {isEditMode && (
                             <Button
                               type="button"
@@ -3271,6 +3169,18 @@ export default function Verification() {
                                 <Trash2 className="h-4 w-4" />
                               )}
                             </Button>
+                          )}
+                          {!isEditMode && (
+                            <div className="absolute top-2 left-2 bg-white/90 dark:bg-gray-800/90 rounded p-1.5 shadow-md">
+                              <Checkbox
+                                checked={!!fieldCheckStates[`image_${index}`]}
+                                onCheckedChange={(checked) =>
+                                  toggleFieldCheck(`image_${index}`, checked === true)
+                                }
+                                disabled={processing}
+                                aria-label={`Verify image ${index + 1}`}
+                              />
+                            </div>
                           )}
                           {isDeleted && (
                             <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-lg">
@@ -3358,18 +3268,6 @@ export default function Verification() {
                         controls
                         className="w-full h-64 object-cover rounded-lg border"
                       />
-                      {!isEditMode && (
-                        <div className="absolute top-2 left-2 bg-white/80 rounded p-1">
-                          <Checkbox
-                            checked={!!fieldCheckStates["video"]}
-                            onCheckedChange={(checked) =>
-                              toggleFieldCheck("video", checked === true)
-                            }
-                            disabled={processing}
-                            aria-label="Mark video as checked"
-                          />
-                        </div>
-                      )}
                     </div>
                   </div>
                 )}
@@ -3801,4 +3699,3 @@ export default function Verification() {
     </div>
   );
 }
-

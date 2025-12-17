@@ -113,38 +113,44 @@ export default function ReviewAudit() {
       const fieldCheckStates = installation.fieldCheckStates || {};
       const fieldCheckMetadata = installation.fieldCheckMetadata || {};
       
-      // Determine required fields based on installation data
+      // Only count fields that actually have checkboxes in the verification screen
       const requiredFields = [
         "installer_deviceId",
-        "installer_installer",
         "installer_locationId",
         "installer_sensorReading",
         "installer_coordinates",
       ];
 
-      // Add server data fields if available
+      // Add server sensor data field if available
       if (installation.latestDisCm != null) {
-        requiredFields.push(
-          "server_deviceId",
-          "server_sensorData",
-          "server_receivedAt",
-          "server_variance"
-        );
+        requiredFields.push("server_sensorData");
       }
 
-      // Add image fields
+      // Add image fields (optional checkboxes)
       (installation.imageUrls || []).forEach((_, index) => {
         requiredFields.push(`image_${index}`);
       });
 
-      // Add video field if present
-      if (installation.videoUrl) {
-        requiredFields.push("video");
-      }
-
       const totalFields = requiredFields.length;
       const checkedFields = requiredFields.filter(field => fieldCheckStates[field]).length;
       const progressPercentage = totalFields > 0 ? (checkedFields / totalFields) * 100 : 0;
+
+      // Get the reviewer name from fieldCheckMetadata
+      let reviewedBy = null;
+      let reviewedByUid = null;
+      if (fieldCheckMetadata && Object.keys(fieldCheckMetadata).length > 0) {
+        // Get the first metadata entry (all should have the same reviewer)
+        const firstKey = Object.keys(fieldCheckMetadata)[0];
+        const metadata = fieldCheckMetadata[firstKey];
+        if (metadata) {
+          reviewedBy = metadata.checkedByName || null;
+          reviewedByUid = metadata.checkedBy || null;
+        }
+      } else if (checkedFields > 0) {
+        // Fallback: If there are checked fields but no metadata (old data), show "In Review"
+        reviewedBy = "In Review";
+        reviewedByUid = null;
+      }
 
       return {
         ...installation,
@@ -152,6 +158,8 @@ export default function ReviewAudit() {
         checkedFields,
         progressPercentage,
         reviewStatus: checkedFields === 0 ? "not-started" : checkedFields === totalFields ? "complete" : "partial",
+        reviewedBy,
+        reviewedByUid,
       };
     });
   }, [installations]);
@@ -375,6 +383,8 @@ export default function ReviewAudit() {
                     <TableHead>Device ID</TableHead>
                     <TableHead>Installer</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>Reviewed By</TableHead>
+                    <TableHead>Verified By</TableHead>
                     <TableHead>Review Progress</TableHead>
                     <TableHead>Last Updated</TableHead>
                     <TableHead>Actions</TableHead>
@@ -400,6 +410,25 @@ export default function ReviewAudit() {
                         >
                           {installation.status}
                         </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {installation.reviewedBy ? (
+                          <div className="space-y-0.5">
+                            <div className="text-sm font-medium">{installation.reviewedBy}</div>
+                            {installation.reviewedByUid && (
+                              <div className="text-xs text-muted-foreground font-mono">{installation.reviewedByUid}</div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-sm text-muted-foreground">Not reviewed</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {installation.verifiedBy ? (
+                          <span className="text-sm">{installation.verifiedBy}</span>
+                        ) : (
+                          <span className="text-sm text-muted-foreground">Not verified</span>
+                        )}
                       </TableCell>
                       <TableCell>
                         <div className="space-y-1">
@@ -460,7 +489,7 @@ export default function ReviewAudit() {
 
       {/* Details Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-[95vw] sm:max-w-6xl max-h-[90vh] overflow-y-auto px-4 sm:px-6">
           <DialogHeader>
             <DialogTitle>Review Audit Details</DialogTitle>
           </DialogHeader>
@@ -471,11 +500,11 @@ export default function ReviewAudit() {
                 <CardHeader>
                   <CardTitle className="text-lg">Installation Information</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-2">
-                  <div className="grid grid-cols-2 gap-4">
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     <div>
                       <p className="text-sm text-muted-foreground">Device ID</p>
-                      <p className="font-mono font-medium">{selectedInstallation.deviceId}</p>
+                      <p className="font-mono font-medium text-sm sm:text-base">{selectedInstallation.deviceId}</p>
                     </div>
                     <div>
                       <p className="text-sm text-muted-foreground">Installer</p>
@@ -486,6 +515,18 @@ export default function ReviewAudit() {
                       <Badge variant="outline">{selectedInstallation.status}</Badge>
                     </div>
                     <div>
+                      <p className="text-sm text-muted-foreground">Location ID</p>
+                      <p className="font-medium">{selectedInstallation.locationId || "-"}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Sensor Reading</p>
+                      <p className="font-medium">{selectedInstallation.sensorReading} cm</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Server Data</p>
+                      <p className="font-medium">{selectedInstallation.latestDisCm != null ? `${selectedInstallation.latestDisCm} cm` : "N/A"}</p>
+                    </div>
+                    <div>
                       <p className="text-sm text-muted-foreground">Submitted</p>
                       <p className="text-sm">
                         {selectedInstallation.createdAt
@@ -493,14 +534,131 @@ export default function ReviewAudit() {
                           : "-"}
                       </p>
                     </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Verified By</p>
+                      <p className="text-sm">{selectedInstallation.verifiedBy || "Not verified"}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Verified At</p>
+                      <p className="text-sm">
+                        {selectedInstallation.verifiedAt
+                          ? format(selectedInstallation.verifiedAt, "MMM d, yyyy HH:mm")
+                          : "Not verified"}
+                      </p>
+                    </div>
                   </div>
+                  {selectedInstallation.latitude && selectedInstallation.longitude && (
+                    <div>
+                      <p className="text-sm text-muted-foreground">GPS Coordinates</p>
+                      <p className="text-sm font-mono">
+                        {selectedInstallation.latitude.toFixed(6)}, {selectedInstallation.longitude.toFixed(6)}
+                      </p>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 
-              {/* Review Progress */}
+              {/* Installation Photos */}
+              {selectedInstallation.imageUrls && selectedInstallation.imageUrls.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-lg">Installation Photos ({selectedInstallation.imageUrls.length})</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {selectedInstallation.imageUrls.map((url, index) => {
+                        const imageKey = `image_${index}`;
+                        const metadata = selectedInstallation.fieldCheckMetadata?.[imageKey];
+                        return (
+                          <div key={index} className="relative group">
+                            <img
+                              src={url}
+                              alt={`Installation photo ${index + 1}`}
+                              className="w-full h-48 object-cover rounded-lg border cursor-pointer transition-transform hover:scale-105"
+                              onClick={() => window.open(url, '_blank')}
+                            />
+                            <div className="absolute bottom-2 left-2 bg-black/70 text-white px-2 py-1 rounded text-xs">
+                              Photo {index + 1}
+                            </div>
+                            {metadata && (
+                              <div className="absolute top-2 right-2 bg-green-500/90 text-white px-2 py-1 rounded text-xs flex items-center gap-1">
+                                <CheckCircle2 className="h-3 w-3" />
+                                Verified
+                              </div>
+                            )}
+                            {metadata && (
+                              <div className="mt-2 p-2 bg-muted rounded text-xs space-y-1">
+                                <p className="font-medium text-green-700 dark:text-green-400">✓ Verified</p>
+                                <p className="text-muted-foreground">
+                                  By: <span className="font-medium text-foreground">{metadata.checkedByName}</span>
+                                </p>
+                                <p className="text-muted-foreground">
+                                  UID: <span className="font-mono text-xs">{metadata.checkedBy}</span>
+                                </p>
+                                <p className="text-muted-foreground">
+                                  At: {format(
+                                    metadata.checkedAt instanceof Date 
+                                      ? metadata.checkedAt 
+                                      : (metadata.checkedAt as any).toDate 
+                                        ? (metadata.checkedAt as any).toDate()
+                                        : new Date((metadata.checkedAt as any).seconds * 1000), 
+                                    "MMM d, yyyy HH:mm"
+                                  )}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* 360 Video */}
+              {selectedInstallation.videoUrl && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-lg">360° Video</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <video
+                      src={selectedInstallation.videoUrl}
+                      controls
+                      className="w-full h-64 object-cover rounded-lg border"
+                    />
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Review Progress - Only show editable fields */}
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-lg">Review Progress</CardTitle>
+                  <CardTitle className="text-lg flex items-center justify-between">
+                    <span>Review Progress</span>
+                    <Badge variant="outline" className="text-sm">
+                      {(() => {
+                        const fieldCheckStates = selectedInstallation.fieldCheckStates || {};
+                        // Only count fields with actual checkboxes
+                        const allFields = [
+                          "installer_deviceId",
+                          "installer_locationId",
+                          "installer_sensorReading",
+                          "installer_coordinates",
+                        ];
+                        // Add server sensor data if available
+                        if (selectedInstallation.latestDisCm != null) {
+                          allFields.push("server_sensorData");
+                        }
+                        // Add image fields
+                        (selectedInstallation.imageUrls || []).forEach((_, index) => {
+                          allFields.push(`image_${index}`);
+                        });
+                        const checkedCount = allFields.filter(f => fieldCheckStates[f]).length;
+                        return `${checkedCount} / ${allFields.length} checked`;
+                      })()}
+                    </Badge>
+                  </CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-4">
@@ -508,6 +666,7 @@ export default function ReviewAudit() {
                       const fieldCheckStates = selectedInstallation.fieldCheckStates || {};
                       const fieldCheckMetadata = selectedInstallation.fieldCheckMetadata || {};
                       
+                      // Only show editable fields (those with checkboxes)
                       const allFields = [
                         "installer_deviceId",
                         "installer_installer",
@@ -515,23 +674,6 @@ export default function ReviewAudit() {
                         "installer_sensorReading",
                         "installer_coordinates",
                       ];
-
-                      if (selectedInstallation.latestDisCm != null) {
-                        allFields.push(
-                          "server_deviceId",
-                          "server_sensorData",
-                          "server_receivedAt",
-                          "server_variance"
-                        );
-                      }
-
-                      (selectedInstallation.imageUrls || []).forEach((_, index) => {
-                        allFields.push(`image_${index}`);
-                      });
-
-                      if (selectedInstallation.videoUrl) {
-                        allFields.push("video");
-                      }
 
                       return (
                         <div className="space-y-2">
@@ -542,36 +684,48 @@ export default function ReviewAudit() {
                             return (
                               <div
                                 key={field}
-                                className={`p-3 rounded-lg border ${
+                                className={`p-3 sm:p-4 rounded-lg border transition-all ${
                                   isChecked
                                     ? "bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800"
                                     : "bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700"
                                 }`}
                               >
-                                <div className="flex items-center justify-between">
-                                  <div className="flex items-center gap-3">
+                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                                  <div className="flex items-start sm:items-center gap-3">
                                     {isChecked ? (
-                                      <CheckCircle2 className="h-5 w-5 text-green-600" />
+                                      <CheckCircle2 className="h-5 w-5 text-green-600 flex-shrink-0 mt-0.5 sm:mt-0" />
                                     ) : (
-                                      <Clock className="h-5 w-5 text-gray-400" />
+                                      <Clock className="h-5 w-5 text-gray-400 flex-shrink-0 mt-0.5 sm:mt-0" />
                                     )}
-                                    <div>
-                                      <p className="font-medium">{getFieldLabel(field)}</p>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="font-medium text-sm sm:text-base">{getFieldLabel(field)}</p>
                                       {isChecked && metadata && (
-                                        <div className="text-xs text-muted-foreground mt-1">
-                                          Checked by <span className="font-medium">{metadata.checkedByName || metadata.checkedBy}</span>
+                                        <div className="text-xs text-muted-foreground mt-1 space-y-0.5">
+                                          <div>
+                                            Verified by <span className="font-medium text-green-700 dark:text-green-400">{metadata.checkedByName || metadata.checkedBy}</span>
+                                          </div>
                                           {metadata.checkedAt && (
-                                            <span className="ml-2">
-                                              on {format(metadata.checkedAt, "MMM d, yyyy HH:mm")}
-                                            </span>
+                                            <div className="text-[11px]">
+                                              {format(
+                                                metadata.checkedAt instanceof Date 
+                                                  ? metadata.checkedAt 
+                                                  : (metadata.checkedAt as any).toDate 
+                                                    ? (metadata.checkedAt as any).toDate()
+                                                    : new Date((metadata.checkedAt as any).seconds * 1000), 
+                                                "MMM d, yyyy 'at' HH:mm"
+                                              )}
+                                            </div>
                                           )}
                                         </div>
+                                      )}
+                                      {!isChecked && (
+                                        <p className="text-xs text-muted-foreground mt-1">Not verified yet</p>
                                       )}
                                     </div>
                                   </div>
                                   {isChecked && (
-                                    <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
-                                      Reviewed
+                                    <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 w-fit">
+                                      ✓ Verified
                                     </Badge>
                                   )}
                                 </div>
