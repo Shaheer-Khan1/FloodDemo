@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, FileUp, Plus, List, CheckSquare, Box, UserPlus, MapPin, ChevronLeft, ChevronRight } from "lucide-react";
+import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, FileUp, Plus, List, CheckSquare, Box, UserPlus, MapPin, ChevronLeft, ChevronRight, ClipboardList } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
@@ -59,6 +59,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       { title: "Assign Box", icon: Box, url: "/assign-box" },
       { title: "Open Boxes", icon: Box, url: "/open-boxes" },
       { title: "Verification", icon: CheckSquare, url: "/verification" },
+      { title: "Review Audit", icon: ClipboardList, url: "/review-audit" },
       { title: "Installations Map", icon: MapPin, url: "/installations-map" },
       { title: "New Installation", icon: Plus, url: "/new-installation" },
       { title: "My Submissions", icon: List, url: "/my-submissions" },

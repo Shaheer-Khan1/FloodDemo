@@ -59,6 +59,12 @@ export default function Admin() {
   const [boxCodeProgress, setBoxCodeProgress] = useState(0);
   const [boxCodeResult, setBoxCodeResult] = useState<{ success: number; failed: number; notFound: number; errors: string[] } | null>(null);
   
+  // Bulk Box Code Reassign State
+  const [bulkBoxCodeDeviceIds, setBulkBoxCodeDeviceIds] = useState("");
+  const [newBoxCode, setNewBoxCode] = useState("");
+  const [bulkBoxCodeUpdating, setBulkBoxCodeUpdating] = useState(false);
+  const [bulkBoxCodeResult, setBulkBoxCodeResult] = useState<{ success: number; failed: number; notFound: number; errors: string[] } | null>(null);
+  
   // Export Devices by Box State
   const [exportingDevicesByBox, setExportingDevicesByBox] = useState(false);
   const [exportingAssignmentsByAmanah, setExportingAssignmentsByAmanah] = useState(false);
@@ -1228,6 +1234,89 @@ export default function Admin() {
     } finally {
       setUploadingBoxCodes(false);
       setBoxCodeProgress(0);
+    }
+  };
+
+  // Bulk Box Code Reassign Handler
+  const handleBulkBoxCodeReassign = async () => {
+    if (!userProfile?.isAdmin || !bulkBoxCodeDeviceIds.trim() || !newBoxCode.trim()) {
+      toast({
+        variant: "destructive",
+        title: "Invalid Input",
+        description: "Please provide both device IDs and a new box code.",
+      });
+      return;
+    }
+
+    setBulkBoxCodeUpdating(true);
+    setBulkBoxCodeResult(null);
+
+    try {
+      const result = {
+        success: 0,
+        failed: 0,
+        notFound: 0,
+        errors: [] as string[],
+      };
+
+      // Parse device IDs from input
+      const deviceIds = parseDeviceIdsList(bulkBoxCodeDeviceIds);
+      
+      if (deviceIds.length === 0) {
+        throw new Error("No valid device IDs provided");
+      }
+
+      // Get all devices to create a lookup map
+      const devicesSnapshot = await getDocs(collection(db, "devices"));
+      const devicesMap = new Map<string, any>();
+      devicesSnapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        const deviceUid = (data.id || docSnap.id).toUpperCase().trim();
+        devicesMap.set(deviceUid, { id: docSnap.id, ...data });
+      });
+
+      // Process each device ID
+      for (const deviceId of deviceIds) {
+        const deviceIdUpper = deviceId.toUpperCase().trim();
+        const device = devicesMap.get(deviceIdUpper);
+
+        if (!device) {
+          result.notFound++;
+          result.errors.push(`Device ${deviceId} not found in database`);
+          continue;
+        }
+
+        try {
+          await updateDoc(doc(db, "devices", device.id), {
+            boxCode: newBoxCode.trim(),
+            updatedAt: serverTimestamp(),
+          });
+          result.success++;
+        } catch (error: any) {
+          result.failed++;
+          result.errors.push(`Failed to update device ${deviceId} - ${error.message}`);
+        }
+      }
+
+      setBulkBoxCodeResult(result);
+      toast({
+        title: "Bulk Box Code Update Complete",
+        description: `Updated ${result.success} devices. ${result.notFound} not found. ${result.failed} failed.`,
+        variant: result.failed > 0 || result.notFound > 0 ? "destructive" : "default",
+      });
+
+      if (result.success > 0) {
+        setBulkBoxCodeDeviceIds("");
+        setNewBoxCode("");
+      }
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Bulk Update Failed",
+        description: error.message || "An error occurred during bulk update.",
+      });
+    } finally {
+      setBulkBoxCodeUpdating(false);
     }
   };
 
@@ -3314,6 +3403,99 @@ export default function Admin() {
                     {boxCodeResult.errors.length > 10 && (
                       <li className="text-muted-foreground italic">
                         ... and {boxCodeResult.errors.length - 10} more errors
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Bulk Box Code Reassign */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle>Bulk Reassign Box Codes</CardTitle>
+          <CardDescription>
+            Paste device IDs line by line and assign a new box code to all of them. This will update the box code for each device.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="bulk-boxcode-deviceids">Device IDs (one per line)</Label>
+              <Textarea
+                id="bulk-boxcode-deviceids"
+                placeholder="Paste device IDs here, one per line..."
+                value={bulkBoxCodeDeviceIds}
+                onChange={(e) => setBulkBoxCodeDeviceIds(e.target.value)}
+                className="min-h-[200px] font-mono text-sm"
+                disabled={bulkBoxCodeUpdating}
+              />
+              <p className="text-xs text-muted-foreground">
+                {bulkBoxCodeDeviceIds.trim() ? parseDeviceIdsList(bulkBoxCodeDeviceIds).length : 0} device(s) entered
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="new-box-code">New Box Code</Label>
+              <Input
+                id="new-box-code"
+                placeholder="Enter new box code..."
+                value={newBoxCode}
+                onChange={(e) => setNewBoxCode(e.target.value)}
+                disabled={bulkBoxCodeUpdating}
+              />
+              <Button
+                onClick={handleBulkBoxCodeReassign}
+                disabled={!bulkBoxCodeDeviceIds.trim() || !newBoxCode.trim() || bulkBoxCodeUpdating}
+                className="w-full mt-4"
+              >
+                {bulkBoxCodeUpdating ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Updating...
+                  </>
+                ) : (
+                  <>
+                    <Edit className="h-4 w-4 mr-2" />
+                    Update Box Codes
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+
+          {bulkBoxCodeResult && (
+            <div className="space-y-2 p-4 rounded-lg border">
+              <div className="flex items-center gap-4 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-green-600" />
+                  <span className="font-semibold text-green-600">{bulkBoxCodeResult.success} updated</span>
+                </div>
+                {bulkBoxCodeResult.notFound > 0 && (
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="h-5 w-5 text-orange-600" />
+                    <span className="font-semibold text-orange-600">{bulkBoxCodeResult.notFound} not found</span>
+                  </div>
+                )}
+                {bulkBoxCodeResult.failed > 0 && (
+                  <div className="flex items-center gap-2">
+                    <XCircle className="h-5 w-5 text-red-600" />
+                    <span className="font-semibold text-red-600">{bulkBoxCodeResult.failed} failed</span>
+                  </div>
+                )}
+              </div>
+              {bulkBoxCodeResult.errors.length > 0 && (
+                <div className="mt-2 max-h-32 overflow-y-auto">
+                  <p className="text-xs font-semibold text-muted-foreground mb-1">Errors:</p>
+                  <ul className="text-xs text-muted-foreground space-y-1">
+                    {bulkBoxCodeResult.errors.slice(0, 10).map((error, idx) => (
+                      <li key={idx}>{error}</li>
+                    ))}
+                    {bulkBoxCodeResult.errors.length > 10 && (
+                      <li className="text-muted-foreground italic">
+                        ... and {bulkBoxCodeResult.errors.length - 10} more errors
                       </li>
                     )}
                   </ul>

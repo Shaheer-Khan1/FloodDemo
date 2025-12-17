@@ -118,6 +118,8 @@ export interface Installation {
   escalatedBy?: string; // User who escalated
   escalatedAt?: Date; // When it was escalated
   escalateReason?: string; // Reason for escalation
+  fieldCheckStates?: Record<string, boolean>; // Checkbox states for verification fields
+  fieldCheckMetadata?: Record<string, { checkedBy: string; checkedAt: Date; checkedByName?: string }>; // Metadata for each checked field
 }
 
 export interface ServerData {
