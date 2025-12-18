@@ -126,7 +126,7 @@ export default function ReviewAudit() {
         requiredFields.push("server_sensorData");
       }
 
-      // Add image fields (optional checkboxes)
+      // Add image fields (all images must be checked for approval)
       (installation.imageUrls || []).forEach((_, index) => {
         requiredFields.push(`image_${index}`);
       });

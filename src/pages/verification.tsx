@@ -157,7 +157,7 @@ export default function Verification() {
   const allMandatoryChecksCompleted = useMemo(() => {
     if (!selectedItem) return false;
 
-    // Only 5 mandatory fields for approval
+    // Mandatory fields for approval
     const keys: string[] = [
       "installer_deviceId",
       "installer_locationId",
@@ -169,6 +169,11 @@ export default function Verification() {
     if (selectedItem.serverData) {
       keys.push("server_sensorData");
     }
+
+    // All image checkboxes must be checked
+    (selectedItem.installation.imageUrls || []).forEach((_, index) => {
+      keys.push(`image_${index}`);
+    });
 
     if (keys.length === 0) return false;
     const allChecked = keys.every((key) => fieldCheckStates[key]);
@@ -801,7 +806,20 @@ export default function Verification() {
       ];
       if (selectedItem.serverData) {
         keys.push("server_sensorData");
+      } else {
+        toast({
+          variant: "destructive",
+          title: "Cannot Approve",
+          description: "Server data is not available yet. Please wait for the device to send data or refresh to check for updates.",
+        });
+        return;
       }
+      
+      // Add all images
+      (selectedItem.installation.imageUrls || []).forEach((_, index) => {
+        keys.push(`image_${index}`);
+      });
+      
       const missing = keys.filter(key => !fieldCheckStates[key]);
       const missingLabels = missing.map(key => {
         if (key === "installer_deviceId") return "Device ID";
@@ -809,6 +827,10 @@ export default function Verification() {
         if (key === "installer_sensorReading") return "Sensor Reading";
         if (key === "installer_coordinates") return "Coordinates";
         if (key === "server_sensorData") return "Server Sensor Data";
+        if (key.startsWith("image_")) {
+          const index = parseInt(key.split("_")[1]);
+          return `Photo ${index + 1}`;
+        }
         return key;
       });
       
@@ -3092,9 +3114,27 @@ export default function Verification() {
                           )}
                       </>
                     ) : (
-                      <div className="text-center py-8">
-                        <Minus className="h-12 w-12 mx-auto mb-2 text-muted-foreground" />
-                        <p className="text-muted-foreground">No server data available yet</p>
+                      <div className="space-y-4">
+                        <div className="text-center py-6">
+                          <Minus className="h-12 w-12 mx-auto mb-2 text-muted-foreground" />
+                          <p className="text-muted-foreground">No server data available yet</p>
+                        </div>
+                        {!isEditMode && (
+                          <div className="flex items-start justify-between gap-2 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+                            <div className="flex-1">
+                              <p className="text-sm font-medium text-yellow-800 dark:text-yellow-200">Sensor Data</p>
+                              <p className="text-xs text-yellow-700 dark:text-yellow-300 mt-1">
+                                ⏳ Cannot be checked - waiting for server data
+                              </p>
+                            </div>
+                            <Checkbox
+                              checked={false}
+                              disabled={true}
+                              aria-label="Sensor data - waiting for server"
+                              className="opacity-50"
+                            />
+                          </div>
+                        )}
                       </div>
                     )}
                   </CardContent>
