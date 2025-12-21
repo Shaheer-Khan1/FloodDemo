@@ -212,3 +212,5 @@ Dashboard stat cards are now **powerful one-click filters**! Each card has:
 
 This makes filtering installations incredibly fast and intuitive - just click any stat card to filter! 🚀
 
+
+

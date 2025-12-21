@@ -739,12 +739,13 @@ export default function Verification() {
 
   // Apply filters to verified installations
   const displayedVerifiedItems = useMemo(() => {
-    // Only show verified items if 'verified', 'all', 'noServerData', or 'edited' filter is active
+    // Only show verified items for filters that should display them
+    // Filters that don't show verified items: 'pending', 'highVariance', 'flagged', 'escalated'
     if (
-      activeFilter !== 'verified' &&
-      activeFilter !== 'all' &&
-      activeFilter !== 'noServerData' &&
-      activeFilter !== 'edited'
+      activeFilter === 'pending' ||
+      activeFilter === 'highVariance' ||
+      activeFilter === 'flagged' ||
+      activeFilter === 'escalated'
     ) {
       return [];
     }
@@ -771,6 +772,29 @@ export default function Verification() {
       } as VerificationItem;
     }).filter(item => item.device);
 
+    // Apply specific filter logic based on activeFilter
+    if (activeFilter === 'verified') {
+      // Only show manually verified (exclude system pre-verified and system verified)
+      filtered = filtered.filter(i => {
+        const isSystemVerified = i.installation.systemPreVerified === true || 
+                                (i.installation.verifiedBy && i.installation.verifiedBy.toLowerCase().includes("system"));
+        return !isSystemVerified;
+      });
+    } else if (activeFilter === 'withServerData') {
+      // Only show verified items with server data
+      filtered = filtered.filter(i => i.serverData && i.installation.latestDisCm != null);
+    } else if (activeFilter === 'noServerData') {
+      // Only show verified items without server data
+      filtered = filtered.filter(i => !i.serverData || i.installation.latestDisCm == null);
+    } else if (activeFilter === 'preVerified') {
+      // Only show system pre-approved verified items
+      filtered = filtered.filter(i => i.installation.systemPreVerified === true);
+    } else if (activeFilter === 'edited') {
+      // Only show edited verified items
+      filtered = filtered.filter(i => i.installation.tags?.includes("edited by verifier"));
+    }
+    // For 'all' filter, show all verified items (no additional filtering)
+
     // Apply installer name filter
     if (debouncedInstallerNameFilter) {
       const lowerFilter = debouncedInstallerNameFilter.toLowerCase();
@@ -790,16 +814,6 @@ export default function Verification() {
     // Apply team filter (admin only)
     if (debouncedTeamIdFilter && userProfile?.isAdmin) {
       filtered = filtered.filter(i => i.installation.teamId === debouncedTeamIdFilter);
-    }
-
-    // Apply no server data filter if active
-    if (activeFilter === 'noServerData') {
-      filtered = filtered.filter(i => !i.serverData || i.installation.latestDisCm == null);
-    }
-
-    // Apply edited filter if active
-    if (activeFilter === 'edited') {
-      filtered = filtered.filter(i => i.installation.tags?.includes("edited by verifier"));
     }
 
     // Apply date filter
@@ -2489,7 +2503,24 @@ export default function Verification() {
               <CardTitle className="text-2xl font-bold">
                 {userProfile?.role === "manager" && !userProfile?.isAdmin 
                   ? `Escalated Installations (${displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}${displayedItems.length})`
-                  : `Pending Installations (${displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}${displayedItems.length})`}
+                  : (() => {
+                      const hasVerifiedTable = displayedVerifiedItems.length > 0;
+                      const count = `${displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}${displayedItems.length}`;
+                      
+                      if (activeFilter === 'all' && hasVerifiedTable) {
+                        return `Total in Database - Pending (${count})`;
+                      } else if (activeFilter === 'withServerData' && hasVerifiedTable) {
+                        return `Connected with Server - Pending (${count})`;
+                      } else if (activeFilter === 'noServerData' && hasVerifiedTable) {
+                        return `No Connection Established - Pending (${count})`;
+                      } else if (activeFilter === 'preVerified' && hasVerifiedTable) {
+                        return `System Pre-approved - Pending (${count})`;
+                      } else if (activeFilter === 'edited' && hasVerifiedTable) {
+                        return `Edited Records - Pending (${count})`;
+                      } else {
+                        return `Pending Installations (${count})`;
+                      }
+                    })()}
               </CardTitle>
               <div className="flex items-center gap-2">
                 <Button
@@ -2764,13 +2795,31 @@ export default function Verification() {
       </Card>
       )}
 
-      {/* Verified Installations Table - Show if verified filter is active or if no filter is active and there are verified installations */}
-      {(activeFilter === 'verified' || (activeFilter === 'all' && verifiedInstallations.length > 0)) && (
+      {/* Verified Installations Table - Show for filters that include verified items */}
+      {displayedVerifiedItems.length > 0 && (
         <Card className="border shadow-sm">
           <CardHeader>
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <CardTitle className="text-2xl font-bold">
-                Verified Installations ({displayedVerifiedItems.length > displayLimit ? `${paginatedVerifiedItems.length} of ` : ''}{displayedVerifiedItems.length})
+                {(() => {
+                  const count = `${displayedVerifiedItems.length > displayLimit ? `${paginatedVerifiedItems.length} of ` : ''}${displayedVerifiedItems.length}`;
+                  
+                  if (activeFilter === 'verified') {
+                    return `Verified (Manual Only) (${count})`;
+                  } else if (activeFilter === 'all') {
+                    return `Total in Database - Verified (${count})`;
+                  } else if (activeFilter === 'withServerData') {
+                    return `Connected with Server - Verified (${count})`;
+                  } else if (activeFilter === 'noServerData') {
+                    return `No Connection Established - Verified (${count})`;
+                  } else if (activeFilter === 'preVerified') {
+                    return `System Pre-approved - Verified (${count})`;
+                  } else if (activeFilter === 'edited') {
+                    return `Edited Records - Verified (${count})`;
+                  } else {
+                    return `Verified Installations (${count})`;
+                  }
+                })()}
               </CardTitle>
               <div className="flex items-center gap-2">
                 <Button

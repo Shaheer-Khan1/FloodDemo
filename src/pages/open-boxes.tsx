@@ -493,7 +493,7 @@ export default function OpenBoxes() {
                               key={inst.id}
                               value={(inst as any).userId || inst.id}
                             >
-                              {inst.displayName || inst.name || inst.email}
+                              {inst.name || inst.displayName || inst.email}
                             </option>
                           ))}
                         </select>
@@ -604,7 +604,7 @@ export default function OpenBoxes() {
                                   <option value="">Unassigned</option>
                                   {installers.map((inst) => (
                                     <option key={inst.id} value={(inst as any).userId || inst.id}>
-                                      {inst.displayName || inst.name || inst.email}
+                                      {inst.name || inst.displayName || inst.email}
                                     </option>
                                   ))}
                                 </select>
@@ -648,7 +648,7 @@ export default function OpenBoxes() {
                             updateDoc(doc(db, "devices", d.id), {
                               assignedInstallerId: normalizedNew || null,
                               assignedInstallerName: installer
-                                ? installer.displayName || installer.name || installer.email
+                                ? installer.name || installer.displayName || installer.email
                                 : null,
                               updatedAt: serverTimestamp(),
                             })
@@ -734,8 +734,8 @@ export default function OpenBoxes() {
                                             key={inst.id}
                                             value={(inst as any).userId || inst.id}
                                           >
-                                            {inst.displayName ||
-                                              inst.name ||
+                                            {inst.name ||
+                                              inst.displayName ||
                                               inst.email}
                                           </option>
                                         ))}
@@ -771,8 +771,8 @@ export default function OpenBoxes() {
                                                 assignedInstallerId:
                                                   normalizedNew || null,
                                                 assignedInstallerName: installer
-                                                  ? installer.displayName ||
-                                                    installer.name ||
+                                                  ? installer.name ||
+                                                    installer.displayName ||
                                                     installer.email
                                                   : null,
                                                 updatedAt: serverTimestamp(),
@@ -847,7 +847,7 @@ export default function OpenBoxes() {
                   className="rounded border px-3 py-2 bg-slate-50 dark:bg-slate-950/30"
                 >
                   <div className="font-medium">
-                    {inst.displayName || inst.name || inst.email}
+                    {inst.name || inst.displayName || inst.email}
                   </div>
                   <div className="text-xs text-muted-foreground">{inst.email}</div>
                 </div>
