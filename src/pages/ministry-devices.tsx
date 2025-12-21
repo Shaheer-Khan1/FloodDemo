@@ -1,4 +1,21 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
+
+// Custom debounce hook
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
+}
 import { collection, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
@@ -92,6 +109,28 @@ export default function MinistryDevices() {
   const [generatingReport, setGeneratingReport] = useState(false);
   const [exporting9999, setExporting9999] = useState(false);
   const [exportingGroupedCsv, setExportingGroupedCsv] = useState(false);
+  const [displayLimit, setDisplayLimit] = useState(500);
+  const [loading, setLoading] = useState(true);
+  
+  // Debounce filters for smooth performance
+  const debouncedDateFilter = useDebounce(dateFilter, 300);
+  const [isFiltering, setIsFiltering] = useState(false);
+  
+  // Track loading state for initial data
+  useEffect(() => {
+    if (devices.length > 0 && installations.length > 0) {
+      setLoading(false);
+    }
+  }, [devices.length, installations.length]);
+  
+  // Show filtering indicator while debouncing
+  useEffect(() => {
+    if (dateFilter !== debouncedDateFilter) {
+      setIsFiltering(true);
+    } else {
+      setIsFiltering(false);
+    }
+  }, [dateFilter, debouncedDateFilter]);
 
   useEffect(() => {
     const unsubD = onSnapshot(collection(db, "devices"), (snap) => {
@@ -174,13 +213,26 @@ export default function MinistryDevices() {
     return map;
   }, [locations]);
 
-  // Create rows with installation data and calculated metrics
+  // Create a map of deviceId -> latest installation for O(1) lookups
+  const installationsByDevice = useMemo(() => {
+    const map = new Map<string, Installation>();
+    
+    // Group installations by deviceId and keep only the latest one
+    installations.forEach(inst => {
+      const existing = map.get(inst.deviceId);
+      if (!existing || (inst.createdAt && existing.createdAt && inst.createdAt > existing.createdAt)) {
+        map.set(inst.deviceId, inst);
+      }
+    });
+    
+    return map;
+  }, [installations]);
+
+  // Create rows with installation data and calculated metrics (much faster with map lookup)
   const allRows = useMemo(() => {
     return devices
       .map((d) => {
-        const insts = installations.filter((i) => i.deviceId === d.id);
-        insts.sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0));
-        const inst = insts[0];
+        const inst = installationsByDevice.get(d.id);
         if (!inst) return null;
         
         const amanah = inst.teamId ? teamIdToName[inst.teamId] || inst.teamId : "-";
@@ -198,6 +250,26 @@ export default function MinistryDevices() {
         const isVerified = inst.status === "verified";
         const isPending = inst.status === "pending";
         
+        // Pre-calculate location data to avoid expensive lookups during render
+        const locationId = inst?.locationId ? String(inst.locationId).trim() : null;
+        let location: Location | null = null;
+        if (locationId) {
+          location = locationMap.get(locationId);
+          // Only do fallback search if map lookup failed and it's needed
+          if (!location && locations.length > 0 && locations.length < 5000) {
+            location = locations.find(loc => 
+              String(loc.id).trim() === locationId || 
+              String(loc.locationId).trim() === locationId
+            ) || null;
+          }
+        }
+        const isSwapped = locationId === "9999";
+        const hasCoordinates = location && 
+          typeof location.latitude === 'number' && 
+          typeof location.longitude === 'number' &&
+          !isNaN(location.latitude) &&
+          !isNaN(location.longitude);
+        
         return { 
           device: d, 
           inst, 
@@ -207,33 +279,41 @@ export default function MinistryDevices() {
           hasNoServerData,
           isPreVerified,
           isVerified,
-          isPending
+          isPending,
+          locationId,
+          location,
+          isSwapped,
+          hasCoordinates
         };
       })
       // Only show devices that have at least one installation (installed devices)
       .filter((row): row is NonNullable<typeof row> => row !== null);
-  }, [devices, installations, teamIdToName]);
+  }, [devices, installationsByDevice, teamIdToName, locationMap, locations]);
 
-  // Calculate filter counts
-  const pendingCount = useMemo(() => {
-    return allRows.filter(row => row.isPending).length;
+  // Calculate all filter counts in a single pass for better performance
+  const filterCounts = useMemo(() => {
+    let pending = 0;
+    let withServerData = 0;
+    let noServerData = 0;
+    let preVerified = 0;
+    let verified = 0;
+    
+    allRows.forEach(row => {
+      if (row.isPending) pending++;
+      if (row.hasServerData) withServerData++;
+      if (row.hasNoServerData) noServerData++;
+      if (row.isPreVerified) preVerified++;
+      if (row.isVerified) verified++;
+    });
+    
+    return { pending, withServerData, noServerData, preVerified, verified };
   }, [allRows]);
 
-  const withServerDataCount = useMemo(() => {
-    return allRows.filter(row => row.hasServerData).length;
-  }, [allRows]);
-
-  const noServerDataCount = useMemo(() => {
-    return allRows.filter(row => row.hasNoServerData).length;
-  }, [allRows]);
-
-  const preVerifiedCount = useMemo(() => {
-    return allRows.filter(row => row.isPreVerified).length;
-  }, [allRows]);
-
-  const verifiedCount = useMemo(() => {
-    return allRows.filter(row => row.isVerified).length;
-  }, [allRows]);
+  const pendingCount = filterCounts.pending;
+  const withServerDataCount = filterCounts.withServerData;
+  const noServerDataCount = filterCounts.noServerData;
+  const preVerifiedCount = filterCounts.preVerified;
+  const verifiedCount = filterCounts.verified;
 
   // Apply filters to rows
   const rows = useMemo(() => {
@@ -257,9 +337,9 @@ export default function MinistryDevices() {
       filtered = filtered.filter((row) => row.amanah === teamFilter);
     }
 
-    // Apply date filter
-    if (dateFilter) {
-      const filterDate = new Date(dateFilter);
+    // Apply date filter (using debounced value)
+    if (debouncedDateFilter) {
+      const filterDate = new Date(debouncedDateFilter);
       filterDate.setHours(0, 0, 0, 0);
       const nextDay = new Date(filterDate);
       nextDay.setDate(nextDay.getDate() + 1);
@@ -280,7 +360,22 @@ export default function MinistryDevices() {
     });
 
     return filtered;
-  }, [allRows, activeFilter, teamFilter, dateFilter]);
+  }, [allRows, activeFilter, teamFilter, debouncedDateFilter]);
+  
+  // Paginate rows for performance
+  const paginatedRows = useMemo(() => {
+    return rows.slice(0, displayLimit);
+  }, [rows, displayLimit]);
+  
+  // Reset display limit when filters change
+  useEffect(() => {
+    setDisplayLimit(500);
+  }, [teamFilter, activeFilter, debouncedDateFilter]);
+  
+  // Handle "Show More" button
+  const handleShowMore = useCallback(() => {
+    setDisplayLimit(prev => prev + 500);
+  }, []);
 
   const downloadCsv = (rowsData: string[][], filename: string) => {
     const headers = ["Serial No", "Location ID", "Coordinates", "Device ID", "Amanah", "Municipality", "Sensor Height"];
@@ -650,6 +745,16 @@ export default function MinistryDevices() {
             <p className="text-muted-foreground">Only ministry and administrators can view this page.</p>
           </CardContent>
         </Card>
+      </div>
+    );
+  }
+
+  // Show loading state while data is being loaded
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <p className="text-muted-foreground">Loading installation data...</p>
       </div>
     );
   }
@@ -1079,7 +1184,14 @@ export default function MinistryDevices() {
       <Card className="border shadow-sm">
         <CardHeader>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <CardTitle className="text-xl md:text-2xl font-bold">Devices ({rows.length})</CardTitle>
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-xl md:text-2xl font-bold">
+                Devices ({rows.length > displayLimit ? `${paginatedRows.length} of ` : ''}{rows.length})
+              </CardTitle>
+              {isFiltering && (
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              )}
+            </div>
             <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto sm:justify-end">
               <Button
                 variant="outline"
@@ -1151,45 +1263,22 @@ export default function MinistryDevices() {
               <p className="text-muted-foreground">No devices match the current filters.</p>
             </div>
           ) : (
-            <div className="rounded-md border overflow-x-auto -mx-4 md:mx-0 px-4 md:px-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="min-w-[140px]">Device ID</TableHead>
-                    <TableHead className="min-w-[120px]">Amanah</TableHead>
-                    <TableHead className="min-w-[100px]">Location ID</TableHead>
-                    <TableHead className="min-w-[120px]">Sensor Reading</TableHead>
-                    <TableHead className="min-w-[100px]">Installation Time</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((row) => {
-                    const { device, inst, amanah } = row;
-                    // Normalize locationId - handle both string and number, trim whitespace
-                    const locationId = inst?.locationId 
-                      ? String(inst.locationId).trim() 
-                      : null;
-                    
-                    // Try multiple lookup strategies to handle type mismatches
-                    let location: Location | null = null;
-                    if (locationId) {
-                      // Try exact match first
-                      location = locationMap.get(locationId);
-                      // If not found, try with the document ID (which is also the locationId in admin upload)
-                      if (!location && locations.length > 0) {
-                        location = locations.find(loc => 
-                          String(loc.id).trim() === locationId || 
-                          String(loc.locationId).trim() === locationId
-                        ) || null;
-                      }
-                    }
-                    
-                    const isSwapped = locationId === "9999";
-                    const hasCoordinates = location && 
-                      typeof location.latitude === 'number' && 
-                      typeof location.longitude === 'number' &&
-                      !isNaN(location.latitude) &&
-                      !isNaN(location.longitude);
+            <>
+              <div className="rounded-md border overflow-x-auto -mx-4 md:mx-0 px-4 md:px-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="min-w-[140px]">Device ID</TableHead>
+                      <TableHead className="min-w-[120px]">Amanah</TableHead>
+                      <TableHead className="min-w-[100px]">Location ID</TableHead>
+                      <TableHead className="min-w-[120px]">Sensor Reading</TableHead>
+                      <TableHead className="min-w-[100px]">Installation Time</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {paginatedRows.map((row) => {
+                    // Use pre-calculated values for fast rendering
+                    const { device, inst, amanah, locationId, location, isSwapped, hasCoordinates } = row;
                     
                     return (
                       <TableRow key={device.id}>
@@ -1220,6 +1309,24 @@ export default function MinistryDevices() {
                 </TableBody>
               </Table>
             </div>
+            
+            {/* Show More Button */}
+            {rows.length > displayLimit && (
+              <div className="mt-6 pt-6 text-center border-t-2 border-dashed bg-blue-50 dark:bg-blue-950/20 rounded-lg p-4">
+                <p className="text-sm text-muted-foreground mb-3 font-medium">
+                  Showing {paginatedRows.length} of {rows.length} installations
+                </p>
+                <Button 
+                  variant="default" 
+                  size="lg" 
+                  onClick={handleShowMore} 
+                  className="min-w-[250px] font-semibold shadow-md"
+                >
+                  Show More ({rows.length - paginatedRows.length} remaining)
+                </Button>
+              </div>
+            )}
+          </>
           )}
         </CardContent>
       </Card>

@@ -1,4 +1,21 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
+
+// Custom debounce hook
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
+}
 import { collection, onSnapshot, query, orderBy, doc, updateDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
@@ -50,6 +67,10 @@ export default function Devices() {
   const [deviceUidsFilter, setDeviceUidsFilter] = useState<string>("");
   const [boxFilter, setBoxFilter] = useState<string>("all");
   const [displayLimit, setDisplayLimit] = useState(500);
+  
+  // Debounce filters for smooth performance
+  const debouncedSearchTerm = useDebounce(searchTerm, 300);
+  const debouncedDeviceUidsFilter = useDebounce(deviceUidsFilter, 300);
 
   // Real-time devices listener (admin only)
   useEffect(() => {
@@ -159,13 +180,13 @@ export default function Devices() {
     return Array.from(boxes).sort();
   }, [devices]);
 
-  // Filter devices
+  // Filter devices (using debounced values for smooth performance)
   const filteredDevices = useMemo(() => {
     return devicesWithDetails.filter(device => {
       // Device UIDs filter (if active, only show devices in the list)
       let matchesDeviceUids = true;
-      if (deviceUidsFilter.trim()) {
-        const deviceUidsList = deviceUidsFilter
+      if (debouncedDeviceUidsFilter.trim()) {
+        const deviceUidsList = debouncedDeviceUidsFilter
           .split('\n')
           .map(uid => uid.trim().toUpperCase())
           .filter(uid => uid.length > 0);
@@ -175,9 +196,9 @@ export default function Devices() {
         }
       }
 
-      const matchesSearch = searchTerm === "" ||
-        device.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        device.productId.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesSearch = debouncedSearchTerm === "" ||
+        device.id.toLowerCase().includes(debouncedSearchTerm.toLowerCase()) ||
+        device.productId.toLowerCase().includes(debouncedSearchTerm.toLowerCase());
 
       // Status filter - handle "not_installed" as special case
       let matchesStatus = true;
@@ -213,7 +234,12 @@ export default function Devices() {
 
       return matchesDeviceUids && matchesSearch && matchesStatus && matchesProduct && matchesDate && matchesBox;
     });
-  }, [devicesWithDetails, deviceUidsFilter, searchTerm, statusFilter, productFilter, dateFilter, boxFilter]);
+  }, [devicesWithDetails, debouncedDeviceUidsFilter, debouncedSearchTerm, statusFilter, productFilter, dateFilter, boxFilter]);
+  
+  // Reset display limit when filters change
+  useEffect(() => {
+    setDisplayLimit(500);
+  }, [debouncedSearchTerm, debouncedDeviceUidsFilter, statusFilter, productFilter, dateFilter, boxFilter]);
 
   const clearFilters = () => {
     setSearchTerm("");
@@ -238,9 +264,9 @@ export default function Devices() {
     return filteredDevices.slice(0, displayLimit);
   }, [filteredDevices, displayLimit]);
 
-  const handleShowMore = () => {
+  const handleShowMore = useCallback(() => {
     setDisplayLimit(prev => prev + 500);
-  };
+  }, []);
 
   const downloadDeviceUidsCSV = () => {
     try {
