@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { collection, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
@@ -26,6 +26,23 @@ import type { Installation } from "@/lib/types";
 import { format } from "date-fns";
 import { useLocation } from "wouter";
 
+// Custom debounce hook
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
+}
+
 export default function ReviewAudit() {
   const { userProfile } = useAuth();
   const [, setLocation] = useLocation();
@@ -35,6 +52,10 @@ export default function ReviewAudit() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deviceIdFilter, setDeviceIdFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "partial" | "complete">("all");
+  const [displayLimit, setDisplayLimit] = useState(500); // Show 500 reviews per page
+  
+  // Debounce the device ID filter to prevent sluggish filtering
+  const debouncedDeviceIdFilter = useDebounce(deviceIdFilter, 300);
 
   // Redirect non-admins
   useEffect(() => {
@@ -164,13 +185,13 @@ export default function ReviewAudit() {
     });
   }, [installations]);
 
-  // Filter installations
+  // Filter installations (using debounced filter for smooth performance)
   const filteredInstallations = useMemo(() => {
     let filtered = installationsWithProgress;
 
-    if (deviceIdFilter) {
+    if (debouncedDeviceIdFilter) {
       filtered = filtered.filter(inst =>
-        inst.deviceId?.toUpperCase().includes(deviceIdFilter.toUpperCase())
+        inst.deviceId?.toUpperCase().includes(debouncedDeviceIdFilter.toUpperCase())
       );
     }
 
@@ -191,7 +212,22 @@ export default function ReviewAudit() {
       const bTime = b.updatedAt?.getTime() || 0;
       return bTime - aTime;
     });
-  }, [installationsWithProgress, deviceIdFilter, statusFilter]);
+  }, [installationsWithProgress, debouncedDeviceIdFilter, statusFilter]);
+  
+  // Paginate installations for performance
+  const paginatedInstallations = useMemo(() => {
+    return filteredInstallations.slice(0, displayLimit);
+  }, [filteredInstallations, displayLimit]);
+  
+  // Reset display limit when filters change
+  useEffect(() => {
+    setDisplayLimit(500); // Reset to initial limit
+  }, [debouncedDeviceIdFilter, statusFilter]);
+  
+  // Handle "Show More" button
+  const handleShowMore = useCallback(() => {
+    setDisplayLimit(prev => prev + 500); // Load 500 more at a time
+  }, []);
 
   // Stats
   const stats = useMemo(() => {
@@ -367,7 +403,7 @@ export default function ReviewAudit() {
       <Card>
         <CardHeader>
           <CardTitle>
-            Installations ({filteredInstallations.length})
+            Installations ({filteredInstallations.length > displayLimit ? `${paginatedInstallations.length} of ` : ''}{filteredInstallations.length})
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -376,22 +412,23 @@ export default function ReviewAudit() {
               <p className="text-muted-foreground">No installations found matching your filters.</p>
             </div>
           ) : (
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Device ID</TableHead>
-                    <TableHead>Installer</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Reviewed By</TableHead>
-                    <TableHead>Verified By</TableHead>
-                    <TableHead>Review Progress</TableHead>
-                    <TableHead>Last Updated</TableHead>
-                    <TableHead>Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredInstallations.map((installation: any) => (
+            <>
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Device ID</TableHead>
+                      <TableHead>Installer</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Reviewed By</TableHead>
+                      <TableHead>Verified By</TableHead>
+                      <TableHead>Review Progress</TableHead>
+                      <TableHead>Last Updated</TableHead>
+                      <TableHead>Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {paginatedInstallations.map((installation: any) => (
                     <TableRow key={installation.id}>
                       <TableCell>
                         <span className="font-mono font-medium">{installation.deviceId}</span>
@@ -483,6 +520,24 @@ export default function ReviewAudit() {
                 </TableBody>
               </Table>
             </div>
+            
+            {/* Show More Button */}
+            {filteredInstallations.length > displayLimit && (
+              <div className="mt-6 pt-6 text-center border-t-2 border-dashed bg-blue-50 dark:bg-blue-950/20 rounded-lg p-4">
+                <p className="text-sm text-muted-foreground mb-3 font-medium">
+                  Showing {paginatedInstallations.length} of {filteredInstallations.length} installations
+                </p>
+                <Button 
+                  variant="default" 
+                  size="lg" 
+                  onClick={handleShowMore} 
+                  className="min-w-[250px] font-semibold shadow-md"
+                >
+                  Show More ({filteredInstallations.length - paginatedInstallations.length} remaining)
+                </Button>
+              </div>
+            )}
+          </>
           )}
         </CardContent>
       </Card>
