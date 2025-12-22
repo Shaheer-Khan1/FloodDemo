@@ -111,6 +111,8 @@ export default function MinistryDevices() {
   const [exportingGroupedCsv, setExportingGroupedCsv] = useState(false);
   const [displayLimit, setDisplayLimit] = useState(500);
   const [loading, setLoading] = useState(true);
+  const [fromDateTime, setFromDateTime] = useState("");
+  const [toDateTime, setToDateTime] = useState("");
   
   // Debounce filters for smooth performance
   const debouncedDateFilter = useDebounce(dateFilter, 300);
@@ -402,15 +404,61 @@ export default function MinistryDevices() {
     URL.revokeObjectURL(url);
   };
 
+  // Helper function to apply date/time range filter for CSV exports
+  const getDateFilteredRows = (rowsToFilter: typeof rows) => {
+    // If no date filters are set, return all rows
+    if (!fromDateTime && !toDateTime) {
+      return rowsToFilter;
+    }
+
+    // Validate date range if both are set
+    if (fromDateTime && toDateTime) {
+      const fromDate = new Date(fromDateTime);
+      const toDate = new Date(toDateTime);
+      
+      if (fromDate >= toDate) {
+        toast({
+          variant: "destructive",
+          title: "Invalid Date Range",
+          description: "From date/time must be before To date/time.",
+        });
+        return rowsToFilter;
+      }
+    }
+
+    // Apply filter
+    return rowsToFilter.filter(row => {
+      if (!row.inst.createdAt) return false;
+      const createdAt = row.inst.createdAt;
+      
+      if (fromDateTime && toDateTime) {
+        const fromDate = new Date(fromDateTime);
+        const toDate = new Date(toDateTime);
+        return createdAt >= fromDate && createdAt <= toDate;
+      } else if (fromDateTime) {
+        const fromDate = new Date(fromDateTime);
+        return createdAt >= fromDate;
+      } else if (toDateTime) {
+        const toDate = new Date(toDateTime);
+        return createdAt <= toDate;
+      }
+      
+      return true;
+    });
+  };
+
   const handleLocation9999Export = () => {
     setExporting9999(true);
     
     try {
       // Filter for location 9999 only from all installations
-      const location9999Installations = allRows.filter(row => {
+      let location9999Installations = allRows.filter(row => {
         const locationId = row.inst?.locationId ? String(row.inst.locationId).trim() : "";
         return locationId === "9999";
       });
+
+      // Apply date/time filter
+      location9999Installations = getDateFilteredRows(location9999Installations);
 
       if (location9999Installations.length === 0) {
         toast({
@@ -515,7 +563,9 @@ export default function MinistryDevices() {
   };
 
   const handleCsvExport = () => {
-    if (rows.length === 0) {
+    const filteredRows = getDateFilteredRows(rows);
+    
+    if (filteredRows.length === 0) {
       toast({
         title: "No devices found",
         description: "There are no devices in the current view to export.",
@@ -526,7 +576,7 @@ export default function MinistryDevices() {
     const rowsByAmanah: Record<string, string[][]> = {};
     let totalRows = 0;
 
-    rows.forEach((row) => {
+    filteredRows.forEach((row) => {
       const { device, inst, amanah } = row;
       const rawLocationId = inst?.locationId ? String(inst.locationId).trim() : "";
       let location: Location | null = null;
@@ -604,7 +654,9 @@ export default function MinistryDevices() {
   };
 
   const handleGroupedCsvExport = () => {
-    if (rows.length === 0) {
+    const filteredRows = getDateFilteredRows(rows);
+    
+    if (filteredRows.length === 0) {
       toast({
         title: "No devices found",
         description: "There are no devices in the current view to export.",
@@ -618,8 +670,8 @@ export default function MinistryDevices() {
       const rowsByAmanah: Record<string, string[][]> = {};
       let totalRows = 0;
 
-      // Process rows same as handleCsvExport
-      rows.forEach((row) => {
+      // Process filtered rows
+      filteredRows.forEach((row) => {
         const { device, inst, amanah } = row;
         const rawLocationId = inst?.locationId ? String(inst.locationId).trim() : "";
         let location: Location | null = null;
@@ -1119,7 +1171,7 @@ export default function MinistryDevices() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Team Filter */}
             <div className="space-y-2">
               <Label htmlFor="team-filter">Filter by Amanah</Label>
@@ -1142,10 +1194,34 @@ export default function MinistryDevices() {
                 onChange={(e) => setDateFilter(e.target.value)}
               />
             </div>
+
+            {/* From Date/Time Filter for CSV Export */}
+            <div className="space-y-2">
+              <Label htmlFor="from-datetime">From Date/Time (CSV)</Label>
+              <Input
+                id="from-datetime"
+                type="datetime-local"
+                value={fromDateTime}
+                onChange={(e) => setFromDateTime(e.target.value)}
+                placeholder="Start date/time"
+              />
+            </div>
+
+            {/* To Date/Time Filter for CSV Export */}
+            <div className="space-y-2">
+              <Label htmlFor="to-datetime">To Date/Time (CSV)</Label>
+              <Input
+                id="to-datetime"
+                type="datetime-local"
+                value={toDateTime}
+                onChange={(e) => setToDateTime(e.target.value)}
+                placeholder="End date/time"
+              />
+            </div>
           </div>
 
           {/* Clear Filters Button */}
-          {(teamFilter !== "all" || activeFilter !== 'all' || dateFilter) && (
+          {(teamFilter !== "all" || activeFilter !== 'all' || dateFilter || fromDateTime || toDateTime) && (
             <div className="mt-4 flex items-center gap-2 flex-wrap">
               <Button
                 variant="outline"
@@ -1154,6 +1230,8 @@ export default function MinistryDevices() {
                   setTeamFilter("all");
                   setActiveFilter('all');
                   setDateFilter("");
+                  setFromDateTime("");
+                  setToDateTime("");
                 }}
               >
                 <X className="h-4 w-4 mr-2" />
@@ -1173,6 +1251,16 @@ export default function MinistryDevices() {
                 {activeFilter !== 'all' && (
                   <Badge variant="secondary" className="text-xs">
                     {activeFilter === 'withServerData' ? 'With Server Data' : 'No Server Data'}
+                  </Badge>
+                )}
+                {fromDateTime && (
+                  <Badge variant="secondary" className="text-xs bg-green-100 text-green-700 border-green-200">
+                    CSV From: {format(new Date(fromDateTime), "MMM d, yyyy HH:mm")}
+                  </Badge>
+                )}
+                {toDateTime && (
+                  <Badge variant="secondary" className="text-xs bg-green-100 text-green-700 border-green-200">
+                    CSV To: {format(new Date(toDateTime), "MMM d, yyyy HH:mm")}
                   </Badge>
                 )}
               </div>
