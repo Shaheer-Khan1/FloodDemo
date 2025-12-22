@@ -185,6 +185,25 @@ export default function Verification() {
       return false; // Cannot approve without server data
     }
 
+    // Check if coordinates exist (required for approval)
+    const locationId = selectedItem.installation.locationId ? String(selectedItem.installation.locationId).trim() : "";
+    const isLocation9999 = locationId === "9999";
+    const location = locationMap.get(locationId);
+    
+    let hasCoordinates = false;
+    if (isLocation9999) {
+      // For location 9999, check installation coordinates
+      hasCoordinates = selectedItem.installation.latitude != null && selectedItem.installation.longitude != null;
+    } else {
+      // For other locations, check location relation coordinates
+      hasCoordinates = location?.latitude != null && location?.longitude != null;
+    }
+    
+    // Coordinates are mandatory - cannot approve without them
+    if (!hasCoordinates) {
+      return false;
+    }
+
     // Mandatory fields for approval
     const keys: string[] = [
       "installer_deviceId",
@@ -210,7 +229,7 @@ export default function Verification() {
     }
     
     return allChecked;
-  }, [selectedItem, fieldCheckStates]);
+  }, [selectedItem, fieldCheckStates, locationMap, locations]);
 
   // Auto-set filter to escalated for managers (cannot be changed)
   useEffect(() => {
@@ -936,6 +955,27 @@ export default function Verification() {
   const handleApprove = async () => {
     if (!selectedItem || !userProfile) return;
 
+    // Check if coordinates exist (required for approval)
+    const locationId = selectedItem.installation.locationId ? String(selectedItem.installation.locationId).trim() : "";
+    const isLocation9999 = locationId === "9999";
+    const location = locationMap.get(locationId);
+    
+    let hasCoordinates = false;
+    if (isLocation9999) {
+      hasCoordinates = selectedItem.installation.latitude != null && selectedItem.installation.longitude != null;
+    } else {
+      hasCoordinates = location?.latitude != null && location?.longitude != null;
+    }
+    
+    if (!hasCoordinates) {
+      toast({
+        variant: "destructive",
+        title: "Cannot Approve",
+        description: "Coordinates are missing. Please enable Edit Mode and add the coordinates before approving this installation.",
+      });
+      return;
+    }
+
     // Validate that all mandatory checks are completed
     if (!allMandatoryChecksCompleted) {
       const keys: string[] = [
@@ -1130,11 +1170,20 @@ export default function Verification() {
       return;
     }
 
-    const latitude = editedLatitude ? parseFloat(editedLatitude) : null;
-    const longitude = editedLongitude ? parseFloat(editedLongitude) : null;
+    // Coordinates are now mandatory
+    if (!editedLatitude || !editedLongitude) {
+      toast({
+        variant: "destructive",
+        title: "Coordinates Required",
+        description: "Both latitude and longitude are required. Please provide valid coordinates.",
+      });
+      return;
+    }
 
-    if ((latitude !== null && (isNaN(latitude) || latitude < -90 || latitude > 90)) ||
-        (longitude !== null && (isNaN(longitude) || longitude < -180 || longitude > 180))) {
+    const latitude = parseFloat(editedLatitude);
+    const longitude = parseFloat(editedLongitude);
+
+    if (isNaN(latitude) || latitude < -90 || latitude > 90 || isNaN(longitude) || longitude < -180 || longitude > 180) {
       toast({
         variant: "destructive",
         title: "Invalid Coordinates",
@@ -1407,6 +1456,27 @@ export default function Verification() {
         variant: "destructive",
         title: "Reason Required",
         description: "Please provide a reason for rejection.",
+      });
+      return;
+    }
+
+    // Check if coordinates exist (required for flagging)
+    const locationId = selectedItem.installation.locationId ? String(selectedItem.installation.locationId).trim() : "";
+    const isLocation9999 = locationId === "9999";
+    const location = locationMap.get(locationId);
+    
+    let hasCoordinates = false;
+    if (isLocation9999) {
+      hasCoordinates = selectedItem.installation.latitude != null && selectedItem.installation.longitude != null;
+    } else {
+      hasCoordinates = location?.latitude != null && location?.longitude != null;
+    }
+    
+    if (!hasCoordinates) {
+      toast({
+        variant: "destructive",
+        title: "Cannot Flag",
+        description: "Coordinates are missing. Please enable Edit Mode and add the coordinates before flagging this installation.",
       });
       return;
     }
@@ -3223,12 +3293,19 @@ export default function Verification() {
                         coordinateSource = displayLat != null && displayLon != null ? "From Location ID" : "";
                       }
                       
-                      return (displayLat !== null || displayLon !== null || isEditMode) ? (
+                      // Always show coordinates section (even if empty)
+                      const hasCoordinates = displayLat !== null && displayLon !== null;
+                      
+                      return (
                         <div className="flex items-start justify-between gap-2">
-                          <div>
+                          <div className="flex-1">
                             <p className="text-sm text-muted-foreground">
-                              Coordinates
-                              {coordinateSource && !isEditMode && (
+                              Coordinates {!hasCoordinates && !isEditMode && (
+                                <span className="ml-2 text-xs bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 px-2 py-0.5 rounded font-medium">
+                                  Missing - Required
+                                </span>
+                              )}
+                              {coordinateSource && !isEditMode && hasCoordinates && (
                                 <span className="ml-2 text-xs bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">
                                   {coordinateSource}
                                 </span>
@@ -3237,33 +3314,35 @@ export default function Verification() {
                             {isEditMode ? (
                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
                                 <div>
-                                  <Label htmlFor="latitude" className="text-xs">Latitude</Label>
+                                  <Label htmlFor="latitude" className="text-xs">Latitude *</Label>
                                   <Input
                                     id="latitude"
                                     type="number"
                                     step="0.000001"
                                     value={editedLatitude}
                                     onChange={(e) => setEditedLatitude(e.target.value)}
-                                    placeholder="Latitude"
+                                    placeholder="Required"
+                                    required
                                   />
                                 </div>
                                 <div>
-                                  <Label htmlFor="longitude" className="text-xs">Longitude</Label>
+                                  <Label htmlFor="longitude" className="text-xs">Longitude *</Label>
                                   <Input
                                     id="longitude"
                                     type="number"
                                     step="0.000001"
                                     value={editedLongitude}
                                     onChange={(e) => setEditedLongitude(e.target.value)}
-                                    placeholder="Longitude"
+                                    placeholder="Required"
+                                    required
                                   />
                                 </div>
                               </div>
                             ) : (
-                              <p className="text-base font-medium">
-                                {displayLat != null && displayLon != null
-                                  ? `${displayLat.toFixed(6)}, ${displayLon.toFixed(6)}`
-                                  : "-"}
+                              <p className={`text-base font-medium ${!hasCoordinates ? 'text-red-600 dark:text-red-400' : ''}`}>
+                                {hasCoordinates
+                                  ? `${displayLat!.toFixed(6)}, ${displayLon!.toFixed(6)}`
+                                  : "Not provided - Must be added before approval"}
                               </p>
                             )}
                           </div>
@@ -3273,12 +3352,12 @@ export default function Verification() {
                               onCheckedChange={(checked) =>
                                 toggleFieldCheck("installer_coordinates", checked === true)
                               }
-                              disabled={processing}
+                              disabled={processing || !hasCoordinates}
                               aria-label="Mark coordinates as checked"
                             />
                           )}
                         </div>
-                      ) : null;
+                      );
                     })()}
                     <div className="flex items-start justify-between gap-2">
                     <div>

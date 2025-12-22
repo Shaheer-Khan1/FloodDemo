@@ -79,6 +79,18 @@ export default function Admin() {
   const [loadingExportMatches, setLoadingExportMatches] = useState(false);
   const [exportingSelectedInstallations, setExportingSelectedInstallations] = useState(false);
 
+  // Variance Threshold and Amanah Filter State
+  const [varianceThreshold, setVarianceThreshold] = useState<number>(5);
+  const [selectedAmanahTeamId, setSelectedAmanahTeamId] = useState<string>("all");
+  const [filteredInstallationsData, setFilteredInstallationsData] = useState<Array<{
+    installation: Installation;
+    variance: number;
+    deviceId: string;
+    latitude?: number;
+    longitude?: number;
+  }>>([]);
+  const [loadingVarianceFilter, setLoadingVarianceFilter] = useState(false);
+
   // Real-time users listener
   useEffect(() => {
     if (!userProfile?.isAdmin) return;
@@ -1209,6 +1221,140 @@ export default function Admin() {
     }
   };
 
+  const filterInstallationsByVarianceAndAmanah = async () => {
+    setLoadingVarianceFilter(true);
+    setFilteredInstallationsData([]);
+
+    try {
+      // Fetch all installations
+      const installationsRef = collection(db, "installations");
+      let q = query(installationsRef);
+      
+      // Apply amanah (team) filter if selected
+      if (selectedAmanahTeamId !== "all") {
+        q = query(installationsRef, where("teamId", "==", selectedAmanahTeamId));
+      }
+      
+      const snapshot = await getDocs(q);
+      
+      const results: Array<{
+        installation: Installation;
+        variance: number;
+        deviceId: string;
+        latitude?: number;
+        longitude?: number;
+      }> = [];
+
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        const installation = {
+          ...data,
+          id: doc.id,
+          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : data.createdAt,
+          updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : data.updatedAt,
+          verifiedAt: data.verifiedAt?.toDate ? data.verifiedAt.toDate() : data.verifiedAt,
+          systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate ? data.systemPreVerifiedAt.toDate() : data.systemPreVerifiedAt,
+          serverRefreshedAt: data.serverRefreshedAt?.toDate ? data.serverRefreshedAt.toDate() : data.serverRefreshedAt,
+        } as Installation;
+
+        // Calculate variance percentage
+        const sensorReading = installation.sensorReading || 0;
+        const latestReading = installation.latestDisCm || 0;
+        
+        let variance = 0;
+        if (sensorReading > 0) {
+          variance = Math.abs(((latestReading - sensorReading) / sensorReading) * 100);
+        }
+
+        // Apply variance threshold filter
+        if (variance >= varianceThreshold) {
+          results.push({
+            installation,
+            variance: parseFloat(variance.toFixed(2)),
+            deviceId: installation.deviceId,
+            latitude: installation.latitude,
+            longitude: installation.longitude,
+          });
+        }
+      });
+
+      // Sort by variance descending
+      results.sort((a, b) => b.variance - a.variance);
+
+      setFilteredInstallationsData(results);
+      
+      toast({
+        title: "Filter Complete",
+        description: `Found ${results.length} installation(s) with variance ≥ ${varianceThreshold}%.`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Filter Failed",
+        description: error.message || "An error occurred while filtering installations.",
+      });
+    } finally {
+      setLoadingVarianceFilter(false);
+    }
+  };
+
+  const exportVarianceFilteredData = () => {
+    if (filteredInstallationsData.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No Data to Export",
+        description: "Please apply filters first to get results.",
+      });
+      return;
+    }
+
+    try {
+      const csvRows = [
+        ['Device ID', 'Latitude', 'Longitude', 'Variance %', 'Sensor Reading (cm)', 'Latest Reading (cm)', 'Location ID', 'Installed By', 'Team ID', 'Status'].join(',')
+      ];
+
+      filteredInstallationsData.forEach(item => {
+        const row = [
+          item.deviceId,
+          item.latitude || '',
+          item.longitude || '',
+          item.variance,
+          item.installation.sensorReading || '',
+          item.installation.latestDisCm || '',
+          item.installation.locationId || '',
+          item.installation.installedByName || '',
+          item.installation.teamId || '',
+          item.installation.status || ''
+        ].join(',');
+        csvRows.push(row);
+      });
+
+      const csvContent = csvRows.join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const dateStr = new Date().toISOString().split('T')[0];
+      const teamName = selectedAmanahTeamId !== "all" ? teams.find(t => t.id === selectedAmanahTeamId)?.name || "all" : "all";
+      link.setAttribute("href", url);
+      link.setAttribute("download", `variance-filter-${teamName}-threshold-${varianceThreshold}-${dateStr}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Export Complete",
+        description: `Exported ${filteredInstallationsData.length} installation(s).`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error.message || "An error occurred during export.",
+      });
+    }
+  };
+
   const findInstallationsForTeamChange = async () => {
     if (!deviceIdsInput.trim()) {
       toast({
@@ -1898,6 +2044,210 @@ export default function Admin() {
                   </ul>
                 </div>
               )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Variance Threshold and Amanah Filter */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Filter className="h-5 w-5" />
+            Variance Threshold & Amanah Filter
+          </CardTitle>
+          <CardDescription>Filter installations by variance percentage and regional authority (Amanah)</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Filter Controls */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="varianceThreshold">Variance Threshold (%)</Label>
+              <Input
+                id="varianceThreshold"
+                type="number"
+                min="0"
+                step="0.1"
+                placeholder="Enter variance threshold"
+                value={varianceThreshold}
+                onChange={(e) => setVarianceThreshold(parseFloat(e.target.value) || 0)}
+                disabled={loadingVarianceFilter}
+              />
+              <p className="text-xs text-muted-foreground">
+                Filter installations with variance greater than or equal to this percentage
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="amanahSelect">Select Amanah (أمانة)</Label>
+              <Select
+                value={selectedAmanahTeamId}
+                onValueChange={setSelectedAmanahTeamId}
+                disabled={loadingVarianceFilter}
+              >
+                <SelectTrigger id="amanahSelect">
+                  <SelectValue placeholder="Select an Amanah" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Amanat</SelectItem>
+                  {teams.map((team) => (
+                    <SelectItem key={team.id} value={team.id}>
+                      {team.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Filter by specific regional authority or show all
+              </p>
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex gap-3">
+            <Button
+              onClick={filterInstallationsByVarianceAndAmanah}
+              disabled={loadingVarianceFilter}
+            >
+              {loadingVarianceFilter ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Filtering...
+                </>
+              ) : (
+                <>
+                  <Filter className="h-4 w-4 mr-2" />
+                  Apply Filters
+                </>
+              )}
+            </Button>
+
+            {filteredInstallationsData.length > 0 && (
+              <Button
+                variant="outline"
+                onClick={exportVarianceFilteredData}
+              >
+                <FileDown className="h-4 w-4 mr-2" />
+                Export Results
+              </Button>
+            )}
+          </div>
+
+          {/* Results Display */}
+          {filteredInstallationsData.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-lg bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-blue-600" />
+                  <span className="font-semibold text-blue-600">
+                    Found {filteredInstallationsData.length} installation{filteredInstallationsData.length !== 1 ? 's' : ''} with variance ≥ {varianceThreshold}%
+                  </span>
+                </div>
+                <Badge variant="secondary">{selectedAmanahTeamId === "all" ? "All Amanat" : teams.find(t => t.id === selectedAmanahTeamId)?.name}</Badge>
+              </div>
+
+              {/* Results Table */}
+              <div className="border rounded-lg overflow-hidden">
+                <div className="max-h-[500px] overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted sticky top-0">
+                      <tr>
+                        <th className="text-left p-3 font-semibold">Device ID</th>
+                        <th className="text-left p-3 font-semibold">Variance %</th>
+                        <th className="text-left p-3 font-semibold">Latitude</th>
+                        <th className="text-left p-3 font-semibold">Longitude</th>
+                        <th className="text-left p-3 font-semibold">Location ID</th>
+                        <th className="text-left p-3 font-semibold">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredInstallationsData.map((item, index) => (
+                        <tr key={index} className="border-t hover:bg-muted/50">
+                          <td className="p-3 font-mono text-xs">{item.deviceId}</td>
+                          <td className="p-3">
+                            <Badge variant={item.variance >= 10 ? "destructive" : "secondary"}>
+                              {item.variance}%
+                            </Badge>
+                          </td>
+                          <td className="p-3 font-mono text-xs">{item.latitude?.toFixed(6) || 'N/A'}</td>
+                          <td className="p-3 font-mono text-xs">{item.longitude?.toFixed(6) || 'N/A'}</td>
+                          <td className="p-3">{item.installation.locationId || 'N/A'}</td>
+                          <td className="p-3">
+                            <Badge variant={
+                              item.installation.status === 'verified' ? 'default' : 
+                              item.installation.status === 'flagged' ? 'destructive' : 
+                              'secondary'
+                            }>
+                              {item.installation.status}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Summary Info */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <Card>
+                  <CardContent className="p-4">
+                    <p className="text-xs text-muted-foreground">Total Results</p>
+                    <p className="text-2xl font-bold">{filteredInstallationsData.length}</p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <p className="text-xs text-muted-foreground">Avg Variance</p>
+                    <p className="text-2xl font-bold">
+                      {(filteredInstallationsData.reduce((sum, item) => sum + item.variance, 0) / filteredInstallationsData.length).toFixed(2)}%
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <p className="text-xs text-muted-foreground">Max Variance</p>
+                    <p className="text-2xl font-bold">
+                      {Math.max(...filteredInstallationsData.map(item => item.variance)).toFixed(2)}%
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <p className="text-xs text-muted-foreground">With Coordinates</p>
+                    <p className="text-2xl font-bold">
+                      {filteredInstallationsData.filter(item => item.latitude && item.longitude).length}
+                    </p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Print Button */}
+              <div className="flex justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    const printContent = filteredInstallationsData.map((item, index) => 
+                      `${index + 1}. Device ID: ${item.deviceId} | Variance: ${item.variance}% | Lat: ${item.latitude?.toFixed(6) || 'N/A'} | Lon: ${item.longitude?.toFixed(6) || 'N/A'}`
+                    ).join('\n');
+                    
+                    const printWindow = window.open('', '', 'height=600,width=800');
+                    if (printWindow) {
+                      printWindow.document.write('<html><head><title>Variance Filter Results</title>');
+                      printWindow.document.write('<style>body { font-family: monospace; padding: 20px; } h1 { font-size: 18px; } pre { white-space: pre-wrap; }</style>');
+                      printWindow.document.write('</head><body>');
+                      printWindow.document.write(`<h1>Variance Filter Results (≥${varianceThreshold}%)</h1>`);
+                      printWindow.document.write(`<p><strong>Amanah:</strong> ${selectedAmanahTeamId === "all" ? "All" : teams.find(t => t.id === selectedAmanahTeamId)?.name}</p>`);
+                      printWindow.document.write(`<p><strong>Total Results:</strong> ${filteredInstallationsData.length}</p>`);
+                      printWindow.document.write('<hr><pre>' + printContent + '</pre>');
+                      printWindow.document.write('</body></html>');
+                      printWindow.document.close();
+                      printWindow.print();
+                    }
+                  }}
+                >
+                  🖨️ Print Results
+                </Button>
+              </div>
             </div>
           )}
         </CardContent>
