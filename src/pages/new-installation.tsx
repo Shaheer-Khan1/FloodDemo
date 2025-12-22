@@ -635,6 +635,7 @@ export default function NewInstallation() {
             <Label htmlFor="locationId">Location ID *</Label>
             <Input
               id="locationId"
+              name="locationId"
               value={locationId}
               onChange={(e) => {
                 // Only allow numbers - remove any non-numeric characters
@@ -643,6 +644,9 @@ export default function NewInstallation() {
               }}
               placeholder="Enter location ID (numbers only)"
               disabled={!deviceValid || submitting}
+              autoComplete="off"
+              inputMode="numeric"
+              pattern="[0-9]*"
               required
             />
           </div>
