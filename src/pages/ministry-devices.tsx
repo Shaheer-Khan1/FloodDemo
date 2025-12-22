@@ -606,7 +606,40 @@ export default function MinistryDevices() {
         if (location?.latitude != null && location?.longitude != null) {
           coordinates = formatCoordinates(location.latitude, location.longitude);
         } else if (instLat != null && instLon != null) {
-          coordinates = `${formatCoordinates(instLat, instLon)} (user entered)`;
+          // Try to find location from user's most recent installation
+          if (inst?.installedBy) {
+            const userInstallations = installations
+              .filter(i => i.installedBy === inst.installedBy && i.id !== inst.id && i.locationId && i.locationId !== rawLocationId)
+              .sort((a, b) => {
+                const dateA = a.createdAt ? a.createdAt.getTime() : 0;
+                const dateB = b.createdAt ? b.createdAt.getTime() : 0;
+                return dateB - dateA; // Most recent first
+              });
+            
+            // Find the most recent installation with a valid location
+            for (const userInst of userInstallations) {
+              const userLocId = String(userInst.locationId).trim();
+              const userLocation = locationMap.get(userLocId) ?? 
+                locations.find(
+                  (loc) =>
+                    String(loc.id).trim() === userLocId ||
+                    String(loc.locationId).trim() === userLocId
+                ) ?? null;
+              
+              if (userLocation?.latitude != null && userLocation?.longitude != null) {
+                location = userLocation;
+                coordinates = formatCoordinates(userLocation.latitude, userLocation.longitude);
+                break;
+              }
+            }
+            
+            // If still no location found, use installation coordinates
+            if (coordinates === "-") {
+              coordinates = formatCoordinates(instLat, instLon);
+            }
+          } else {
+            coordinates = formatCoordinates(instLat, instLon);
+          }
         }
       }
 
@@ -701,7 +734,40 @@ export default function MinistryDevices() {
           if (location?.latitude != null && location?.longitude != null) {
             coordinates = formatCoordinates(location.latitude, location.longitude);
           } else if (instLat != null && instLon != null) {
-            coordinates = `${formatCoordinates(instLat, instLon)} (user entered)`;
+            // Try to find location from user's most recent installation
+            if (inst?.installedBy) {
+              const userInstallations = installations
+                .filter(i => i.installedBy === inst.installedBy && i.id !== inst.id && i.locationId && i.locationId !== rawLocationId)
+                .sort((a, b) => {
+                  const dateA = a.createdAt ? a.createdAt.getTime() : 0;
+                  const dateB = b.createdAt ? b.createdAt.getTime() : 0;
+                  return dateB - dateA; // Most recent first
+                });
+              
+              // Find the most recent installation with a valid location
+              for (const userInst of userInstallations) {
+                const userLocId = String(userInst.locationId).trim();
+                const userLocation = locationMap.get(userLocId) ?? 
+                  locations.find(
+                    (loc) =>
+                      String(loc.id).trim() === userLocId ||
+                      String(loc.locationId).trim() === userLocId
+                  ) ?? null;
+                
+                if (userLocation?.latitude != null && userLocation?.longitude != null) {
+                  location = userLocation;
+                  coordinates = formatCoordinates(userLocation.latitude, userLocation.longitude);
+                  break;
+                }
+              }
+              
+              // If still no location found, use installation coordinates
+              if (coordinates === "-") {
+                coordinates = formatCoordinates(instLat, instLon);
+              }
+            } else {
+              coordinates = formatCoordinates(instLat, instLon);
+            }
           }
         }
 
@@ -1171,7 +1237,7 @@ export default function MinistryDevices() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* Team Filter */}
             <div className="space-y-2">
               <Label htmlFor="team-filter">Filter by Amanah</Label>

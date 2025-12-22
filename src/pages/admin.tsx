@@ -59,6 +59,11 @@ export default function Admin() {
   // Duplicate Installations Export State
   const [exportingDuplicates, setExportingDuplicates] = useState(false);
 
+  // Comma in Location ID Fix State
+  const [foundCommaInstallations, setFoundCommaInstallations] = useState<Installation[]>([]);
+  const [updatingCommaTo9999, setUpdatingCommaTo9999] = useState(false);
+  const [showCommaUpdateDialog, setShowCommaUpdateDialog] = useState(false);
+
   // Bulk Team Change State
   const [deviceIdsInput, setDeviceIdsInput] = useState("");
   const [bulkChangeSourceTeamId, setBulkChangeSourceTeamId] = useState("");
@@ -599,6 +604,114 @@ export default function Admin() {
       });
     } finally {
       setExporting999Report(false);
+    }
+  };
+
+  // Comma in Location ID Fix Functions
+  const findCommaInstallations = async () => {
+    setLoadingMatches(true);
+    setFoundCommaInstallations([]);
+
+    try {
+      const installationsRef = collection(db, "installations");
+      const snapshot = await getDocs(installationsRef);
+      
+      const matches: Installation[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        // Check if locationId contains a comma
+        if (data.locationId && String(data.locationId).includes(',')) {
+          matches.push({
+            ...data,
+            id: doc.id,
+            createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : data.createdAt,
+            updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : data.updatedAt,
+            verifiedAt: data.verifiedAt?.toDate ? data.verifiedAt.toDate() : data.verifiedAt,
+            systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate ? data.systemPreVerifiedAt.toDate() : data.systemPreVerifiedAt,
+            serverRefreshedAt: data.serverRefreshedAt?.toDate ? data.serverRefreshedAt.toDate() : data.serverRefreshedAt,
+          } as Installation);
+        }
+      });
+
+      setFoundCommaInstallations(matches);
+      
+      if (matches.length > 0) {
+        setShowCommaUpdateDialog(true);
+      } else {
+        toast({
+          title: "No Installations Found",
+          description: "No installations with commas in locationId were found.",
+        });
+      }
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Search Failed",
+        description: error.message || "An error occurred while searching.",
+      });
+    } finally {
+      setLoadingMatches(false);
+    }
+  };
+
+  const handleUpdateCommaTo9999 = async () => {
+    if (foundCommaInstallations.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No Installations",
+        description: "No installations found to update.",
+      });
+      return;
+    }
+
+    setUpdatingCommaTo9999(true);
+
+    try {
+      let batch = writeBatch(db);
+      let batchCount = 0;
+
+      for (const installation of foundCommaInstallations) {
+        const installationRef = doc(db, "installations", installation.id);
+        
+        const updateData: any = {
+          locationId: "9999",
+          updatedAt: serverTimestamp(),
+        };
+
+        // Store original locationId if not already stored
+        if (!installation.originalLocationId) {
+          updateData.originalLocationId = installation.locationId;
+        }
+
+        batch.update(installationRef, updateData);
+        batchCount++;
+
+        if (batchCount === 500) {
+          await batch.commit();
+          batchCount = 0;
+          batch = writeBatch(db);
+        }
+      }
+
+      if (batchCount > 0) {
+        await batch.commit();
+      }
+
+      toast({
+        title: "Update Complete",
+        description: `Successfully updated ${foundCommaInstallations.length} installation(s) with commas in locationId to 9999.`,
+      });
+
+      setFoundCommaInstallations([]);
+      setShowCommaUpdateDialog(false);
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Update Failed",
+        description: error.message || "An error occurred during update.",
+      });
+    } finally {
+      setUpdatingCommaTo9999(false);
     }
   };
 
@@ -1826,9 +1939,13 @@ export default function Admin() {
             <div className="space-y-2">
               <label className="text-sm font-medium">New Location ID</label>
               <Input
-                placeholder="Enter new location ID"
+                placeholder="Enter new location ID (numbers only)"
                 value={newLocationId}
-                onChange={(e) => setNewLocationId(e.target.value)}
+                onChange={(e) => {
+                  // Only allow numbers - remove any non-numeric characters
+                  const numericValue = e.target.value.replace(/[^0-9]/g, '');
+                  setNewLocationId(numericValue);
+                }}
                 disabled={loadingMatches || updatingLocationIds}
               />
             </div>
@@ -2054,6 +2171,121 @@ export default function Admin() {
               className="bg-primary"
             >
               {updating999to9999 ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Updating...
+                </>
+              ) : (
+                <>
+                  Confirm Update
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Quick Fix: Update Location IDs with Commas to 9999 */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <AlertTriangle className="h-5 w-5 text-orange-600" />
+            Quick Fix: Update Location IDs with Commas to 9999
+          </CardTitle>
+          <CardDescription>
+            Find and update all installations where locationId contains a comma (,) to "9999"
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              onClick={findCommaInstallations}
+              disabled={loadingMatches || updatingCommaTo9999}
+            >
+              {loadingMatches ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Searching...
+                </>
+              ) : (
+                <>
+                  <Search className="h-4 w-4 mr-2" />
+                  Find Location IDs with Commas
+                </>
+              )}
+            </Button>
+            
+            {foundCommaInstallations.length > 0 && (
+              <Badge variant="outline" className="text-sm">
+                Found {foundCommaInstallations.length} installation{foundCommaInstallations.length !== 1 ? 's' : ''}
+              </Badge>
+            )}
+          </div>
+
+          {foundCommaInstallations.length > 0 && (
+            <div className="p-3 rounded-lg bg-orange-50 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-800">
+              <p className="text-sm text-orange-900 dark:text-orange-100 mb-2">
+                Ready to update {foundCommaInstallations.length} installation{foundCommaInstallations.length !== 1 ? 's' : ''} with commas in locationId to "9999"
+              </p>
+              <div className="text-xs text-orange-800 dark:text-orange-200 space-y-1">
+                <p className="font-medium">Sample Location IDs found:</p>
+                <ul className="list-disc list-inside">
+                  {foundCommaInstallations.slice(0, 5).map((inst, idx) => (
+                    <li key={idx}>
+                      <code className="bg-orange-100 dark:bg-orange-900/40 px-1 rounded">
+                        {inst.locationId}
+                      </code> (Device: {inst.deviceId})
+                    </li>
+                  ))}
+                  {foundCommaInstallations.length > 5 && (
+                    <li>...and {foundCommaInstallations.length - 5} more</li>
+                  )}
+                </ul>
+              </div>
+            </div>
+          )}
+
+          <div className="text-xs text-muted-foreground">
+            <p><strong>Action:</strong> Finds all installations where locationId contains a comma and updates them to "9999" while preserving the original value in originalLocationId</p>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Comma Location ID Update Confirmation Dialog */}
+      <AlertDialog open={showCommaUpdateDialog} onOpenChange={setShowCommaUpdateDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Location ID Update</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <p>You are about to update <strong>{foundCommaInstallations.length}</strong> installation(s).</p>
+              <p className="font-semibold">Changes:</p>
+              <ul className="list-disc list-inside space-y-1 text-sm">
+                <li>Change locationId to <strong>"9999"</strong> for all installations with commas</li>
+                <li>Save original locationId to <code className="bg-muted px-1 rounded">originalLocationId</code></li>
+              </ul>
+              <div className="mt-3 p-2 bg-muted rounded text-xs">
+                <p className="font-medium mb-1">Sample changes:</p>
+                <ul className="space-y-1">
+                  {foundCommaInstallations.slice(0, 3).map((inst, idx) => (
+                    <li key={idx}>
+                      <code className="text-red-600">{inst.locationId}</code> → <code className="text-green-600">9999</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <p className="text-amber-600 dark:text-amber-500 font-medium mt-3">
+                This action cannot be undone. Are you sure you want to continue?
+              </p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={updatingCommaTo9999}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleUpdateCommaTo9999}
+              disabled={updatingCommaTo9999}
+              className="bg-primary"
+            >
+              {updatingCommaTo9999 ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   Updating...

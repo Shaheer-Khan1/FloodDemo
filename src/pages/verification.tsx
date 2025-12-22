@@ -3142,11 +3142,9 @@ export default function Verification() {
                           <Input
                             value={editedLocationId}
                             onChange={(e) => {
-                              const value = e.target.value;
-                              // Only allow numbers
-                              if (value === '' || /^\d+$/.test(value)) {
-                                setEditedLocationId(value);
-                              }
+                              // Only allow numbers - remove any non-numeric characters
+                              const numericValue = e.target.value.replace(/[^0-9]/g, '');
+                              setEditedLocationId(numericValue);
                             }}
                             className="mt-1"
                             placeholder="Enter location ID (numbers only)"

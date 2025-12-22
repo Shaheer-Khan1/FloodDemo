@@ -636,8 +636,12 @@ export default function NewInstallation() {
             <Input
               id="locationId"
               value={locationId}
-              onChange={(e) => setLocationId(e.target.value)}
-              placeholder="Enter location ID (e.g., site code or name)"
+              onChange={(e) => {
+                // Only allow numbers - remove any non-numeric characters
+                const numericValue = e.target.value.replace(/[^0-9]/g, '');
+                setLocationId(numericValue);
+              }}
+              placeholder="Enter location ID (numbers only)"
               disabled={!deviceValid || submitting}
               required
             />
