@@ -493,7 +493,7 @@ export default function Verification() {
       );
     }
 
-    if (teamIdFilter && userProfile?.isAdmin) {
+    if (teamIdFilter && (userProfile?.isAdmin || userProfile?.role === "manager")) {
       filtered = filtered.filter((inst) => inst.teamId === teamIdFilter);
     }
 
@@ -512,7 +512,7 @@ export default function Verification() {
     }
 
     return filtered;
-  }, [allInstallations, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter, userProfile?.isAdmin]);
+  }, [allInstallations, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
 
   const dashboardStats = useMemo(() => {
     const total = filteredAllInstallations.length;
@@ -590,8 +590,8 @@ export default function Verification() {
       );
     }
 
-    // Apply team filter (admin only)
-    if (teamIdFilter && userProfile?.isAdmin) {
+    // Apply team filter (admin and manager)
+    if (teamIdFilter && (userProfile?.isAdmin || userProfile?.role === "manager")) {
       filtered = filtered.filter(i => i.installation.teamId === teamIdFilter);
     }
 
@@ -618,7 +618,7 @@ export default function Verification() {
     });
 
     return filtered;
-  }, [verificationItems, activeFilter, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter, userProfile?.isAdmin]);
+  }, [verificationItems, activeFilter, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
 
   // Limit displayed items for performance
   const paginatedDisplayedItems = useMemo(() => {
@@ -672,8 +672,8 @@ export default function Verification() {
       );
     }
 
-    // Apply team filter (admin only)
-    if (teamIdFilter && userProfile?.isAdmin) {
+    // Apply team filter (admin and manager)
+    if (teamIdFilter && (userProfile?.isAdmin || userProfile?.role === "manager")) {
       filtered = filtered.filter(i => i.installation.teamId === teamIdFilter);
     }
 
@@ -705,7 +705,7 @@ export default function Verification() {
     });
 
     return filtered;
-  }, [verifiedInstallations, deviceMap, installerNameFilter, deviceIdFilter, teamIdFilter, activeFilter, dateFilter, userProfile?.isAdmin]);
+  }, [verifiedInstallations, deviceMap, installerNameFilter, deviceIdFilter, teamIdFilter, activeFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
 
   // Limit displayed verified items for performance
   const paginatedVerifiedItems = useMemo(() => {
@@ -2126,21 +2126,26 @@ export default function Verification() {
               />
             </div>
 
-            {/* Team Filter (Admin Only) */}
-            {userProfile?.isAdmin && (
+            {/* Team Filter (Admin and Manager) */}
+            {(userProfile?.isAdmin || userProfile?.role === "manager") && (
               <div className="space-y-2">
-                <Label htmlFor="team-filter">Team Name</Label>
+                <Label htmlFor="team-filter">
+                  {userProfile?.role === "manager" && !userProfile?.isAdmin ? "Amanah" : "Team Name"}
+                </Label>
                 <Select value={teamIdFilter || "all"} onValueChange={(value) => setTeamIdFilter(value === "all" ? "" : value)}>
                   <SelectTrigger id="team-filter">
-                    <SelectValue placeholder="All Teams" />
+                    <SelectValue placeholder={userProfile?.role === "manager" && !userProfile?.isAdmin ? "All Amanahs" : "All Teams"} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All Teams</SelectItem>
-                    {teams.map(team => (
-                      <SelectItem key={team.id} value={team.id}>
-                        {team.name}
-                      </SelectItem>
-                    ))}
+                    <SelectItem value="all">{userProfile?.role === "manager" && !userProfile?.isAdmin ? "All Amanahs" : "All Teams"}</SelectItem>
+                    {teams.map(team => {
+                      const arabicName = translateTeamNameToArabic(team.name);
+                      return (
+                        <SelectItem key={team.id} value={team.id}>
+                          {arabicName ? `${team.name} / ${arabicName}` : team.name}
+                        </SelectItem>
+                      );
+                    })}
                   </SelectContent>
                 </Select>
               </div>
@@ -2193,7 +2198,12 @@ export default function Verification() {
                 )}
                 {teamIdFilter && (
                   <Badge variant="secondary" className="text-xs">
-                    Team: {teams.find(t => t.id === teamIdFilter)?.name || teamIdFilter}
+                    {userProfile?.role === "manager" && !userProfile?.isAdmin ? "Amanah" : "Team"}: {(() => {
+                      const team = teams.find(t => t.id === teamIdFilter);
+                      const teamName = team?.name || teamIdFilter;
+                      const arabicName = translateTeamNameToArabic(teamName);
+                      return arabicName ? `${teamName} / ${arabicName}` : teamName;
+                    })()}
                   </Badge>
                 )}
                 {dateFilter && (
