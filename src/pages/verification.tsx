@@ -84,7 +84,7 @@ export default function Verification() {
   const [deviceIdFilter, setDeviceIdFilter] = useState<string>("");
   const [displayLimit, setDisplayLimit] = useState(500);
   const [exportDate, setExportDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
-  const [autoServerFetchEnabled, setAutoServerFetchEnabled] = useState(true);
+  const [autoServerFetchEnabled, setAutoServerFetchEnabled] = useState(false);
   
   // Edit mode states
   const [isEditMode, setIsEditMode] = useState(false);
@@ -367,10 +367,21 @@ export default function Verification() {
     });
   }, [allInstallations]);
 
+  // Create a device map for O(1) lookups
+  const deviceMap = useMemo(() => {
+    const map = new Map<string, Device>();
+    devices.forEach(device => {
+      if (device.id) {
+        map.set(device.id, device);
+      }
+    });
+    return map;
+  }, [devices]);
+
   // Create verification items for pending installations
   const verificationItems = useMemo(() => {
     return pendingInstallations.map(installation => {
-      const device = devices.find(d => d.id === installation.deviceId);
+      const device = deviceMap.get(installation.deviceId);
       
       // Use latestDisCm from installation document instead of serverData collection
       const serverValue = installation.latestDisCm;
@@ -392,7 +403,7 @@ export default function Verification() {
         percentageDifference,
       } as VerificationItem;
     }).filter(item => item.device); // Filter out items without device info
-  }, [pendingInstallations, devices]);
+  }, [pendingInstallations, deviceMap]);
 
   // Extract unique installer names
   const installerNames = useMemo(() => {
@@ -626,7 +637,7 @@ export default function Verification() {
     }
 
     let filtered = verifiedInstallations.map(installation => {
-      const device = devices.find(d => d.id === installation.deviceId);
+      const device = deviceMap.get(installation.deviceId);
       const serverValue = installation.latestDisCm;
       
       let percentageDifference: number | undefined;
@@ -694,7 +705,7 @@ export default function Verification() {
     });
 
     return filtered;
-  }, [verifiedInstallations, devices, installerNameFilter, deviceIdFilter, teamIdFilter, activeFilter, dateFilter, userProfile?.isAdmin]);
+  }, [verifiedInstallations, deviceMap, installerNameFilter, deviceIdFilter, teamIdFilter, activeFilter, dateFilter, userProfile?.isAdmin]);
 
   // Limit displayed verified items for performance
   const paginatedVerifiedItems = useMemo(() => {
@@ -1590,16 +1601,35 @@ export default function Verification() {
     });
   };
 
+  // Track in-flight fetches to prevent duplicates
+  const fetchInProgressRef = useRef<Set<string>>(new Set());
+
   const fetchLatestServerReadings = async (installation: Installation) => {
     if (!installation?.deviceId) return;
+    
+    // Prevent duplicate fetches for the same device
+    const fetchKey = `${installation.deviceId}_${installation.id}`;
+    if (fetchInProgressRef.current.has(fetchKey)) {
+      return;
+    }
+    
+    fetchInProgressRef.current.add(fetchKey);
     setFetchingMap(prev => ({ ...prev, [installation.id]: true }));
+    
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+      
       const apiResponse = await fetch(`https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`, {
         method: 'GET',
         headers: {
           'X-API-KEY': import.meta.env.VITE_API_KEY || ''
-        }
+        },
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
+      
       // If server hasn't ingested data yet, the API may return 404. Show a friendly message instead of an error.
       if (apiResponse.status === 404) {
         await updateDoc(doc(db, "installations", installation.id), {
@@ -1672,6 +1702,8 @@ export default function Verification() {
         description: e instanceof Error ? e.message : "Could not fetch server readings.",
       });
     } finally {
+      const fetchKey = `${installation.deviceId}_${installation.id}`;
+      fetchInProgressRef.current.delete(fetchKey);
       setFetchingMap(prev => ({ ...prev, [installation.id]: false }));
     }
   };
@@ -1858,25 +1890,98 @@ export default function Verification() {
   };
 
   // Auto-refresh every 24h for high variance and no-data items (best-effort while page is open)
+  // OPTIMIZED: Use interval instead of reactive effect to prevent performance issues
   const inFlightAuto = useRef<Set<string>>(new Set());
+  const lastAutoCheckTime = useRef<number>(0);
+  const autoFetchQueueRef = useRef<Installation[]>([]);
+  const processingBatchRef = useRef<boolean>(false);
+
+  // Batch process auto-fetches to avoid overwhelming the system
+  const processBatch = async () => {
+    if (processingBatchRef.current || autoFetchQueueRef.current.length === 0) return;
+    
+    processingBatchRef.current = true;
+    const BATCH_SIZE = 3; // Process max 3 at a time
+    const batch = autoFetchQueueRef.current.splice(0, BATCH_SIZE);
+    
+    await Promise.all(
+      batch.map(async (inst) => {
+        if (inFlightAuto.current.has(inst.id)) return;
+        inFlightAuto.current.add(inst.id);
+        try {
+          await fetchLatestServerReadings(inst);
+        } catch (error) {
+          console.error(`Auto-fetch failed for ${inst.id}:`, error);
+        } finally {
+          inFlightAuto.current.delete(inst.id);
+        }
+      })
+    );
+    
+    processingBatchRef.current = false;
+    
+    // Process next batch if there are more items
+    if (autoFetchQueueRef.current.length > 0) {
+      setTimeout(processBatch, 2000); // Wait 2 seconds between batches
+    }
+  };
+
   useEffect(() => {
     if (!autoServerFetchEnabled) return;
 
-    const now = Date.now();
+    // Run check every 5 minutes instead of on every data change
+    const CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
     const DAY_MS = 24 * 60 * 60 * 1000;
-    verificationItems.forEach(item => {
-      const inst = item.installation;
-      const isHighVariance = !!(item.percentageDifference && item.percentageDifference > 5);
-      const hasNoData = inst.latestDisCm == null;
-      if (!(isHighVariance || hasNoData)) return;
-      const last = inst.serverRefreshedAt ? inst.serverRefreshedAt.getTime() : 0;
-      const due = (now - last) > DAY_MS;
-      if (!due) return;
-      if (inFlightAuto.current.has(inst.id)) return;
-      inFlightAuto.current.add(inst.id);
-      fetchLatestServerReadings(inst).finally(() => inFlightAuto.current.delete(inst.id));
-    });
-  }, [verificationItems, autoServerFetchEnabled]);
+
+    const checkAndQueue = () => {
+      const now = Date.now();
+      
+      // Prevent running too frequently
+      if (now - lastAutoCheckTime.current < CHECK_INTERVAL) return;
+      lastAutoCheckTime.current = now;
+
+      const itemsToFetch: Installation[] = [];
+      
+      verificationItems.forEach(item => {
+        const inst = item.installation;
+        const isHighVariance = !!(item.percentageDifference && item.percentageDifference > 5);
+        const hasNoData = inst.latestDisCm == null;
+        
+        if (!(isHighVariance || hasNoData)) return;
+        if (inFlightAuto.current.has(inst.id)) return;
+        
+        const last = inst.serverRefreshedAt ? inst.serverRefreshedAt.getTime() : 0;
+        const due = (now - last) > DAY_MS;
+        
+        if (due) {
+          itemsToFetch.push(inst);
+        }
+      });
+
+      // Add to queue if not already in queue
+      itemsToFetch.forEach(inst => {
+        if (!autoFetchQueueRef.current.find(i => i.id === inst.id)) {
+          autoFetchQueueRef.current.push(inst);
+        }
+      });
+
+      // Start processing if not already processing
+      if (autoFetchQueueRef.current.length > 0 && !processingBatchRef.current) {
+        processBatch();
+      }
+    };
+
+    // Initial check after 10 seconds (give time for page to load)
+    const initialTimeout = setTimeout(checkAndQueue, 10000);
+    
+    // Then check every 5 minutes
+    const interval = setInterval(checkAndQueue, CHECK_INTERVAL);
+
+    return () => {
+      clearTimeout(initialTimeout);
+      clearInterval(interval);
+    };
+  }, [autoServerFetchEnabled, verificationItems]);
 
   if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") {
     return (
