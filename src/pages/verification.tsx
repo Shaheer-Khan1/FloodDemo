@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp, deleteDoc, writeBatch } from "firebase/firestore";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp, deleteDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
@@ -54,23 +54,6 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { translateTeamNameToArabic } from "@/lib/amanah-translations";
 
-// Custom debounce hook for performance optimization
-function useDebounce<T>(value: T, delay: number): T {
-  const [debouncedValue, setDebouncedValue] = useState<T>(value);
-
-  useEffect(() => {
-    const handler = setTimeout(() => {
-      setDebouncedValue(value);
-    }, delay);
-
-    return () => {
-      clearTimeout(handler);
-    };
-  }, [value, delay]);
-
-  return debouncedValue;
-}
-
 export default function Verification() {
   const { userProfile } = useAuth();
   const { toast } = useToast();
@@ -90,7 +73,7 @@ export default function Verification() {
   const [refreshStatuses, setRefreshStatuses] = useState<Record<string, "pending" | "success" | "error" | "skipped">>({});
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   // Set initial filter based on role - managers should only see escalated items
-  const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'highVariance' | 'withServerData' | 'noServerData' | 'preVerified' | 'verified' | 'flagged' | 'escalated' | 'edited'>(
+  const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'highVariance' | 'withServerData' | 'noServerData' | 'preVerified' | 'verified' | 'flagged' | 'escalated'>(
     userProfile?.role === "manager" && !userProfile?.isAdmin ? 'escalated' : 'all'
   );
   
@@ -99,15 +82,9 @@ export default function Verification() {
   const [teamIdFilter, setTeamIdFilter] = useState<string>("");
   const [dateFilter, setDateFilter] = useState<string>(() => format(new Date(), "yyyy-MM-dd"));
   const [deviceIdFilter, setDeviceIdFilter] = useState<string>("");
-  const [displayLimit, setDisplayLimit] = useState(100); // Reduced from 500 for better performance
+  const [displayLimit, setDisplayLimit] = useState(500);
   const [exportDate, setExportDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
-  const [autoServerFetchEnabled, setAutoServerFetchEnabled] = useState(false);
-  
-  // Debounced filter values for performance (300ms delay)
-  const debouncedInstallerNameFilter = useDebounce(installerNameFilter, 300);
-  const debouncedDeviceIdFilter = useDebounce(deviceIdFilter, 300);
-  const debouncedDateFilter = useDebounce(dateFilter, 300);
-  const debouncedTeamIdFilter = useDebounce(teamIdFilter, 300);
+  const [autoServerFetchEnabled, setAutoServerFetchEnabled] = useState(true);
   
   // Edit mode states
   const [isEditMode, setIsEditMode] = useState(false);
@@ -137,7 +114,7 @@ export default function Verification() {
   const [fieldCheckStates, setFieldCheckStates] = useState<Record<string, boolean>>({});
 
   const toggleFieldCheck = async (key: string, checked: boolean) => {
-    if (!selectedItem || !userProfile) return;
+    if (!selectedItem) return;
     
     const newStates = {
       ...fieldCheckStates,
@@ -147,23 +124,10 @@ export default function Verification() {
     // Update local state immediately
     setFieldCheckStates(newStates);
     
-    // Update metadata
-    const newMetadata = { ...(selectedItem.installation.fieldCheckMetadata || {}) };
-    if (checked) {
-      newMetadata[key] = {
-        checkedBy: userProfile.uid,
-        checkedByName: userProfile.displayName,
-        checkedAt: new Date(),
-      };
-    } else {
-      delete newMetadata[key];
-    }
-    
     // Save to database
     try {
       await updateDoc(doc(db, "installations", selectedItem.installation.id), {
         fieldCheckStates: newStates,
-        fieldCheckMetadata: newMetadata,
         updatedAt: serverTimestamp(),
       });
     } catch (error) {
@@ -180,56 +144,44 @@ export default function Verification() {
   const allMandatoryChecksCompleted = useMemo(() => {
     if (!selectedItem) return false;
 
-    // Server data must be available for approval
-    if (!selectedItem.serverData) {
-      return false; // Cannot approve without server data
-    }
-
-    // Check if coordinates exist (required for approval)
-    const locationId = selectedItem.installation.locationId ? String(selectedItem.installation.locationId).trim() : "";
-    const isLocation9999 = locationId === "9999";
-    const location = locationMap.get(locationId);
-    
-    let hasCoordinates = false;
-    if (isLocation9999) {
-      // For location 9999, check installation coordinates
-      hasCoordinates = selectedItem.installation.latitude != null && selectedItem.installation.longitude != null;
-    } else {
-      // For other locations, check location relation coordinates
-      hasCoordinates = location?.latitude != null && location?.longitude != null;
-    }
-    
-    // Coordinates are mandatory - cannot approve without them
-    if (!hasCoordinates) {
-      return false;
-    }
-
-    // Mandatory fields for approval
     const keys: string[] = [
+      // Installer data
       "installer_deviceId",
+      "installer_installer",
       "installer_locationId",
       "installer_sensorReading",
       "installer_coordinates",
-      "server_sensorData", // Server data is always mandatory
+      "installer_submitted",
+      // Device information
+      "device_uid",
+      "device_productId",
+      "device_imei",
+      "device_iccid",
     ];
 
-    // All image checkboxes must be checked
+    // Server data fields only if server data exists
+    if (selectedItem.serverData) {
+      keys.push(
+        "server_deviceId",
+        "server_sensorData",
+        "server_receivedAt",
+        "server_variance"
+      );
+    }
+
+    // One checkbox per installation image
     (selectedItem.installation.imageUrls || []).forEach((_, index) => {
       keys.push(`image_${index}`);
     });
 
-    if (keys.length === 0) return false;
-    const allChecked = keys.every((key) => fieldCheckStates[key]);
-    
-    // Debug: Log which fields are missing
-    if (!allChecked) {
-      const missing = keys.filter(key => !fieldCheckStates[key]);
-      console.log("Missing mandatory checks:", missing);
-      console.log("Current fieldCheckStates:", fieldCheckStates);
+    // Checkbox for video if present
+    if (selectedItem.installation.videoUrl) {
+      keys.push("video");
     }
-    
-    return allChecked;
-  }, [selectedItem, fieldCheckStates, locationMap, locations]);
+
+    if (keys.length === 0) return false;
+    return keys.every((key) => fieldCheckStates[key]);
+  }, [selectedItem, fieldCheckStates]);
 
   // Auto-set filter to escalated for managers (cannot be changed)
   useEffect(() => {
@@ -415,21 +367,10 @@ export default function Verification() {
     });
   }, [allInstallations]);
 
-  // Create device map for O(1) lookups instead of O(n)
-  const deviceMap = useMemo(() => {
-    const map = new Map<string, Device>();
-    devices.forEach(device => {
-      if (device.id) {
-        map.set(device.id, device);
-      }
-    });
-    return map;
-  }, [devices]);
-
   // Create verification items for pending installations
   const verificationItems = useMemo(() => {
     return pendingInstallations.map(installation => {
-      const device = deviceMap.get(installation.deviceId);
+      const device = devices.find(d => d.id === installation.deviceId);
       
       // Use latestDisCm from installation document instead of serverData collection
       const serverValue = installation.latestDisCm;
@@ -451,7 +392,7 @@ export default function Verification() {
         percentageDifference,
       } as VerificationItem;
     }).filter(item => item.device); // Filter out items without device info
-  }, [pendingInstallations, deviceMap]);
+  }, [pendingInstallations, devices]);
 
   // Extract unique installer names
   const installerNames = useMemo(() => {
@@ -464,22 +405,12 @@ export default function Verification() {
     return Array.from(names).sort();
   }, [allInstallations]);
 
-  // Create team map for O(1) lookups instead of O(n)
-  const teamMap = useMemo(() => {
-    const map = new Map<string, string>();
-    teams.forEach(team => {
-      if (team.id && team.name) {
-        map.set(team.id, team.name);
-      }
-    });
-    return map;
-  }, [teams]);
-
-  // Optimized helper function using map
-  const getTeamName = useCallback((teamId?: string): string | null => {
+  // Helper function to get team name from teamId
+  const getTeamName = (teamId?: string): string | null => {
     if (!teamId) return null;
-    return teamMap.get(teamId) || null;
-  }, [teamMap]);
+    const team = teams.find(t => t.id === teamId);
+    return team?.name || null;
+  };
 
   // Create a map of locationId -> coordinates & municipality
   const locationMap = useMemo(() => {
@@ -539,26 +470,24 @@ export default function Verification() {
   const filteredAllInstallations = useMemo(() => {
     let filtered = allInstallations;
 
-    if (debouncedInstallerNameFilter) {
-      const lowerFilter = debouncedInstallerNameFilter.toLowerCase();
+    if (installerNameFilter) {
       filtered = filtered.filter((inst) =>
-        inst.installedByName?.toLowerCase().includes(lowerFilter)
+        inst.installedByName?.toLowerCase().includes(installerNameFilter.toLowerCase())
       );
     }
 
-    if (debouncedDeviceIdFilter) {
-      const upperFilter = debouncedDeviceIdFilter.toUpperCase();
+    if (deviceIdFilter) {
       filtered = filtered.filter((inst) =>
-        inst.deviceId?.toUpperCase().includes(upperFilter)
+        inst.deviceId?.toUpperCase().includes(deviceIdFilter.toUpperCase())
       );
     }
 
-    if (debouncedTeamIdFilter && userProfile?.isAdmin) {
-      filtered = filtered.filter((inst) => inst.teamId === debouncedTeamIdFilter);
+    if (teamIdFilter && userProfile?.isAdmin) {
+      filtered = filtered.filter((inst) => inst.teamId === teamIdFilter);
     }
 
-    if (debouncedDateFilter) {
-      const filterDate = new Date(debouncedDateFilter);
+    if (dateFilter) {
+      const filterDate = new Date(dateFilter);
       filterDate.setHours(0, 0, 0, 0);
       const nextDay = new Date(filterDate);
       nextDay.setDate(nextDay.getDate() + 1);
@@ -572,43 +501,33 @@ export default function Verification() {
     }
 
     return filtered;
-  }, [allInstallations, debouncedInstallerNameFilter, debouncedDeviceIdFilter, debouncedTeamIdFilter, debouncedDateFilter, userProfile?.isAdmin]);
+  }, [allInstallations, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter, userProfile?.isAdmin]);
 
   const dashboardStats = useMemo(() => {
     const total = filteredAllInstallations.length;
     const installed = total; // every installation in the database represents an installed device
-    
-    // Optimize by doing a single pass through the data instead of multiple filter operations
-    let connectedWithServer = 0;
-    let noConnection = 0;
-    let editedRecords = 0;
-    let systemPreApproved = 0;
-    let verifiedAuto = 0;
-    let verifiedManual = 0;
-    
-    filteredAllInstallations.forEach((i) => {
-      if (i.latestDisCm != null) {
-        connectedWithServer++;
-      } else {
-        noConnection++;
-      }
-      
-      if (i.tags?.includes("edited by verifier")) {
-        editedRecords++;
-      }
-      
-      if (i.systemPreVerified === true) {
-        systemPreApproved++;
-      }
-      
-      if (i.status === "verified") {
-        if (i.systemPreVerified === true || (i.verifiedBy && i.verifiedBy.toLowerCase().includes("system"))) {
-          verifiedAuto++;
-        } else {
-          verifiedManual++;
-        }
-      }
-    });
+    const connectedWithServer = filteredAllInstallations.filter(
+      (i) => i.latestDisCm != null
+    ).length;
+    const noConnection = filteredAllInstallations.filter(
+      (i) => i.latestDisCm == null
+    ).length;
+    const editedRecords = filteredAllInstallations.filter((i) =>
+      i.tags?.includes("edited by verifier")
+    ).length;
+    const systemPreApproved = filteredAllInstallations.filter(
+      (i) => i.systemPreVerified === true
+    ).length;
+
+    const verifiedAll = filteredAllInstallations.filter(
+      (i) => i.status === "verified"
+    );
+    const verifiedAuto = verifiedAll.filter(
+      (i) =>
+        i.systemPreVerified === true ||
+        (i.verifiedBy && i.verifiedBy.toLowerCase().includes("system"))
+    ).length;
+    const verifiedManual = verifiedAll.length - verifiedAuto;
 
     return {
       total,
@@ -641,37 +560,33 @@ export default function Verification() {
       filtered = verificationItems.filter(i => i.installation.status === "flagged");
     } else if (activeFilter === 'escalated') {
       filtered = verificationItems.filter(i => i.installation.tags?.includes("escalated to manager"));
-    } else if (activeFilter === 'edited') {
-      filtered = verificationItems.filter(i => i.installation.tags?.includes("edited by verifier"));
     } else if (activeFilter === 'verified') {
       // For verified filter, return empty array for pending items (verified items shown in separate table)
       filtered = [];
     }
 
     // Apply installer name filter
-    if (debouncedInstallerNameFilter) {
-      const lowerFilter = debouncedInstallerNameFilter.toLowerCase();
+    if (installerNameFilter) {
       filtered = filtered.filter(i => 
-        i.installation.installedByName?.toLowerCase().includes(lowerFilter)
+        i.installation.installedByName?.toLowerCase().includes(installerNameFilter.toLowerCase())
       );
     }
 
     // Apply device ID filter
-    if (debouncedDeviceIdFilter) {
-      const upperFilter = debouncedDeviceIdFilter.toUpperCase();
+    if (deviceIdFilter) {
       filtered = filtered.filter(i => 
-        i.installation.deviceId?.toUpperCase().includes(upperFilter)
+        i.installation.deviceId?.toUpperCase().includes(deviceIdFilter.toUpperCase())
       );
     }
 
     // Apply team filter (admin only)
-    if (debouncedTeamIdFilter && userProfile?.isAdmin) {
-      filtered = filtered.filter(i => i.installation.teamId === debouncedTeamIdFilter);
+    if (teamIdFilter && userProfile?.isAdmin) {
+      filtered = filtered.filter(i => i.installation.teamId === teamIdFilter);
     }
 
     // Apply date filter
-    if (debouncedDateFilter) {
-      const filterDate = new Date(debouncedDateFilter);
+    if (dateFilter) {
+      const filterDate = new Date(dateFilter);
       filterDate.setHours(0, 0, 0, 0);
       const nextDay = new Date(filterDate);
       nextDay.setDate(nextDay.getDate() + 1);
@@ -692,85 +607,26 @@ export default function Verification() {
     });
 
     return filtered;
-  }, [verificationItems, activeFilter, debouncedInstallerNameFilter, debouncedDeviceIdFilter, debouncedTeamIdFilter, debouncedDateFilter, userProfile?.isAdmin]);
-
-  // Pre-calculate all display data to avoid expensive operations during render
-  const enrichedDisplayedItems = useMemo(() => {
-    return displayedItems.map(item => {
-      const hasHighVariance = item.percentageDifference && item.percentageDifference > 5;
-      const teamName = item.installation.teamId ? teamMap.get(item.installation.teamId) || null : null;
-      const amanahArabic = translateTeamNameToArabic(teamName);
-      const amanahLabel = amanahArabic ?? teamName ?? "-";
-      
-      const locationId = item.installation.locationId ? String(item.installation.locationId).trim() : "";
-      const isLocation9999 = locationId === "9999";
-      const location = locationMap.get(locationId);
-      
-      let displayLat: number | null = null;
-      let displayLon: number | null = null;
-      
-      if (isLocation9999) {
-        displayLat = item.installation.latitude ?? null;
-        displayLon = item.installation.longitude ?? null;
-      } else {
-        displayLat = location?.latitude ?? null;
-        displayLon = location?.longitude ?? null;
-      }
-      
-      const municipality = location?.municipalityName;
-      
-      // Pre-format dates
-      const createdAtFormatted = item.installation.createdAt 
-        ? format(item.installation.createdAt, "MMM d, HH:mm")
-        : null;
-      
-      let serverTimestampFormatted: string | null = null;
-      const ts = item.installation.latestDisTimestamp as any;
-      if (ts) {
-        const maybeDate = ts instanceof Date ? ts : new Date(ts);
-        const formatted = formatDateSafe(maybeDate, "MMM d, HH:mm");
-        serverTimestampFormatted = formatted;
-      }
-      
-      return {
-        ...item,
-        // Pre-calculated display values
-        _display: {
-          hasHighVariance,
-          teamName,
-          amanahLabel,
-          municipality,
-          displayLat,
-          displayLon,
-          createdAtFormatted,
-          serverTimestampFormatted,
-          hasLocation: displayLat != null && displayLon != null,
-          isEdited: item.installation.tags?.includes("edited by verifier") || false,
-        }
-      };
-    });
-  }, [displayedItems, teamMap, locationMap]);
+  }, [verificationItems, activeFilter, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter, userProfile?.isAdmin]);
 
   // Limit displayed items for performance
   const paginatedDisplayedItems = useMemo(() => {
-    return enrichedDisplayedItems.slice(0, displayLimit);
-  }, [enrichedDisplayedItems, displayLimit]);
+    return displayedItems.slice(0, displayLimit);
+  }, [displayedItems, displayLimit]);
 
   // Apply filters to verified installations
   const displayedVerifiedItems = useMemo(() => {
-    // Only show verified items for filters that should display them
-    // Filters that don't show verified items: 'pending', 'highVariance', 'flagged', 'escalated'
+    // Only show verified items if 'verified', 'all', or 'noServerData' filter is active
     if (
-      activeFilter === 'pending' ||
-      activeFilter === 'highVariance' ||
-      activeFilter === 'flagged' ||
-      activeFilter === 'escalated'
+      activeFilter !== 'verified' &&
+      activeFilter !== 'all' &&
+      activeFilter !== 'noServerData'
     ) {
       return [];
     }
 
     let filtered = verifiedInstallations.map(installation => {
-      const device = deviceMap.get(installation.deviceId);
+      const device = devices.find(d => d.id === installation.deviceId);
       const serverValue = installation.latestDisCm;
       
       let percentageDifference: number | undefined;
@@ -791,53 +647,33 @@ export default function Verification() {
       } as VerificationItem;
     }).filter(item => item.device);
 
-    // Apply specific filter logic based on activeFilter
-    if (activeFilter === 'verified') {
-      // Only show manually verified (exclude system pre-verified and system verified)
-      filtered = filtered.filter(i => {
-        const isSystemVerified = i.installation.systemPreVerified === true || 
-                                (i.installation.verifiedBy && i.installation.verifiedBy.toLowerCase().includes("system"));
-        return !isSystemVerified;
-      });
-    } else if (activeFilter === 'withServerData') {
-      // Only show verified items with server data
-      filtered = filtered.filter(i => i.serverData && i.installation.latestDisCm != null);
-    } else if (activeFilter === 'noServerData') {
-      // Only show verified items without server data
-      filtered = filtered.filter(i => !i.serverData || i.installation.latestDisCm == null);
-    } else if (activeFilter === 'preVerified') {
-      // Only show system pre-approved verified items
-      filtered = filtered.filter(i => i.installation.systemPreVerified === true);
-    } else if (activeFilter === 'edited') {
-      // Only show edited verified items
-      filtered = filtered.filter(i => i.installation.tags?.includes("edited by verifier"));
-    }
-    // For 'all' filter, show all verified items (no additional filtering)
-
     // Apply installer name filter
-    if (debouncedInstallerNameFilter) {
-      const lowerFilter = debouncedInstallerNameFilter.toLowerCase();
+    if (installerNameFilter) {
       filtered = filtered.filter(i => 
-        i.installation.installedByName?.toLowerCase().includes(lowerFilter)
+        i.installation.installedByName?.toLowerCase().includes(installerNameFilter.toLowerCase())
       );
     }
 
     // Apply device ID filter
-    if (debouncedDeviceIdFilter) {
-      const upperFilter = debouncedDeviceIdFilter.toUpperCase();
+    if (deviceIdFilter) {
       filtered = filtered.filter(i => 
-        i.installation.deviceId?.toUpperCase().includes(upperFilter)
+        i.installation.deviceId?.toUpperCase().includes(deviceIdFilter.toUpperCase())
       );
     }
 
     // Apply team filter (admin only)
-    if (debouncedTeamIdFilter && userProfile?.isAdmin) {
-      filtered = filtered.filter(i => i.installation.teamId === debouncedTeamIdFilter);
+    if (teamIdFilter && userProfile?.isAdmin) {
+      filtered = filtered.filter(i => i.installation.teamId === teamIdFilter);
+    }
+
+    // Apply no server data filter if active
+    if (activeFilter === 'noServerData') {
+      filtered = filtered.filter(i => !i.serverData || i.installation.latestDisCm == null);
     }
 
     // Apply date filter
-    if (debouncedDateFilter) {
-      const filterDate = new Date(debouncedDateFilter);
+    if (dateFilter) {
+      const filterDate = new Date(dateFilter);
       filterDate.setHours(0, 0, 0, 0);
       const nextDay = new Date(filterDate);
       nextDay.setDate(nextDay.getDate() + 1);
@@ -858,25 +694,25 @@ export default function Verification() {
     });
 
     return filtered;
-  }, [verifiedInstallations, deviceMap, debouncedInstallerNameFilter, debouncedDeviceIdFilter, debouncedTeamIdFilter, activeFilter, debouncedDateFilter, userProfile?.isAdmin]);
+  }, [verifiedInstallations, devices, installerNameFilter, deviceIdFilter, teamIdFilter, activeFilter, dateFilter, userProfile?.isAdmin]);
 
   // Limit displayed verified items for performance
   const paginatedVerifiedItems = useMemo(() => {
     return displayedVerifiedItems.slice(0, displayLimit);
   }, [displayedVerifiedItems, displayLimit]);
 
-  // Reset display limit when filters change (using debounced values)
+  // Reset display limit when filters change
   useEffect(() => {
-    setDisplayLimit(100); // Reset to initial limit
-  }, [activeFilter, debouncedInstallerNameFilter, debouncedDeviceIdFilter, debouncedTeamIdFilter, debouncedDateFilter]);
+    setDisplayLimit(500);
+  }, [activeFilter, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter]);
 
-  const handleShowMore = useCallback(() => {
-    setDisplayLimit(prev => prev + 100); // Load 100 more at a time for better performance
-  }, []);
+  const handleShowMore = () => {
+    setDisplayLimit(prev => prev + 500);
+  };
 
   // No auto-approval. We only mark system pre-verified for variance < 5% and keep status pending.
 
-  const viewDetails = useCallback((item: VerificationItem) => {
+  const viewDetails = (item: VerificationItem) => {
     setSelectedItem(item);
     setDialogOpen(true);
     // Load checkbox states from database, or initialize empty if not present
@@ -891,7 +727,7 @@ export default function Verification() {
     setEditedLongitude(item.installation.longitude?.toString() || "");
     setNewImageFiles([]);
     setNewImagePreviews([]);
-  }, []);
+  };
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files ? Array.from(e.target.files) : [];
@@ -955,69 +791,12 @@ export default function Verification() {
   const handleApprove = async () => {
     if (!selectedItem || !userProfile) return;
 
-    // Check if coordinates exist (required for approval)
-    const locationId = selectedItem.installation.locationId ? String(selectedItem.installation.locationId).trim() : "";
-    const isLocation9999 = locationId === "9999";
-    const location = locationMap.get(locationId);
-    
-    let hasCoordinates = false;
-    if (isLocation9999) {
-      hasCoordinates = selectedItem.installation.latitude != null && selectedItem.installation.longitude != null;
-    } else {
-      hasCoordinates = location?.latitude != null && location?.longitude != null;
-    }
-    
-    if (!hasCoordinates) {
-      toast({
-        variant: "destructive",
-        title: "Cannot Approve",
-        description: "Coordinates are missing. Please enable Edit Mode and add the coordinates before approving this installation.",
-      });
-      return;
-    }
-
     // Validate that all mandatory checks are completed
     if (!allMandatoryChecksCompleted) {
-      const keys: string[] = [
-        "installer_deviceId",
-        "installer_locationId",
-        "installer_sensorReading",
-        "installer_coordinates",
-      ];
-      if (selectedItem.serverData) {
-        keys.push("server_sensorData");
-      } else {
-        toast({
-          variant: "destructive",
-          title: "Cannot Approve",
-          description: "Server data is not available yet. Please wait for the device to send data or refresh to check for updates.",
-        });
-        return;
-      }
-      
-      // Add all images
-      (selectedItem.installation.imageUrls || []).forEach((_, index) => {
-        keys.push(`image_${index}`);
-      });
-      
-      const missing = keys.filter(key => !fieldCheckStates[key]);
-      const missingLabels = missing.map(key => {
-        if (key === "installer_deviceId") return "Device ID";
-        if (key === "installer_locationId") return "Location ID";
-        if (key === "installer_sensorReading") return "Sensor Reading";
-        if (key === "installer_coordinates") return "Coordinates";
-        if (key === "server_sensorData") return "Server Sensor Data";
-        if (key.startsWith("image_")) {
-          const index = parseInt(key.split("_")[1]);
-          return `Photo ${index + 1}`;
-        }
-        return key;
-      });
-      
       toast({
         variant: "destructive",
         title: "Cannot Approve",
-        description: `Please check the following fields: ${missingLabels.join(", ")}`,
+        description: "All data fields must be checked before approval. Please review all items and use 'Unreview' to reset if needed.",
       });
       return;
     }
@@ -1170,20 +949,11 @@ export default function Verification() {
       return;
     }
 
-    // Coordinates are now mandatory
-    if (!editedLatitude || !editedLongitude) {
-      toast({
-        variant: "destructive",
-        title: "Coordinates Required",
-        description: "Both latitude and longitude are required. Please provide valid coordinates.",
-      });
-      return;
-    }
+    const latitude = editedLatitude ? parseFloat(editedLatitude) : null;
+    const longitude = editedLongitude ? parseFloat(editedLongitude) : null;
 
-    const latitude = parseFloat(editedLatitude);
-    const longitude = parseFloat(editedLongitude);
-
-    if (isNaN(latitude) || latitude < -90 || latitude > 90 || isNaN(longitude) || longitude < -180 || longitude > 180) {
+    if ((latitude !== null && (isNaN(latitude) || latitude < -90 || latitude > 90)) ||
+        (longitude !== null && (isNaN(longitude) || longitude < -180 || longitude > 180))) {
       toast({
         variant: "destructive",
         title: "Invalid Coordinates",
@@ -1456,27 +1226,6 @@ export default function Verification() {
         variant: "destructive",
         title: "Reason Required",
         description: "Please provide a reason for rejection.",
-      });
-      return;
-    }
-
-    // Check if coordinates exist (required for flagging)
-    const locationId = selectedItem.installation.locationId ? String(selectedItem.installation.locationId).trim() : "";
-    const isLocation9999 = locationId === "9999";
-    const location = locationMap.get(locationId);
-    
-    let hasCoordinates = false;
-    if (isLocation9999) {
-      hasCoordinates = selectedItem.installation.latitude != null && selectedItem.installation.longitude != null;
-    } else {
-      hasCoordinates = location?.latitude != null && location?.longitude != null;
-    }
-    
-    if (!hasCoordinates) {
-      toast({
-        variant: "destructive",
-        title: "Cannot Flag",
-        description: "Coordinates are missing. Please enable Edit Mode and add the coordinates before flagging this installation.",
       });
       return;
     }
@@ -1927,44 +1676,6 @@ export default function Verification() {
     }
   };
 
-  // Optimized: Fetch ONLY missing data (no server data at all)
-  const fetchMissingDataOnly = async () => {
-    if (refreshingAll) return;
-    
-    setRefreshingAll(true);
-    
-    // Only fetch installations with NO server data at all
-    const installationsToRefresh = allInstallations.filter((installation) => {
-      return !installation.latestDisCm && !installation.latestDisTimestamp;
-    });
-    
-    if (installationsToRefresh.length === 0) {
-      toast({
-        title: "No Missing Data",
-        description: "All installations already have server data.",
-      });
-      setRefreshingAll(false);
-      return;
-    }
-    
-    toast({
-      title: "Fetching Missing Server Data",
-      description: `Fetching data for ${installationsToRefresh.length} installations without server data.`,
-    });
-
-    // Open dialog and set pending statuses
-    const pendingStatuses: Record<string, "pending" | "success" | "error" | "skipped"> = {};
-    installationsToRefresh.forEach(inst => {
-      pendingStatuses[inst.id] = "pending";
-    });
-    setRefreshTargets(installationsToRefresh);
-    setRefreshStatuses(pendingStatuses);
-    setRefreshDialogOpen(true);
-
-    await performBatchRefresh(installationsToRefresh);
-    setRefreshingAll(false);
-  };
-
   const refreshAllServerData = async () => {
     if (refreshingAll) return;
     
@@ -2038,136 +1749,112 @@ export default function Verification() {
     setRefreshStatuses(pendingStatuses);
     setRefreshDialogOpen(true);
 
-    await performBatchRefresh(installationsToRefresh);
-    setRefreshingAll(false);
-  };
-
-  // Optimized batch refresh with batched Firestore writes
-  const performBatchRefresh = async (installationsToRefresh: Installation[]) => {
     let successCount = 0;
     let errorCount = 0;
     let skippedCount = 0;
 
-    // Fetch all API data in parallel (fast)
-    const apiResults = await Promise.all(
+    // Send all requests at once for speed
+    await Promise.all(
       installationsToRefresh.map(async (installation) => {
-        if (!installation.deviceId) {
-          return { installation, status: 'skipped' as const, data: null };
-        }
+      if (!installation.deviceId) {
+        skippedCount++;
+        setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
+          return;
+      }
 
-        try {
-          const apiResponse = await fetch(
-            `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`,
-            {
-              method: 'GET',
-              headers: {
-                'X-API-KEY': import.meta.env.VITE_API_KEY || ''
-              }
+      try {
+        const apiResponse = await fetch(
+          `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`,
+          {
+            method: 'GET',
+            headers: {
+              'X-API-KEY': import.meta.env.VITE_API_KEY || ''
             }
-          );
-
-          if (apiResponse.status === 404) {
-            return { installation, status: 'skipped' as const, data: null };
           }
+        );
 
-          if (!apiResponse.ok) {
-            return { installation, status: 'error' as const, data: null };
-          }
-
-          const apiData = await apiResponse.json();
-          return { installation, status: 'success' as const, data: apiData };
-        } catch (error) {
-          console.error(`Failed to fetch ${installation.deviceId}:`, error);
-          return { installation, status: 'error' as const, data: null };
-        }
-      })
-    );
-
-    // Process results and batch write to Firestore (batches of 500 - Firestore limit)
-    const batchSize = 500;
-    for (let i = 0; i < apiResults.length; i += batchSize) {
-      const batch = writeBatch(db);
-      const batchResults = apiResults.slice(i, i + batchSize);
-      
-      for (const result of batchResults) {
-        const { installation, status, data } = result;
-        const instRef = doc(db, "installations", installation.id);
-
-        if (status === 'skipped') {
-          batch.update(instRef, {
+        if (apiResponse.status === 404) {
+          await updateDoc(doc(db, "installations", installation.id), {
             serverRefreshedAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
           skippedCount++;
           setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
-        } else if (status === 'error') {
+            return;
+        }
+
+        if (!apiResponse.ok) {
           errorCount++;
           setRefreshStatuses(prev => ({ ...prev, [installation.id]: "error" }));
-        } else if (status === 'success' && data) {
-          const latestRecord = data?.records?.[0];
-          const latestDistance = latestRecord?.dis_cm ?? null;
-          const hasServerData = latestDistance !== null && Number(latestDistance) > 0;
-          const hasSensor = !!installation.sensorReading;
-          const variancePct = (hasServerData && hasSensor)
-            ? (Math.abs(latestDistance - installation.sensorReading) / installation.sensorReading) * 100
-            : undefined;
-
-          if (hasServerData) {
-            const updateData: any = {
-              latestDisCm: latestDistance,
-              latestDisTimestamp: latestRecord?.timestamp ?? null,
-              serverRefreshedAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            };
-
-            // Only update systemPreVerified for pending installations
-            if (installation.status === "pending") {
-              const preVerified = variancePct !== undefined && variancePct < 5;
-              updateData.systemPreVerified = preVerified;
-              updateData.systemPreVerifiedAt = preVerified ? serverTimestamp() : null;
-
-              // Auto-reject pending installations with high variance
-              if (variancePct !== undefined && variancePct > 10) {
-                updateData.status = "flagged";
-                updateData.flaggedReason = `Auto-rejected: variance ${variancePct.toFixed(2)}% > 10%`;
-                updateData.verifiedBy = "System (Auto-rejected)";
-                updateData.verifiedAt = serverTimestamp();
-                
-                // Update device status in batch
-                const deviceRef = doc(db, "devices", installation.deviceId);
-                batch.update(deviceRef, {
-                  status: "flagged",
-                  updatedAt: serverTimestamp(),
-                });
-              }
-            }
-
-            batch.update(instRef, updateData);
-            successCount++;
-            setRefreshStatuses(prev => ({ ...prev, [installation.id]: "success" }));
-          } else {
-            batch.update(instRef, {
-              serverRefreshedAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-            skippedCount++;
-            setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
-          }
+            return;
         }
-      }
 
-      // Commit this batch
-      try {
-        await batch.commit();
+        const apiData = await apiResponse.json();
+        const latestRecord = apiData?.records?.[0];
+        const latestDistance = latestRecord?.dis_cm ?? null;
+
+        // Consider null or 0 as "no server data yet"
+        const hasServerData = latestDistance !== null && Number(latestDistance) > 0;
+        const hasSensor = !!installation.sensorReading;
+        const variancePct = (hasServerData && hasSensor)
+          ? (Math.abs(latestDistance - installation.sensorReading) / installation.sensorReading) * 100
+          : undefined;
+
+        if (hasServerData) {
+          // Update with server data, but don't change status for verified/system-approved installations
+          const updateData: any = {
+            latestDisCm: latestDistance,
+            latestDisTimestamp: latestRecord?.timestamp ?? null,
+            serverRefreshedAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          };
+
+          // Only update systemPreVerified for pending installations
+          if (installation.status === "pending") {
+            const preVerified = variancePct !== undefined && variancePct < 5;
+            updateData.systemPreVerified = preVerified;
+            updateData.systemPreVerifiedAt = preVerified ? serverTimestamp() : null;
+
+            // Auto-reject pending installations with high variance
+            if (variancePct !== undefined && variancePct > 10) {
+              updateData.status = "flagged";
+              updateData.flaggedReason = `Auto-rejected: variance ${variancePct.toFixed(2)}% > 10%`;
+              updateData.verifiedBy = "System (Auto-rejected)";
+              updateData.verifiedAt = serverTimestamp();
+              
+              await updateDoc(doc(db, "devices", installation.deviceId), {
+                status: "flagged",
+                updatedAt: serverTimestamp(),
+              });
+            }
+          }
+
+          await updateDoc(doc(db, "installations", installation.id), updateData);
+          successCount++;
+          setRefreshStatuses(prev => ({ ...prev, [installation.id]: "success" }));
+        } else {
+          // No valid server data, still mark refresh attempt
+          await updateDoc(doc(db, "installations", installation.id), {
+            serverRefreshedAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          skippedCount++;
+          setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
+        }
       } catch (error) {
-        console.error('Batch commit error:', error);
+        console.error(`Failed to refresh installation ${installation.id}:`, error);
+        errorCount++;
+        setRefreshStatuses(prev => ({ ...prev, [installation.id]: "error" }));
       }
-    }
+      })
+    );
 
     toast({
       title: "Refresh Complete",
       description: `Success: ${successCount}, Errors: ${errorCount}, Skipped: ${skippedCount}`,
     });
+
+    setRefreshingAll(false);
   };
 
   // Auto-refresh every 24h for high variance and no-data items (best-effort while page is open)
@@ -2429,12 +2116,9 @@ export default function Verification() {
         </CardContent>
       </Card>
 
-      {/* Stats Overview based on filtered installations - Clickable Filters */}
+      {/* Stats Overview based on filtered installations */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <Card 
-          className={`border shadow-sm cursor-pointer transition-all hover:shadow-md hover:scale-[1.02] ${activeFilter === 'all' ? 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-950' : ''}`}
-          onClick={() => setActiveFilter('all')}
-        >
+        <Card className="border shadow-sm">
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -2450,10 +2134,7 @@ export default function Verification() {
           </CardContent>
         </Card>
 
-        <Card 
-          className={`border shadow-sm cursor-pointer transition-all hover:shadow-md hover:scale-[1.02] ${activeFilter === 'pending' ? 'ring-2 ring-green-500 bg-green-50 dark:bg-green-950' : ''}`}
-          onClick={() => setActiveFilter('pending')}
-        >
+        <Card className="border shadow-sm">
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -2469,10 +2150,7 @@ export default function Verification() {
           </CardContent>
         </Card>
 
-        <Card 
-          className={`border shadow-sm cursor-pointer transition-all hover:shadow-md hover:scale-[1.02] ${activeFilter === 'withServerData' ? 'ring-2 ring-green-500 bg-green-50 dark:bg-green-950' : ''}`}
-          onClick={() => setActiveFilter('withServerData')}
-        >
+        <Card className="border shadow-sm">
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -2488,10 +2166,7 @@ export default function Verification() {
           </CardContent>
         </Card>
 
-        <Card 
-          className={`border shadow-sm cursor-pointer transition-all hover:shadow-md hover:scale-[1.02] ${activeFilter === 'noServerData' ? 'ring-2 ring-orange-500 bg-orange-50 dark:bg-orange-950' : ''}`}
-          onClick={() => setActiveFilter('noServerData')}
-        >
+        <Card className="border shadow-sm">
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -2507,10 +2182,7 @@ export default function Verification() {
           </CardContent>
         </Card>
 
-        <Card 
-          className={`border shadow-sm cursor-pointer transition-all hover:shadow-md hover:scale-[1.02] ${activeFilter === 'edited' ? 'ring-2 ring-purple-500 bg-purple-50 dark:bg-purple-950' : ''}`}
-          onClick={() => setActiveFilter('edited')}
-        >
+        <Card className="border shadow-sm">
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -2526,10 +2198,7 @@ export default function Verification() {
           </CardContent>
         </Card>
 
-        <Card 
-          className={`border shadow-sm cursor-pointer transition-all hover:shadow-md hover:scale-[1.02] ${activeFilter === 'preVerified' ? 'ring-2 ring-emerald-500 bg-emerald-50 dark:bg-emerald-950' : ''}`}
-          onClick={() => setActiveFilter('preVerified')}
-        >
+        <Card className="border shadow-sm">
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -2545,10 +2214,7 @@ export default function Verification() {
           </CardContent>
         </Card>
 
-        <Card 
-          className={`border shadow-sm cursor-pointer transition-all hover:shadow-md hover:scale-[1.02] ${activeFilter === 'verified' ? 'ring-2 ring-emerald-500 bg-emerald-50 dark:bg-emerald-950' : ''}`}
-          onClick={() => setActiveFilter('verified')}
-        >
+        <Card className="border shadow-sm">
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -2573,44 +2239,9 @@ export default function Verification() {
               <CardTitle className="text-2xl font-bold">
                 {userProfile?.role === "manager" && !userProfile?.isAdmin 
                   ? `Escalated Installations (${displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}${displayedItems.length})`
-                  : (() => {
-                      const hasVerifiedTable = displayedVerifiedItems.length > 0;
-                      const count = `${displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}${displayedItems.length}`;
-                      
-                      if (activeFilter === 'all' && hasVerifiedTable) {
-                        return `Total in Database - Pending (${count})`;
-                      } else if (activeFilter === 'withServerData' && hasVerifiedTable) {
-                        return `Connected with Server - Pending (${count})`;
-                      } else if (activeFilter === 'noServerData' && hasVerifiedTable) {
-                        return `No Connection Established - Pending (${count})`;
-                      } else if (activeFilter === 'preVerified' && hasVerifiedTable) {
-                        return `System Pre-approved - Pending (${count})`;
-                      } else if (activeFilter === 'edited' && hasVerifiedTable) {
-                        return `Edited Records - Pending (${count})`;
-                      } else {
-                        return `Pending Installations (${count})`;
-                      }
-                    })()}
+                  : `Pending Installations (${displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}${displayedItems.length})`}
               </CardTitle>
               <div className="flex items-center gap-2">
-                <Button
-                  variant="default"
-                  className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700"
-                  onClick={fetchMissingDataOnly}
-                  disabled={refreshingAll || allInstallations.length === 0}
-                >
-                  {refreshingAll ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Fetching...
-                    </>
-                  ) : (
-                    <>
-                      <Database className="h-4 w-4" />
-                      Fetch Missing Data
-                    </>
-                  )}
-                </Button>
                 <Button
                   variant="outline"
                   className="flex items-center gap-2"
@@ -2625,7 +2256,7 @@ export default function Verification() {
                   ) : (
                     <>
                       <RefreshCw className="h-4 w-4" />
-                      Refresh All (5+ days old)
+                      Refresh All Server Data
                     </>
                   )}
                 </Button>
@@ -2689,10 +2320,10 @@ export default function Verification() {
                 </TableHeader>
                 <TableBody>
                   {paginatedDisplayedItems.map((item) => {
-                    const { _display } = item;
+                    const hasHighVariance = item.percentageDifference && item.percentageDifference > 5;
                     
                     return (
-                      <TableRow key={item.installation.id} className={_display.hasHighVariance ? "bg-red-50 dark:bg-red-950/10" : ""}>
+                      <TableRow key={item.installation.id} className={hasHighVariance ? "bg-red-50 dark:bg-red-950/10" : ""}>
                         <TableCell>
                           <div className="flex flex-col gap-1">
                             <span className="font-mono font-medium">
@@ -2706,7 +2337,7 @@ export default function Verification() {
                                     : "Manual"
                                   : "Data entry"}
                               </Badge>
-                              {_display.isEdited && (
+                              {item.installation.tags?.includes("edited by verifier") && (
                                 <Badge variant="secondary" className="text-[10px]">
                                   Edited
                                 </Badge>
@@ -2717,9 +2348,9 @@ export default function Verification() {
                         <TableCell>
                           <div className="flex flex-col gap-1">
                             <span>{item.installation.installedByName}</span>
-                            {_display.teamName && (
+                            {item.installation.teamId && getTeamName(item.installation.teamId) && (
                               <Badge variant="outline" className="text-[10px] w-fit">
-                                {_display.teamName}
+                                {getTeamName(item.installation.teamId)}
                               </Badge>
                             )}
                           </div>
@@ -2727,11 +2358,29 @@ export default function Verification() {
                         <TableCell>
                           <div className="flex flex-col">
                             <span>{item.installation.locationId || "-"}</span>
-                            {_display.hasLocation && (
+                            {(() => {
+                              const locationId = item.installation.locationId ? String(item.installation.locationId).trim() : "";
+                              const isLocation9999 = locationId === "9999";
+                              const location = locationMap.get(locationId);
+                              
+                              // If location is 9999, use user-entered coordinates; otherwise use location coordinates
+                              let displayLat: number | null = null;
+                              let displayLon: number | null = null;
+                              
+                              if (isLocation9999) {
+                                displayLat = item.installation.latitude ?? null;
+                                displayLon = item.installation.longitude ?? null;
+                              } else {
+                                displayLat = location?.latitude ?? null;
+                                displayLon = location?.longitude ?? null;
+                              }
+                              
+                              return (displayLat != null && displayLon != null) ? (
                               <span className="text-xs text-muted-foreground">
-                                {_display.displayLat!.toFixed(6)}, {_display.displayLon!.toFixed(6)}
+                                  {displayLat.toFixed(6)}, {displayLon.toFixed(6)}
                               </span>
-                            )}
+                              ) : null;
+                            })()}
                           </div>
                         </TableCell>
                         <TableCell>
@@ -2740,27 +2389,36 @@ export default function Verification() {
                               <Gauge className="h-3 w-3 text-muted-foreground" />
                               {item.installation.sensorReading}
                             </div>
-                            {_display.createdAtFormatted && (
+                            {item.installation.createdAt && (
                               <span className="text-[10px] text-muted-foreground">
-                                {_display.createdAtFormatted}
+                                {format(item.installation.createdAt, "MMM d, HH:mm")}
                               </span>
                             )}
                           </div>
                         </TableCell>
                         <TableCell>
-                          {item.serverData ? (
-                            <div className="flex flex-col gap-1">
-                              <div className="flex items-center gap-1">
-                                <Gauge className="h-3 w-3 text-green-600" />
-                                {item.serverData.sensorData}
+                          {item.serverData ? (() => {
+                            let fetchedAtLabel: string | null = null;
+                            const ts = item.installation.latestDisTimestamp as any;
+                            if (ts) {
+                              const maybeDate = ts instanceof Date ? ts : new Date(ts);
+                              const formatted = formatDateSafe(maybeDate, "MMM d, HH:mm");
+                              fetchedAtLabel = formatted;
+                            }
+                            return (
+                              <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-1">
+                                  <Gauge className="h-3 w-3 text-green-600" />
+                                  {item.serverData.sensorData}
+                                </div>
+                                {fetchedAtLabel && (
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {fetchedAtLabel}
+                                  </span>
+                                )}
                               </div>
-                              {_display.serverTimestampFormatted && (
-                                <span className="text-[10px] text-muted-foreground">
-                                  {_display.serverTimestampFormatted}
-                                </span>
-                              )}
-                            </div>
-                          ) : (
+                            );
+                          })() : (
                             <Badge variant="outline" className="text-xs">
                               <Minus className="h-3 w-3 mr-1" />
                               No Data
@@ -2771,11 +2429,11 @@ export default function Verification() {
                           {item.percentageDifference !== undefined ? (
                             <Badge 
                               variant="outline" 
-                              className={_display.hasHighVariance 
+                              className={hasHighVariance 
                                 ? "text-red-600 bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800" 
                                 : "text-green-600 bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800"}
                             >
-                              {_display.hasHighVariance ? (
+                              {hasHighVariance ? (
                                 <TrendingUp className="h-3 w-3 mr-1" />
                               ) : (
                                 <TrendingDown className="h-3 w-3 mr-1" />
@@ -2785,22 +2443,34 @@ export default function Verification() {
                           ) : (
                             "-"
                           )}
-                          {!_display.hasHighVariance && item.percentageDifference !== undefined && item.percentageDifference < 5 && (
+                          {!hasHighVariance && item.percentageDifference !== undefined && item.percentageDifference < 5 && (
                             <div className="text-[10px] text-green-600 mt-1 font-medium">Pre-verified by system</div>
                           )}
-                          {!_display.hasHighVariance && item.percentageDifference !== undefined && item.percentageDifference >= 5 && item.percentageDifference <= 10 && (
+                          {!hasHighVariance && item.percentageDifference !== undefined && item.percentageDifference >= 5 && item.percentageDifference <= 10 && (
                             <div className="text-[10px] text-yellow-600 mt-1 font-medium">Needs manual review</div>
                           )}
                         </TableCell>
                         <TableCell>
-                          <div className="flex flex-col gap-1">
-                            <span className="text-xs font-medium">{_display.amanahLabel}</span>
-                            {_display.municipality && (
-                              <span className="text-[11px] text-muted-foreground">
-                                {_display.municipality}
-                              </span>
-                            )}
-                          </div>
+                          {(() => {
+                            const teamName = item.installation.teamId ? getTeamName(item.installation.teamId) : null;
+                            const amanahArabic = translateTeamNameToArabic(teamName);
+                            const amanahLabel = amanahArabic ?? teamName ?? "-";
+
+                            const locationId = item.installation.locationId ? String(item.installation.locationId).trim() : "";
+                            const loc = locationId ? locationMap.get(locationId) : undefined;
+                            const municipality = loc?.municipalityName;
+
+                            return (
+                              <div className="flex flex-col gap-1">
+                                <span className="text-xs font-medium">{amanahLabel}</span>
+                                {municipality && (
+                                  <span className="text-[11px] text-muted-foreground">
+                                    {municipality}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </TableCell>
                         <TableCell>
                           <div className="flex flex-wrap gap-2">
@@ -2865,31 +2535,13 @@ export default function Verification() {
       </Card>
       )}
 
-      {/* Verified Installations Table - Show for filters that include verified items */}
-      {displayedVerifiedItems.length > 0 && (
+      {/* Verified Installations Table - Show if verified filter is active or if no filter is active and there are verified installations */}
+      {(activeFilter === 'verified' || (activeFilter === 'all' && verifiedInstallations.length > 0)) && (
         <Card className="border shadow-sm">
           <CardHeader>
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <CardTitle className="text-2xl font-bold">
-                {(() => {
-                  const count = `${displayedVerifiedItems.length > displayLimit ? `${paginatedVerifiedItems.length} of ` : ''}${displayedVerifiedItems.length}`;
-                  
-                  if (activeFilter === 'verified') {
-                    return `Verified (Manual Only) (${count})`;
-                  } else if (activeFilter === 'all') {
-                    return `Total in Database - Verified (${count})`;
-                  } else if (activeFilter === 'withServerData') {
-                    return `Connected with Server - Verified (${count})`;
-                  } else if (activeFilter === 'noServerData') {
-                    return `No Connection Established - Verified (${count})`;
-                  } else if (activeFilter === 'preVerified') {
-                    return `System Pre-approved - Verified (${count})`;
-                  } else if (activeFilter === 'edited') {
-                    return `Edited Records - Verified (${count})`;
-                  } else {
-                    return `Verified Installations (${count})`;
-                  }
-                })()}
+                Verified Installations ({displayedVerifiedItems.length > displayLimit ? `${paginatedVerifiedItems.length} of ` : ''}{displayedVerifiedItems.length})
               </CardTitle>
               <div className="flex items-center gap-2">
                 <Button
@@ -3105,7 +2757,7 @@ export default function Verification() {
           setDeletedImageUrls([]);
         }
       }}>
-        <DialogContent className="max-w-[95vw] sm:max-w-2xl md:max-w-3xl lg:max-w-4xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <div className="flex items-center justify-between">
               <DialogTitle>Verify Installation</DialogTitle>
@@ -3150,7 +2802,7 @@ export default function Verification() {
               )}
 
               {/* Data Comparison */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+              <div className="grid grid-cols-2 gap-6">
                 {/* Installer Data */}
                 <Card>
                   <CardHeader>
@@ -3193,16 +2845,28 @@ export default function Verification() {
                       )}
                     </div>
                     {/* Installer */}
-                    <div>
-                      <p className="text-sm text-muted-foreground">Installer</p>
-                      <div className="flex flex-col gap-1 mt-1">
-                        <p className="text-base font-medium">{selectedItem.installation.installedByName}</p>
-                        {selectedItem.installation.teamId && getTeamName(selectedItem.installation.teamId) && (
-                          <Badge variant="outline" className="text-xs w-fit">
-                            {getTeamName(selectedItem.installation.teamId)}
-                          </Badge>
-                        )}
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Installer</p>
+                        <div className="flex flex-col gap-1 mt-1">
+                          <p className="text-base font-medium">{selectedItem.installation.installedByName}</p>
+                          {selectedItem.installation.teamId && getTeamName(selectedItem.installation.teamId) && (
+                            <Badge variant="outline" className="text-xs w-fit">
+                              {getTeamName(selectedItem.installation.teamId)}
+                            </Badge>
+                          )}
+                        </div>
                       </div>
+                      {!isEditMode && (
+                        <Checkbox
+                          checked={!!fieldCheckStates["installer_installer"]}
+                          onCheckedChange={(checked) =>
+                            toggleFieldCheck("installer_installer", checked === true)
+                          }
+                          disabled={processing}
+                          aria-label="Mark installer as checked"
+                        />
+                      )}
                     </div>
                     {/* Location ID */}
                     <div className="flex items-start justify-between gap-2">
@@ -3212,9 +2876,11 @@ export default function Verification() {
                           <Input
                             value={editedLocationId}
                             onChange={(e) => {
-                              // Only allow numbers - remove any non-numeric characters
-                              const numericValue = e.target.value.replace(/[^0-9]/g, '');
-                              setEditedLocationId(numericValue);
+                              const value = e.target.value;
+                              // Only allow numbers
+                              if (value === '' || /^\d+$/.test(value)) {
+                                setEditedLocationId(value);
+                              }
                             }}
                             className="mt-1"
                             placeholder="Enter location ID (numbers only)"
@@ -3293,56 +2959,47 @@ export default function Verification() {
                         coordinateSource = displayLat != null && displayLon != null ? "From Location ID" : "";
                       }
                       
-                      // Always show coordinates section (even if empty)
-                      const hasCoordinates = displayLat !== null && displayLon !== null;
-                      
-                      return (
+                      return (displayLat !== null || displayLon !== null || isEditMode) ? (
                         <div className="flex items-start justify-between gap-2">
-                          <div className="flex-1">
+                          <div>
                             <p className="text-sm text-muted-foreground">
-                              Coordinates {!hasCoordinates && !isEditMode && (
-                                <span className="ml-2 text-xs bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 px-2 py-0.5 rounded font-medium">
-                                  Missing - Required
-                                </span>
-                              )}
-                              {coordinateSource && !isEditMode && hasCoordinates && (
+                              Coordinates
+                              {coordinateSource && !isEditMode && (
                                 <span className="ml-2 text-xs bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">
                                   {coordinateSource}
                                 </span>
                               )}
                             </p>
                             {isEditMode ? (
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
+                              <div className="grid grid-cols-2 gap-2 mt-1">
                                 <div>
-                                  <Label htmlFor="latitude" className="text-xs">Latitude *</Label>
+                                  <Label htmlFor="latitude" className="text-xs">Latitude</Label>
                                   <Input
                                     id="latitude"
                                     type="number"
                                     step="0.000001"
                                     value={editedLatitude}
                                     onChange={(e) => setEditedLatitude(e.target.value)}
-                                    placeholder="Required"
-                                    required
+                                    placeholder="Latitude"
                                   />
                                 </div>
                                 <div>
-                                  <Label htmlFor="longitude" className="text-xs">Longitude *</Label>
+                                  <Label htmlFor="longitude" className="text-xs">Longitude</Label>
                                   <Input
                                     id="longitude"
                                     type="number"
                                     step="0.000001"
                                     value={editedLongitude}
                                     onChange={(e) => setEditedLongitude(e.target.value)}
-                                    placeholder="Required"
-                                    required
+                                    placeholder="Longitude"
                                   />
                                 </div>
                               </div>
                             ) : (
-                              <p className={`text-base font-medium ${!hasCoordinates ? 'text-red-600 dark:text-red-400' : ''}`}>
-                                {hasCoordinates
-                                  ? `${displayLat!.toFixed(6)}, ${displayLon!.toFixed(6)}`
-                                  : "Not provided - Must be added before approval"}
+                              <p className="text-base font-medium">
+                                {displayLat != null && displayLon != null
+                                  ? `${displayLat.toFixed(6)}, ${displayLon.toFixed(6)}`
+                                  : "-"}
                               </p>
                             )}
                           </div>
@@ -3352,23 +3009,33 @@ export default function Verification() {
                               onCheckedChange={(checked) =>
                                 toggleFieldCheck("installer_coordinates", checked === true)
                               }
-                              disabled={processing || !hasCoordinates}
+                              disabled={processing}
                               aria-label="Mark coordinates as checked"
                             />
                           )}
                         </div>
-                      );
+                      ) : null;
                     })()}
                     <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <p className="text-sm text-muted-foreground">Submitted</p>
-                      <p className="text-base font-medium flex items-center gap-1">
-                        <Calendar className="h-4 w-4 text-muted-foreground" />
-                        {selectedItem.installation.createdAt 
-                          ? format(selectedItem.installation.createdAt, "MMM d, yyyy HH:mm")
-                          : "-"}
-                      </p>
-                    </div>
+                      <div>
+                        <p className="text-sm text-muted-foreground">Submitted</p>
+                        <p className="text-base font-medium flex items-center gap-1">
+                          <Calendar className="h-4 w-4 text-muted-foreground" />
+                          {selectedItem.installation.createdAt 
+                            ? format(selectedItem.installation.createdAt, "MMM d, yyyy HH:mm")
+                            : "-"}
+                        </p>
+                      </div>
+                      {!isEditMode && (
+                        <Checkbox
+                          checked={!!fieldCheckStates["installer_submitted"]}
+                          onCheckedChange={(checked) =>
+                            toggleFieldCheck("installer_submitted", checked === true)
+                          }
+                          disabled={processing}
+                          aria-label="Mark submitted time as checked"
+                        />
+                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -3381,9 +3048,19 @@ export default function Verification() {
                   <CardContent className="space-y-3">
                     {selectedItem.serverData ? (
                       <>
-                        <div>
-                          <p className="text-sm text-muted-foreground">Device ID</p>
-                          <p className="text-base font-mono font-medium">{selectedItem.serverData.deviceId}</p>
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="text-sm text-muted-foreground">Device ID</p>
+                            <p className="text-base font-mono font-medium">{selectedItem.serverData.deviceId}</p>
+                          </div>
+                          <Checkbox
+                            checked={!!fieldCheckStates["server_deviceId"]}
+                            onCheckedChange={(checked) =>
+                              toggleFieldCheck("server_deviceId", checked === true)
+                            }
+                            disabled={processing}
+                            aria-label="Mark server device ID as checked"
+                          />
                         </div>
                         <div className="flex items-start justify-between gap-2">
                           <div>
@@ -3396,59 +3073,50 @@ export default function Verification() {
                               <p className="text-xs text-muted-foreground mt-1">{selectedItem.installation.latestDisTimestamp}</p>
                             )}
                           </div>
-                          {!isEditMode && (
-                            <Checkbox
-                              checked={!!fieldCheckStates["server_sensorData"]}
-                              onCheckedChange={(checked) =>
-                                toggleFieldCheck("server_sensorData", checked === true)
-                              }
-                              disabled={processing}
-                              aria-label="Verify server sensor data"
-                            />
-                          )}
+                          <Checkbox
+                            checked={!!fieldCheckStates["server_sensorData"]}
+                            disabled={true}
+                            aria-label="Mark server sensor data as checked"
+                          />
                         </div>
-                        <div>
-                          <p className="text-sm text-muted-foreground">Received At</p>
-                          <p className="text-base font-medium flex items-center gap-1">
-                            <Calendar className="h-4 w-4 text-muted-foreground" />
-                            {selectedItem.installation.latestDisTimestamp
-                              ? selectedItem.installation.latestDisTimestamp
-                              : (selectedItem.serverData.receivedAt
-                                  ? format(selectedItem.serverData.receivedAt, "MMM d, yyyy HH:mm")
-                                  : "-")}
-                          </p>
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="text-sm text-muted-foreground">Received At</p>
+                            <p className="text-base font-medium flex items-center gap-1">
+                              <Calendar className="h-4 w-4 text-muted-foreground" />
+                              {selectedItem.installation.latestDisTimestamp
+                                ? selectedItem.installation.latestDisTimestamp
+                                : (selectedItem.serverData.receivedAt
+                                    ? format(selectedItem.serverData.receivedAt, "MMM d, yyyy HH:mm")
+                                    : "-")}
+                            </p>
+                          </div>
+                          <Checkbox
+                            checked={!!fieldCheckStates["server_receivedAt"]}
+                            disabled={true}
+                            aria-label="Mark server received at as checked"
+                          />
                         </div>
-                          {selectedItem.percentageDifference !== undefined && (
+                        {selectedItem.percentageDifference !== undefined && (
+                          <div className="flex items-start justify-between gap-2">
                             <div>
                               <p className="text-sm text-muted-foreground">Variance</p>
                               <p className={`text-2xl font-bold ${selectedItem.percentageDifference > 5 ? 'text-red-600' : 'text-green-600'}`}>
                                 {selectedItem.percentageDifference.toFixed(2)}%
                               </p>
                             </div>
-                          )}
-                      </>
-                    ) : (
-                      <div className="space-y-4">
-                        <div className="text-center py-6">
-                          <Minus className="h-12 w-12 mx-auto mb-2 text-muted-foreground" />
-                          <p className="text-muted-foreground">No server data available yet</p>
-                        </div>
-                        {!isEditMode && (
-                          <div className="flex items-start justify-between gap-2 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
-                            <div className="flex-1">
-                              <p className="text-sm font-medium text-yellow-800 dark:text-yellow-200">Sensor Data</p>
-                              <p className="text-xs text-yellow-700 dark:text-yellow-300 mt-1">
-                                ⏳ Cannot be checked - waiting for server data
-                              </p>
-                            </div>
                             <Checkbox
-                              checked={false}
+                              checked={!!fieldCheckStates["server_variance"]}
                               disabled={true}
-                              aria-label="Sensor data - waiting for server"
-                              className="opacity-50"
+                              aria-label="Mark variance as checked"
                             />
                           </div>
                         )}
+                      </>
+                    ) : (
+                      <div className="text-center py-8">
+                        <Minus className="h-12 w-12 mx-auto mb-2 text-muted-foreground" />
+                        <p className="text-muted-foreground">No server data available yet</p>
                       </div>
                     )}
                   </CardContent>
@@ -3461,35 +3129,63 @@ export default function Verification() {
                     <CardTitle className="text-lg">Device Information</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div>
-                        <p className="text-sm text-muted-foreground">Device UID</p>
-                        <p className="text-base font-mono font-medium text-xs">{selectedItem.device.id}</p>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-sm text-muted-foreground">Device UID</p>
+                          <p className="text-base font-mono font-medium text-xs">{selectedItem.device.id}</p>
+                        </div>
+                        <Checkbox
+                          checked={!!fieldCheckStates["device_uid"]}
+                          disabled={true}
+                          aria-label="Mark device UID as checked"
+                        />
                       </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">Product ID</p>
-                        <p className="text-base font-medium">{selectedItem.device.productId}</p>
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-sm text-muted-foreground">Product ID</p>
+                          <p className="text-base font-medium">{selectedItem.device.productId}</p>
+                        </div>
+                        <Checkbox
+                          checked={!!fieldCheckStates["device_productId"]}
+                          disabled={true}
+                          aria-label="Mark product ID as checked"
+                        />
                       </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">IMEI</p>
-                        <p className="text-base font-mono font-medium text-xs">{selectedItem.device.deviceImei}</p>
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-sm text-muted-foreground">IMEI</p>
+                          <p className="text-base font-mono font-medium text-xs">{selectedItem.device.deviceImei}</p>
+                        </div>
+                        <Checkbox
+                          checked={!!fieldCheckStates["device_imei"]}
+                          disabled={true}
+                          aria-label="Mark IMEI as checked"
+                        />
                       </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">ICCID</p>
-                        <p className="text-base font-mono font-medium text-xs">{selectedItem.device.iccid}</p>
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-sm text-muted-foreground">ICCID</p>
+                          <p className="text-base font-mono font-medium text-xs">{selectedItem.device.iccid}</p>
+                        </div>
+                        <Checkbox
+                          checked={!!fieldCheckStates["device_iccid"]}
+                          disabled={true}
+                          aria-label="Mark ICCID as checked"
+                        />
                       </div>
                     </div>
                   </CardContent>
                 </Card>
 
               {/* Installation Images */}
-              <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <div className="flex items-center gap-2 mb-2">
                     <ImageIcon className="h-4 w-4 text-muted-foreground" />
                     <p className="text-sm font-medium">Installation Photos ({selectedItem.installation.imageUrls?.length || 0})</p>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-2 gap-4">
                     {selectedItem.installation.imageUrls?.map((url, index) => {
                       const isDeleted = deletedImageUrls.includes(url);
                       return (
@@ -3502,6 +3198,15 @@ export default function Verification() {
                             } ${isDeleted ? "opacity-50" : ""}`}
                             onClick={() => !isEditMode && setImagePreviewUrl(url)}
                           />
+                          {!isEditMode && (
+                            <div className="absolute top-2 left-2 bg-white/80 rounded p-1">
+                              <Checkbox
+                                checked={!!fieldCheckStates[`image_${index}`]}
+                                disabled={true}
+                                aria-label={`Mark image ${index + 1} as checked`}
+                              />
+                            </div>
+                          )}
                           {isEditMode && (
                             <Button
                               type="button"
@@ -3523,18 +3228,6 @@ export default function Verification() {
                                 <Trash2 className="h-4 w-4" />
                               )}
                             </Button>
-                          )}
-                          {!isEditMode && (
-                            <div className="absolute top-2 left-2 bg-white/90 dark:bg-gray-800/90 rounded p-1.5 shadow-md">
-                              <Checkbox
-                                checked={!!fieldCheckStates[`image_${index}`]}
-                                onCheckedChange={(checked) =>
-                                  toggleFieldCheck(`image_${index}`, checked === true)
-                                }
-                                disabled={processing}
-                                aria-label={`Verify image ${index + 1}`}
-                              />
-                            </div>
                           )}
                           {isDeleted && (
                             <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-lg">
@@ -3622,6 +3315,15 @@ export default function Verification() {
                         controls
                         className="w-full h-64 object-cover rounded-lg border"
                       />
+                      {!isEditMode && (
+                        <div className="absolute top-2 left-2 bg-white/80 rounded p-1">
+                          <Checkbox
+                            checked={!!fieldCheckStates["video"]}
+                            disabled={true}
+                            aria-label="Mark video as checked"
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -3641,19 +3343,7 @@ export default function Verification() {
               </div>
             </div>
           )}
-          
-          {/* Warning when server data is not available */}
-          {!isEditMode && selectedItem && !selectedItem.serverData && (
-            <Alert className="border-yellow-500 bg-yellow-50 dark:bg-yellow-900/20 mt-4">
-              <AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
-              <AlertTitle className="text-yellow-800 dark:text-yellow-200">Server Data Required</AlertTitle>
-              <AlertDescription className="text-yellow-700 dark:text-yellow-300">
-                Approval requires server data to be available. Please use the "Refresh Server Data" button or wait for the device to send its first reading before approving this installation.
-              </AlertDescription>
-            </Alert>
-          )}
-          
-          <DialogFooter className="flex-col sm:flex-row gap-2">
+          <DialogFooter className="gap-2">
             {isEditMode ? (
               <>
                 <Button
@@ -3673,14 +3363,13 @@ export default function Verification() {
                     }
                   }}
                   disabled={processing}
-                  className="w-full sm:w-auto"
                 >
                   Cancel
                 </Button>
                 <Button
                   onClick={handleEdit}
                   disabled={processing || uploadingImage}
-                  className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700"
+                  className="bg-blue-600 hover:bg-blue-700"
                 >
                   {(processing || uploadingImage) ? (
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -3696,7 +3385,6 @@ export default function Verification() {
                   variant="outline"
                   onClick={() => setDialogOpen(false)}
                   disabled={processing}
-                  className="w-full sm:w-auto"
                 >
                   {userProfile?.role === "manager" ? "Close" : "Cancel"}
                 </Button>
@@ -3707,7 +3395,7 @@ export default function Verification() {
                       variant="outline"
                       onClick={handleUnreview}
                       disabled={processing}
-                      className="w-full sm:w-auto border-blue-500 text-blue-600 hover:bg-blue-50"
+                      className="border-blue-500 text-blue-600 hover:bg-blue-50"
                     >
                       <RefreshCw className="h-4 w-4 mr-2" />
                       Unreview
@@ -3716,7 +3404,7 @@ export default function Verification() {
                       variant="outline"
                       onClick={() => setEscalateDialogOpen(true)}
                       disabled={processing}
-                      className="w-full sm:w-auto border-orange-500 text-orange-600 hover:bg-orange-50"
+                      className="border-orange-500 text-orange-600 hover:bg-orange-50"
                     >
                       <AlertTriangle className="h-4 w-4 mr-2" />
                       Escalate to Manager
@@ -3724,7 +3412,7 @@ export default function Verification() {
                     <Button
                       onClick={handleApprove}
                       disabled={processing || !allMandatoryChecksCompleted}
-                      className="w-full sm:w-auto bg-green-600 hover:bg-green-700"
+                      className="bg-green-600 hover:bg-green-700"
                     >
                       {processing ? (
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -3748,7 +3436,7 @@ export default function Verification() {
                       variant="outline"
                       onClick={handleUnreview}
                       disabled={processing}
-                      className="w-full sm:w-auto border-blue-500 text-blue-600 hover:bg-blue-50"
+                      className="border-blue-500 text-blue-600 hover:bg-blue-50"
                     >
                       <RefreshCw className="h-4 w-4 mr-2" />
                       Unreview
@@ -3756,7 +3444,7 @@ export default function Verification() {
                     <Button
                       onClick={handleApprove}
                       disabled={processing || !allMandatoryChecksCompleted}
-                      className="w-full sm:w-auto bg-green-600 hover:bg-green-700"
+                      className="bg-green-600 hover:bg-green-700"
                     >
                       {processing ? (
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -3775,7 +3463,7 @@ export default function Verification() {
                         variant="outline"
                         onClick={handleUnverify}
                         disabled={processing}
-                        className="w-full sm:w-auto border-amber-500 text-amber-600 hover:bg-amber-50"
+                        className="border-amber-500 text-amber-600 hover:bg-amber-50"
                       >
                         {processing ? (
                           <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -3790,7 +3478,7 @@ export default function Verification() {
                         variant="outline"
                         onClick={() => setEscalateDialogOpen(true)}
                         disabled={processing}
-                        className="w-full sm:w-auto border-orange-500 text-orange-600 hover:bg-orange-50"
+                        className="border-orange-500 text-orange-600 hover:bg-orange-50"
                       >
                         <AlertTriangle className="h-4 w-4 mr-2" />
                         Escalate to Manager
@@ -3800,7 +3488,6 @@ export default function Verification() {
                       variant="destructive"
                       onClick={handleReject}
                       disabled={processing}
-                      className="w-full sm:w-auto"
                     >
                       {processing ? (
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -3813,7 +3500,7 @@ export default function Verification() {
                       variant="outline"
                       onClick={handleUnreview}
                       disabled={processing}
-                      className="w-full sm:w-auto border-blue-500 text-blue-600 hover:bg-blue-50"
+                      className="border-blue-500 text-blue-600 hover:bg-blue-50"
                     >
                       <RefreshCw className="h-4 w-4 mr-2" />
                       Unreview
@@ -3821,7 +3508,7 @@ export default function Verification() {
                     <Button
                       onClick={handleApprove}
                       disabled={processing || !allMandatoryChecksCompleted}
-                      className="w-full sm:w-auto bg-green-600 hover:bg-green-700"
+                      className="bg-green-600 hover:bg-green-700"
                     >
                       {processing ? (
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -3868,7 +3555,7 @@ export default function Verification() {
               {pendingChanges.map((change, index) => (
                 <div key={index} className="p-4 space-y-2">
                   <div className="font-semibold text-sm text-foreground">{change.field}</div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
                       <div className="text-xs text-muted-foreground font-medium">Old Value</div>
                       <div className="text-sm p-2 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded font-mono">
@@ -4068,3 +3755,4 @@ export default function Verification() {
     </div>
   );
 }
+
