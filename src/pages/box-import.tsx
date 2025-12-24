@@ -10,6 +10,9 @@ import { db } from "@/lib/firebase";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import type { Team, Device } from "@/lib/types";
 import { useLocation } from "wouter";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
+import { translateTeamNameToArabic } from "@/lib/amanah-translations";
 
 interface BoxAssignment {
   key: string;
@@ -42,6 +45,13 @@ export default function BoxImport() {
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
   const [selectedAssignedBox, setSelectedAssignedBox] = useState<string>(initialAssignedBoxFromQuery);
   const [assignCount, setAssignCount] = useState<number | "">("");
+  const [teamFilter, setTeamFilter] = useState<string>("all");
+  
+  // Box transfer states
+  const [transferBoxNumber, setTransferBoxNumber] = useState<string>("");
+  const [transferToTeamId, setTransferToTeamId] = useState<string>("");
+  const [transferCount, setTransferCount] = useState<number | "">("");
+  const [transferring, setTransferring] = useState(false);
 
   // Only managers (and admins, if you want) can assign boxes
   const isManager =
@@ -131,12 +141,15 @@ export default function BoxImport() {
   }, [selectedTeamId, selectedAssignedBox, devices]);
 
   // Boxes already assigned to teams (by final boxNumber).
-  // If a team is selected, we only show that team's boxes; otherwise show all teams.
+  // If a team filter is active, we only show that team's boxes; otherwise show all teams.
   const assignedBoxes = useMemo(
     () => {
       const counts: Record<string, { teamId: string; boxNumber: string; count: number }> = {};
       for (const d of devices) {
         if (!d.teamId || !d.boxNumber) continue;
+        // Apply team filter
+        if (teamFilter !== "all" && d.teamId !== teamFilter) continue;
+        // Also apply selectedTeamId if set (for assignment flow)
         if (selectedTeamId && d.teamId !== selectedTeamId) continue;
         const key = `${d.teamId}__${d.boxNumber}`;
         if (!counts[key]) {
@@ -148,7 +161,7 @@ export default function BoxImport() {
         a.boxNumber.localeCompare(b.boxNumber)
       );
     },
-    [devices, selectedTeamId]
+    [devices, selectedTeamId, teamFilter]
   );
   const assignedBoxCount = assignedBoxes.length;
 
@@ -322,6 +335,86 @@ export default function BoxImport() {
       });
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const handleTransferBox = async () => {
+    if (!userProfile || !isManager) return;
+
+    if (!transferBoxNumber || !transferToTeamId) {
+      toast({
+        variant: "destructive",
+        title: "Missing Information",
+        description: "Please select both a box and a destination team.",
+      });
+      return;
+    }
+
+    // Find devices in the selected box
+    const boxDevices = devices.filter(
+      (d) => d.boxNumber === transferBoxNumber && d.teamId
+    );
+
+    if (boxDevices.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No devices found",
+        description: "This box has no devices to transfer.",
+      });
+      return;
+    }
+
+    // Determine which devices to transfer
+    let devicesToTransfer: Device[];
+    if (typeof transferCount === "number" && transferCount > 0) {
+      devicesToTransfer = boxDevices.slice(0, Math.min(transferCount, boxDevices.length));
+    } else {
+      devicesToTransfer = boxDevices; // Transfer all
+    }
+
+    const fromTeamId = boxDevices[0].teamId;
+    const fromTeamName = teams.find((t) => t.id === fromTeamId)?.name || fromTeamId;
+    const toTeamName = teams.find((t) => t.id === transferToTeamId)?.name || transferToTeamId;
+
+    const confirmed = window.confirm(
+      `Transfer ${devicesToTransfer.length} device(s) from box ${transferBoxNumber} from ${fromTeamName} to ${toTeamName}?`
+    );
+    if (!confirmed) return;
+
+    setTransferring(true);
+    try {
+      const updates = devicesToTransfer.map((d) =>
+        updateDoc(doc(db, "devices", d.id), {
+          teamId: transferToTeamId,
+          assignedInstallerId: null, // Clear installer assignment
+          assignedInstallerName: null,
+          updatedAt: serverTimestamp(),
+        })
+      );
+
+      await Promise.all(updates);
+
+      toast({
+        title: "Box transferred successfully",
+        description: `${devicesToTransfer.length} device(s) transferred from ${fromTeamName} to ${toTeamName}.`,
+      });
+
+      // Reset transfer form
+      setTransferBoxNumber("");
+      setTransferToTeamId("");
+      setTransferCount("");
+    } catch (error) {
+      console.error(error);
+      toast({
+        variant: "destructive",
+        title: "Transfer failed",
+        description:
+          error instanceof Error
+            ? error.message
+            : "Failed to transfer box.",
+      });
+    } finally {
+      setTransferring(false);
     }
   };
 
@@ -558,17 +651,41 @@ export default function BoxImport() {
             View devices already assigned to teams. Select a box to see its devices.
             {selectedTeamId
               ? " (Filtered to the selected Amanah team.)"
+              : teamFilter !== "all"
+              ? ` (Filtered to ${teams.find((t) => t.id === teamFilter)?.name || "selected team"}.)`
               : " (Showing boxes for all teams.)"}
             <div className="mt-1 text-xs text-muted-foreground">
               {assignedBoxCount} box{assignedBoxCount === 1 ? "" : "es"} found
               {selectedTeamId
                 ? ` for ${teams.find((t) => t.id === selectedTeamId)?.name || "selected team"}`
+                : teamFilter !== "all"
+                ? ` for ${teams.find((t) => t.id === teamFilter)?.name || "selected team"}`
                 : " across all teams"}
               .
             </div>
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Amanah Filter */}
+          <div className="space-y-2">
+            <Label htmlFor="amanah-filter">Filter by Amanah</Label>
+            <Select value={teamFilter} onValueChange={setTeamFilter}>
+              <SelectTrigger id="amanah-filter">
+                <SelectValue placeholder="All Amanahs" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Amanahs</SelectItem>
+                {teams.map(team => {
+                  const arabicName = translateTeamNameToArabic(team.name);
+                  return (
+                    <SelectItem key={team.id} value={team.id}>
+                      {arabicName ? `${team.name} / ${arabicName}` : team.name}
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
+          </div>
           {assignedBoxes.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No boxes have been assigned to any team yet.
@@ -661,6 +778,110 @@ export default function BoxImport() {
               )}
             </>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Box Transfer Section */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Users className="h-5 w-5" />
+            Transfer Box to Different Amanah
+          </CardTitle>
+          <CardDescription>
+            Transfer an entire box or a specific number of devices from one Amanah to another.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Select Box to Transfer */}
+            <div className="space-y-2">
+              <Label htmlFor="transfer-box">Box to Transfer</Label>
+              <select
+                id="transfer-box"
+                className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                value={transferBoxNumber}
+                onChange={(e) => setTransferBoxNumber(e.target.value)}
+                disabled={assignedBoxes.length === 0}
+              >
+                <option value="">Select a box</option>
+                {assignedBoxes.map((entry) => {
+                  const teamName = teams.find((t) => t.id === entry.teamId)?.name || entry.teamId;
+                  return (
+                    <option key={`${entry.teamId}__${entry.boxNumber}`} value={entry.boxNumber}>
+                      {entry.boxNumber} ({teamName}) - {entry.count} devices
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            {/* Select Destination Team */}
+            <div className="space-y-2">
+              <Label htmlFor="transfer-to-team">Transfer to Amanah</Label>
+              <Select value={transferToTeamId} onValueChange={setTransferToTeamId}>
+                <SelectTrigger id="transfer-to-team">
+                  <SelectValue placeholder="Select destination" />
+                </SelectTrigger>
+                <SelectContent>
+                  {teams.map(team => {
+                    const arabicName = translateTeamNameToArabic(team.name);
+                    return (
+                      <SelectItem key={team.id} value={team.id}>
+                        {arabicName ? `${team.name} / ${arabicName}` : team.name}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Number of Devices to Transfer */}
+            <div className="space-y-2">
+              <Label htmlFor="transfer-count">
+                Number of Devices
+                <span className="text-xs text-muted-foreground ml-1">(optional)</span>
+              </Label>
+              <Input
+                id="transfer-count"
+                type="number"
+                min="1"
+                placeholder="All devices"
+                value={transferCount}
+                onChange={(e) =>
+                  setTransferCount(e.target.value ? parseInt(e.target.value, 10) : "")
+                }
+              />
+              <p className="text-xs text-muted-foreground">
+                Leave empty to transfer all devices in the box
+              </p>
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <Button
+              onClick={handleTransferBox}
+              disabled={transferring || !transferBoxNumber || !transferToTeamId}
+            >
+              {transferring ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Transferring...
+                </>
+              ) : (
+                "Transfer Box"
+              )}
+            </Button>
+          </div>
+
+          <Alert>
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Note</AlertTitle>
+            <AlertDescription>
+              Transferring a box will move the specified number of devices (or all devices if not specified) 
+              to the destination Amanah. Installer assignments will be cleared for transferred devices.
+            </AlertDescription>
+          </Alert>
         </CardContent>
       </Card>
     </div>

@@ -86,12 +86,6 @@ export default function Devices() {
           updatedAt: doc.data().updatedAt?.toDate(),
         })) as Device[];
         
-        // Sort in JavaScript to avoid index requirement
-        devicesData.sort((a, b) => {
-          if (!a.createdAt || !b.createdAt) return 0;
-          return b.createdAt.getTime() - a.createdAt.getTime();
-        });
-        
         setDevices(devicesData);
         setLoading(false);
       },
@@ -155,14 +149,35 @@ export default function Devices() {
     return () => unsubscribe();
   }, [userProfile]);
 
-  // Merge devices with installation and server data
+  // Create lookup maps for O(1) performance instead of O(n) .find()
+  const installationMap = useMemo(() => {
+    const map = new Map<string, Installation>();
+    installations.forEach(inst => {
+      if (inst.deviceId) {
+        map.set(inst.deviceId, inst);
+      }
+    });
+    return map;
+  }, [installations]);
+
+  const serverDataMap = useMemo(() => {
+    const map = new Map<string, ServerData>();
+    serverDataList.forEach(sd => {
+      if (sd.deviceId) {
+        map.set(sd.deviceId, sd);
+      }
+    });
+    return map;
+  }, [serverDataList]);
+
+  // Merge devices with installation and server data using Maps for O(1) lookups
   const devicesWithDetails = useMemo(() => {
     return devices.map(device => {
-      const installation = installations.find(inst => inst.deviceId === device.id);
-      const serverData = serverDataList.find(sd => sd.deviceId === device.id);
+      const installation = installationMap.get(device.id);
+      const serverData = serverDataMap.get(device.id);
       return { ...device, installation, serverData };
     });
-  }, [devices, installations, serverDataList]);
+  }, [devices, installationMap, serverDataMap]);
 
   // Get unique product IDs for filter
   const uniqueProductIds = useMemo(() => {
@@ -180,9 +195,9 @@ export default function Devices() {
     return Array.from(boxes).sort();
   }, [devices]);
 
-  // Filter devices (using debounced values for smooth performance)
+  // Filter and sort devices (using debounced values for smooth performance)
   const filteredDevices = useMemo(() => {
-    return devicesWithDetails.filter(device => {
+    const filtered = devicesWithDetails.filter(device => {
       // Device UIDs filter (if active, only show devices in the list)
       let matchesDeviceUids = true;
       if (debouncedDeviceUidsFilter.trim()) {
@@ -234,6 +249,14 @@ export default function Devices() {
 
       return matchesDeviceUids && matchesSearch && matchesStatus && matchesProduct && matchesDate && matchesBox;
     });
+    
+    // Sort by creation date (newest first) - only sort filtered results for better performance
+    filtered.sort((a, b) => {
+      if (!a.createdAt || !b.createdAt) return 0;
+      return b.createdAt.getTime() - a.createdAt.getTime();
+    });
+    
+    return filtered;
   }, [devicesWithDetails, debouncedDeviceUidsFilter, debouncedSearchTerm, statusFilter, productFilter, dateFilter, boxFilter]);
   
   // Reset display limit when filters change
@@ -318,48 +341,62 @@ export default function Devices() {
     }
   };
 
-  // Stats
+  // Stats - optimized to use single loop instead of multiple filters
   const stats = useMemo(() => {
-    // Count installations by status
-    const totalInstallations = installations.length;
-    const pendingSubmissions = installations.filter(inst => inst.status === "pending").length;
-    const verifiedSubmissions = installations.filter(inst => inst.status === "verified").length;
-    const flaggedSubmissions = installations.filter(inst => inst.status === "flagged").length;
+    // Single pass through installations for all stats
+    let pendingSubmissions = 0;
+    let verifiedSubmissions = 0;
+    let flaggedSubmissions = 0;
+    const deviceIdsWithInstallations = new Set<string>();
     
-    // Get unique device IDs that have installations
-    const deviceIdsWithInstallations = new Set(installations.map(inst => inst.deviceId));
+    installations.forEach(inst => {
+      if (inst.status === "pending") pendingSubmissions++;
+      else if (inst.status === "verified") verifiedSubmissions++;
+      else if (inst.status === "flagged") flaggedSubmissions++;
+      
+      if (inst.deviceId) deviceIdsWithInstallations.add(inst.deviceId);
+    });
+    
     const uniqueDevicesInstalled = deviceIdsWithInstallations.size;
-    
-    // Remaining Devices = total devices - unique devices with installations
     const remainingDevices = devices.length - uniqueDevicesInstalled;
     
     return {
       total: devices.length,
       pendingSubmissions,
-      totalInstallations,
+      totalInstallations: installations.length,
       verifiedSubmissions,
       flaggedSubmissions,
       remainingDevices,
       uniqueDevicesInstalled,
     };
-  }, [devices, installations]);
+  }, [devices.length, installations]);
 
   const dataIntegrity = useMemo(() => {
-    const deviceIdSet = new Set(devices.map(device => device.id?.trim().toUpperCase()).filter(Boolean));
-    const installationGroups = new Map<string, Installation[]>();
+    // Build device ID set once
+    const deviceIdSet = new Set<string>();
+    devices.forEach(device => {
+      const normalized = device.id?.trim().toUpperCase();
+      if (normalized) deviceIdSet.add(normalized);
+    });
 
+    // Group installations by device ID in single pass
+    const installationGroups = new Map<string, Installation[]>();
     installations.forEach((installation) => {
       const normalized = installation.deviceId?.trim().toUpperCase();
       if (!normalized) return;
-      if (!installationGroups.has(normalized)) {
-        installationGroups.set(normalized, []);
+      
+      const existing = installationGroups.get(normalized);
+      if (existing) {
+        existing.push(installation);
+      } else {
+        installationGroups.set(normalized, [installation]);
       }
-      installationGroups.get(normalized)!.push(installation);
     });
 
     const installationsWithoutDevice: { deviceId: string; installations: Installation[] }[] = [];
     const duplicateInstallations: { deviceId: string; installations: Installation[] }[] = [];
 
+    // Single pass to categorize issues
     installationGroups.forEach((installs, deviceId) => {
       if (!deviceIdSet.has(deviceId)) {
         installationsWithoutDevice.push({ deviceId, installations: installs });
@@ -369,6 +406,7 @@ export default function Devices() {
       }
     });
 
+    // Sort by count descending
     installationsWithoutDevice.sort((a, b) => b.installations.length - a.installations.length);
     duplicateInstallations.sort((a, b) => b.installations.length - a.installations.length);
 

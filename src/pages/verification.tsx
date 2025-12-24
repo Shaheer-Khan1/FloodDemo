@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp, deleteDoc } from "firebase/firestore";
+import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp, deleteDoc, writeBatch } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
@@ -515,22 +515,28 @@ export default function Verification() {
   }, [allInstallations, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
 
   const dashboardStats = useMemo(() => {
-    const total = filteredAllInstallations.length;
+    // For managers (non-admin), only count escalated items; for others, count all
+    const isManager = userProfile?.role === "manager" && !userProfile?.isAdmin;
+    const statsBase = isManager 
+      ? filteredAllInstallations.filter(i => i.tags?.includes("escalated to manager"))
+      : filteredAllInstallations;
+    
+    const total = statsBase.length;
     const installed = total; // every installation in the database represents an installed device
-    const connectedWithServer = filteredAllInstallations.filter(
+    const connectedWithServer = statsBase.filter(
       (i) => i.latestDisCm != null
     ).length;
-    const noConnection = filteredAllInstallations.filter(
+    const noConnection = statsBase.filter(
       (i) => i.latestDisCm == null
     ).length;
-    const editedRecords = filteredAllInstallations.filter((i) =>
+    const editedRecords = statsBase.filter((i) =>
       i.tags?.includes("edited by verifier")
     ).length;
-    const systemPreApproved = filteredAllInstallations.filter(
+    const systemPreApproved = statsBase.filter(
       (i) => i.systemPreVerified === true
     ).length;
 
-    const verifiedAll = filteredAllInstallations.filter(
+    const verifiedAll = statsBase.filter(
       (i) => i.status === "verified"
     );
     const verifiedAuto = verifiedAll.filter(
@@ -550,7 +556,7 @@ export default function Verification() {
       verifiedManual,
       systemPreApproved,
     };
-  }, [filteredAllInstallations]);
+  }, [filteredAllInstallations, userProfile?.role, userProfile?.isAdmin]);
 
   // Apply all filters to items shown in the table
   const displayedItems = useMemo(() => {
@@ -1713,55 +1719,16 @@ export default function Verification() {
     
     setRefreshingAll(true);
     
-    // Filter installations: only refresh if server data is missing or older than 5 days
-    const cutoff = new Date();
-    cutoff.setHours(0, 0, 0, 0);
-    cutoff.setDate(cutoff.getDate() - 5);
-    
+    // Refresh all installations (no date threshold)
     const installationsToRefresh = allInstallations.filter((installation) => {
-      // If no server data, include it
-      if (!installation.latestDisCm && !installation.latestDisTimestamp && !installation.serverRefreshedAt) {
-        return true;
-      }
-      
-      // If we have serverRefreshedAt, check if it's older than cutoff
-      if (installation.serverRefreshedAt) {
-        const refreshedDate = new Date(installation.serverRefreshedAt);
-        refreshedDate.setHours(0, 0, 0, 0);
-        // Only refresh if older than cutoff
-        if (refreshedDate.getTime() < cutoff.getTime()) {
-          return true;
-        }
-      }
-      
-      // If we have latestDisTimestamp, check if it's older than cutoff
-      if (installation.latestDisTimestamp) {
-        try {
-          const timestampDate = new Date(installation.latestDisTimestamp);
-          timestampDate.setHours(0, 0, 0, 0);
-          // Only refresh if older than cutoff
-          if (timestampDate.getTime() < cutoff.getTime()) {
-            return true;
-          }
-        } catch {
-          // If we can't parse the timestamp, refresh it
-          return true;
-        }
-      }
-      
-      // If we have latestDisCm but no timestamp, refresh it to get the timestamp
-      if (installation.latestDisCm && !installation.latestDisTimestamp) {
-        return true;
-      }
-      
-      // Default: don't refresh if we have data but can't determine date
-      return false;
+      // Only include installations with a deviceId
+      return !!installation.deviceId;
     });
     
     if (installationsToRefresh.length === 0) {
       toast({
         title: "No Installations to Refresh",
-        description: "All installations already have today's server data.",
+        description: "No installations with device IDs found.",
       });
       setRefreshingAll(false);
       return;
@@ -1769,7 +1736,7 @@ export default function Verification() {
     
     toast({
       title: "Refreshing Server Data",
-      description: `Refreshing ${installationsToRefresh.length} of ${allInstallations.length} installations (missing or older than 5 days).`,
+      description: `Fetching data for ${installationsToRefresh.length} installation(s) in batches of 500...`,
     });
 
     // Open dialog and set pending statuses
@@ -1785,113 +1752,207 @@ export default function Verification() {
     let errorCount = 0;
     let skippedCount = 0;
 
-    // Send all requests at once for speed
-    await Promise.all(
-      installationsToRefresh.map(async (installation) => {
-      if (!installation.deviceId) {
-        skippedCount++;
-        setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
-          return;
-      }
+    // PHASE 1: Fetch API data in batches of 500 (parallel requests, no Firebase writes yet)
+    const BATCH_SIZE = 500;
+    const fetchResults: Array<{
+      installation: Installation;
+      data?: any;
+      error?: boolean;
+      skipped?: boolean;
+    }> = [];
 
-      try {
-        const apiResponse = await fetch(
-          `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`,
-          {
-            method: 'GET',
-            headers: {
-              'X-API-KEY': import.meta.env.VITE_API_KEY || ''
-            }
+    console.log(`🚀 Fetching data for ${installationsToRefresh.length} installations in batches of ${BATCH_SIZE}...`);
+    
+    for (let i = 0; i < installationsToRefresh.length; i += BATCH_SIZE) {
+      const batch = installationsToRefresh.slice(i, i + BATCH_SIZE);
+      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(installationsToRefresh.length / BATCH_SIZE);
+      
+      console.log(`📡 Fetching batch ${batchNum}/${totalBatches} (${batch.length} requests)...`);
+      
+      toast({
+        title: "Fetching Data",
+        description: `Batch ${batchNum}/${totalBatches}: ${batch.length} requests...`,
+      });
+
+      const batchResults = await Promise.all(
+        batch.map(async (installation) => {
+          if (!installation.deviceId) {
+            return { installation, skipped: true };
           }
-        );
 
-        if (apiResponse.status === 404) {
-          await updateDoc(doc(db, "installations", installation.id), {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            
+            const apiResponse = await fetch(
+              `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`,
+              {
+                method: 'GET',
+                headers: {
+                  'X-API-KEY': import.meta.env.VITE_API_KEY || ''
+                },
+                signal: controller.signal
+              }
+            );
+            
+            clearTimeout(timeoutId);
+
+            if (apiResponse.status === 404) {
+              return { installation, skipped: true };
+            }
+
+            if (!apiResponse.ok) {
+              return { installation, error: true };
+            }
+
+            const apiData = await apiResponse.json();
+            return { installation, data: apiData };
+          } catch (error) {
+            console.error(`Failed to fetch ${installation.deviceId}:`, error);
+            return { installation, error: true };
+          }
+        })
+      );
+
+      fetchResults.push(...batchResults);
+      console.log(`✅ Batch ${batchNum}/${totalBatches} complete (${batchResults.length} results)`);
+    }
+
+    console.log(`✅ Fetched all ${fetchResults.length} results, now processing in memory...`);
+
+    // PHASE 2: Process results and prepare batch writes (in memory)
+    const installationUpdates: Array<{ id: string; data: any }> = [];
+    const deviceUpdates: Array<{ id: string; data: any }> = [];
+
+    for (const result of fetchResults) {
+      const { installation, data, error, skipped } = result;
+
+      if (skipped) {
+        installationUpdates.push({
+          id: installation.id,
+          data: {
             serverRefreshedAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
-          });
-          skippedCount++;
-          setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
-            return;
-        }
+          }
+        });
+        skippedCount++;
+        setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
+        continue;
+      }
 
-        if (!apiResponse.ok) {
-          errorCount++;
-          setRefreshStatuses(prev => ({ ...prev, [installation.id]: "error" }));
-            return;
-        }
+      if (error || !data) {
+        errorCount++;
+        setRefreshStatuses(prev => ({ ...prev, [installation.id]: "error" }));
+        continue;
+      }
 
-        const apiData = await apiResponse.json();
-        const latestRecord = apiData?.records?.[0];
-        const latestDistance = latestRecord?.dis_cm ?? null;
+      const latestRecord = data?.records?.[0];
+      const latestDistance = latestRecord?.dis_cm ?? null;
+      const hasServerData = latestDistance !== null && Number(latestDistance) > 0;
 
-        // Consider null or 0 as "no server data yet"
-        const hasServerData = latestDistance !== null && Number(latestDistance) > 0;
+      if (hasServerData) {
         const hasSensor = !!installation.sensorReading;
-        const variancePct = (hasServerData && hasSensor)
+        const variancePct = hasSensor
           ? (Math.abs(latestDistance - installation.sensorReading) / installation.sensorReading) * 100
           : undefined;
 
-        if (hasServerData) {
-          // Update with server data, but don't change status for verified/system-approved installations
-          const updateData: any = {
-            latestDisCm: latestDistance,
-            latestDisTimestamp: latestRecord?.timestamp ?? null,
-            serverRefreshedAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          };
+        const updateData: any = {
+          latestDisCm: latestDistance,
+          latestDisTimestamp: latestRecord?.timestamp ?? null,
+          serverRefreshedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
 
-          // Only update systemPreVerified for pending installations
-          if (installation.status === "pending") {
-            const preVerified = variancePct !== undefined && variancePct < 5;
-            updateData.systemPreVerified = preVerified;
-            updateData.systemPreVerifiedAt = preVerified ? serverTimestamp() : null;
+        if (installation.status === "pending") {
+          const preVerified = variancePct !== undefined && variancePct < 5;
+          updateData.systemPreVerified = preVerified;
+          updateData.systemPreVerifiedAt = preVerified ? serverTimestamp() : null;
 
-            // Auto-reject pending installations with high variance
-            if (variancePct !== undefined && variancePct > 10) {
-              updateData.status = "flagged";
-              updateData.flaggedReason = `Auto-rejected: variance ${variancePct.toFixed(2)}% > 10%`;
-              updateData.verifiedBy = "System (Auto-rejected)";
-              updateData.verifiedAt = serverTimestamp();
-              
-              await updateDoc(doc(db, "devices", installation.deviceId), {
+          if (variancePct !== undefined && variancePct > 10) {
+            updateData.status = "flagged";
+            updateData.flaggedReason = `Auto-rejected: variance ${variancePct.toFixed(2)}% > 10%`;
+            updateData.verifiedBy = "System (Auto-rejected)";
+            updateData.verifiedAt = serverTimestamp();
+            
+            deviceUpdates.push({
+              id: installation.deviceId,
+              data: {
                 status: "flagged",
                 updatedAt: serverTimestamp(),
-              });
-            }
+              }
+            });
           }
+        }
 
-          await updateDoc(doc(db, "installations", installation.id), updateData);
-          successCount++;
-          setRefreshStatuses(prev => ({ ...prev, [installation.id]: "success" }));
-        } else {
-          // No valid server data, still mark refresh attempt
-          await updateDoc(doc(db, "installations", installation.id), {
+        installationUpdates.push({ id: installation.id, data: updateData });
+        successCount++;
+        setRefreshStatuses(prev => ({ ...prev, [installation.id]: "success" }));
+      } else {
+        installationUpdates.push({
+          id: installation.id,
+          data: {
             serverRefreshedAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
-          });
-          skippedCount++;
-          setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
-        }
-      } catch (error) {
-        console.error(`Failed to refresh installation ${installation.id}:`, error);
-        errorCount++;
-        setRefreshStatuses(prev => ({ ...prev, [installation.id]: "error" }));
+          }
+        });
+        skippedCount++;
+        setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
       }
-      })
-    );
+    }
 
+    // PHASE 3: Batch write to Firestore (fast!)
+    console.log(`💾 Writing ${installationUpdates.length + deviceUpdates.length} updates to Firebase...`);
+    
     toast({
-      title: "Refresh Complete",
-      description: `Success: ${successCount}, Errors: ${errorCount}, Skipped: ${skippedCount}`,
+      title: "Saving to Database",
+      description: `Writing ${installationUpdates.length + deviceUpdates.length} updates...`,
     });
+
+    try {
+      const allUpdates = [
+        ...installationUpdates.map(u => ({ collection: 'installations', ...u })),
+        ...deviceUpdates.map(u => ({ collection: 'devices', ...u }))
+      ];
+
+      const totalBatches = Math.ceil(allUpdates.length / 500);
+      
+      // Process in batches of 500 (Firestore limit)
+      for (let i = 0; i < allUpdates.length; i += 500) {
+        const batch = writeBatch(db);
+        const batchUpdates = allUpdates.slice(i, i + 500);
+        const batchNum = Math.floor(i / 500) + 1;
+
+        console.log(`📝 Writing batch ${batchNum}/${totalBatches} (${batchUpdates.length} updates)...`);
+
+        for (const update of batchUpdates) {
+          const docRef = doc(db, update.collection, update.id);
+          batch.update(docRef, update.data);
+        }
+
+        await batch.commit();
+      }
+
+      console.log(`✅ All batches written successfully!`);
+
+      toast({
+        title: "Refresh Complete! 🚀",
+        description: `Success: ${successCount}, Errors: ${errorCount}, Skipped: ${skippedCount}`,
+      });
+    } catch (error) {
+      console.error('Failed to write batch updates:', error);
+      toast({
+        variant: "destructive",
+        title: "Database Update Failed",
+        description: "Failed to save updates. Please try again.",
+      });
+    }
 
     setRefreshingAll(false);
   };
 
   // Auto-refresh every 24h for high variance and no-data items (best-effort while page is open)
   // OPTIMIZED: Use interval instead of reactive effect to prevent performance issues
-  const inFlightAuto = useRef<Set<string>>(new Set());
   const lastAutoCheckTime = useRef<number>(0);
   const autoFetchQueueRef = useRef<Installation[]>([]);
   const processingBatchRef = useRef<boolean>(false);
@@ -1906,14 +1967,16 @@ export default function Verification() {
     
     await Promise.all(
       batch.map(async (inst) => {
-        if (inFlightAuto.current.has(inst.id)) return;
-        inFlightAuto.current.add(inst.id);
+        // Use the same tracking system as manual fetches to prevent duplicates
+        const fetchKey = `${inst.deviceId}_${inst.id}`;
+        if (fetchInProgressRef.current.has(fetchKey)) {
+          console.log(`Skipping auto-fetch for ${inst.deviceId} - already in progress`);
+          return;
+        }
         try {
           await fetchLatestServerReadings(inst);
         } catch (error) {
           console.error(`Auto-fetch failed for ${inst.id}:`, error);
-        } finally {
-          inFlightAuto.current.delete(inst.id);
         }
       })
     );
@@ -1948,7 +2011,10 @@ export default function Verification() {
         const hasNoData = inst.latestDisCm == null;
         
         if (!(isHighVariance || hasNoData)) return;
-        if (inFlightAuto.current.has(inst.id)) return;
+        
+        // Check if already being fetched (using unified tracking system)
+        const fetchKey = `${inst.deviceId}_${inst.id}`;
+        if (fetchInProgressRef.current.has(fetchKey)) return;
         
         const last = inst.serverRefreshedAt ? inst.serverRefreshedAt.getTime() : 0;
         const due = (now - last) > DAY_MS;
@@ -2016,7 +2082,7 @@ export default function Verification() {
               Refresh Queue
             </DialogTitle>
             <p className="text-sm text-muted-foreground">
-              Showing installations being refreshed (missing data or older than 5 days).
+              Refreshing all installations with device IDs.
             </p>
           </DialogHeader>
           <div className="max-h-[420px] overflow-y-auto space-y-3">

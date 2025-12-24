@@ -26,6 +26,11 @@ export default function OpenBoxes() {
   const [bulkCount, setBulkCount] = useState<number | "">("");
   const [editingAssigned, setEditingAssigned] = useState<Record<string, string>>({});
   const [savingAssignedId, setSavingAssignedId] = useState<string | null>(null);
+  
+  // Bulk reassignment states
+  const [bulkReassignInstallerId, setBulkReassignInstallerId] = useState<string>("");
+  const [bulkReassignCount, setBulkReassignCount] = useState<number | "">("");
+  const [savingBulkReassign, setSavingBulkReassign] = useState(false);
 
   const isVerifier = userProfile?.role === "verifier";
   const isAdmin = !!userProfile?.isAdmin;
@@ -693,6 +698,128 @@ export default function OpenBoxes() {
                       </p>
                     ) : (
                       <>
+                        {/* Bulk Reassignment Section */}
+                        <div className="p-3 rounded-md border bg-blue-50 dark:bg-blue-950/20 space-y-2">
+                          <h4 className="text-xs font-semibold text-blue-900 dark:text-blue-100">
+                            Bulk Change Assignments
+                          </h4>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                            <div className="space-y-1">
+                              <Label htmlFor="bulk-reassign-installer" className="text-xs">
+                                New Installer
+                              </Label>
+                              <select
+                                id="bulk-reassign-installer"
+                                className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
+                                value={bulkReassignInstallerId}
+                                onChange={(e) => setBulkReassignInstallerId(e.target.value)}
+                              >
+                                <option value="">Select installer</option>
+                                {installers.map((inst) => (
+                                  <option key={inst.id} value={(inst as any).userId || inst.id}>
+                                    {inst.name || inst.displayName || inst.email}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label htmlFor="bulk-reassign-count" className="text-xs">
+                                Number of Devices (optional)
+                              </Label>
+                              <Input
+                                id="bulk-reassign-count"
+                                type="number"
+                                min="1"
+                                max={assignedDevicesInBox.length}
+                                className="text-xs h-8"
+                                placeholder="All devices"
+                                value={bulkReassignCount}
+                                onChange={(e) =>
+                                  setBulkReassignCount(
+                                    e.target.value ? parseInt(e.target.value, 10) : ""
+                                  )
+                                }
+                              />
+                            </div>
+                            <div className="flex items-end">
+                              <Button
+                                size="sm"
+                                className="w-full h-8"
+                                disabled={!bulkReassignInstallerId || savingBulkReassign}
+                                onClick={async () => {
+                                  if (!bulkReassignInstallerId) {
+                                    toast({
+                                      variant: "destructive",
+                                      title: "Select an installer",
+                                      description: "Choose an installer to reassign devices to.",
+                                    });
+                                    return;
+                                  }
+
+                                  const devicesToReassign =
+                                    typeof bulkReassignCount === "number" && bulkReassignCount > 0
+                                      ? assignedDevicesInBox.slice(0, bulkReassignCount)
+                                      : assignedDevicesInBox;
+
+                                  const installer = installers.find(
+                                    (i) =>
+                                      i.id === bulkReassignInstallerId ||
+                                      (i as any).userId === bulkReassignInstallerId
+                                  );
+
+                                  const installerName = installer
+                                    ? installer.name || installer.displayName || installer.email
+                                    : "";
+
+                                  const confirmed = window.confirm(
+                                    `Reassign ${devicesToReassign.length} device(s) to ${installerName}?`
+                                  );
+                                  if (!confirmed) return;
+
+                                  setSavingBulkReassign(true);
+                                  try {
+                                    const updates = devicesToReassign.map((d) =>
+                                      updateDoc(doc(db, "devices", d.id), {
+                                        assignedInstallerId: bulkReassignInstallerId,
+                                        assignedInstallerName: installerName,
+                                        updatedAt: serverTimestamp(),
+                                      })
+                                    );
+
+                                    await Promise.all(updates);
+
+                                    toast({
+                                      title: "Bulk reassignment complete",
+                                      description: `${devicesToReassign.length} device(s) reassigned to ${installerName}.`,
+                                    });
+
+                                    setBulkReassignInstallerId("");
+                                    setBulkReassignCount("");
+                                  } catch (error) {
+                                    console.error("Failed to bulk reassign:", error);
+                                    toast({
+                                      variant: "destructive",
+                                      title: "Bulk reassignment failed",
+                                      description:
+                                        error instanceof Error
+                                          ? error.message
+                                          : "An error occurred.",
+                                    });
+                                  } finally {
+                                    setSavingBulkReassign(false);
+                                  }
+                                }}
+                              >
+                                {savingBulkReassign ? "Reassigning..." : "Change Assignments"}
+                              </Button>
+                            </div>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Reassign multiple devices at once. Leave count empty to reassign all{" "}
+                            {assignedDevicesInBox.length} device(s).
+                          </p>
+                        </div>
+
                         <div className="max-h-64 overflow-y-auto rounded-md border bg-slate-50 dark:bg-slate-950/40">
                           <table className="w-full text-xs">
                             <thead className="bg-slate-100 dark:bg-slate-900">
