@@ -149,38 +149,29 @@ export default function Verification() {
     if (!selectedItem) return false;
 
     const keys: string[] = [
-      // Installer data
-      "installer_deviceId",
-      "installer_installer",
-      "installer_locationId",
-      "installer_sensorReading",
-      "installer_coordinates",
-      "installer_submitted",
-      // Device information
-      "device_uid",
-      "device_productId",
-      "device_imei",
-      "device_iccid",
+      // Required fields only
+      "installer_deviceId",      // 1. Device ID
+      "installer_locationId",    // 2. Location ID
+      "installer_sensorReading", // 3. Sensor Reading
+      "installer_coordinates",   // 4. Coordinates
     ];
 
-    // Server data fields only if server data exists
+    // 5. Sensor Data - only if server data exists
     if (selectedItem.serverData) {
-      keys.push(
-        "server_deviceId",
-        "server_sensorData",
-        "server_receivedAt",
-        "server_variance"
-      );
+      keys.push("server_sensorData");
     }
 
-    // One checkbox per installation image
-    (selectedItem.installation.imageUrls || []).forEach((_, index) => {
-      keys.push(`image_${index}`);
-    });
-
-    // Checkbox for video if present
-    if (selectedItem.installation.videoUrl) {
-      keys.push("video");
+    // 6. Images - at least one image must be checked
+    const imageUrls = selectedItem.installation.imageUrls || [];
+    if (imageUrls.length > 0) {
+      // Check if at least one image is checked
+      const hasAtLeastOneImageChecked = imageUrls.some((_, index) => 
+        fieldCheckStates[`image_${index}`]
+      );
+      if (!hasAtLeastOneImageChecked) return false;
+    } else {
+      // No images present - cannot verify
+      return false;
     }
 
     if (keys.length === 0) return false;
@@ -3103,7 +3094,7 @@ export default function Verification() {
                         />
                       )}
                     </div>
-                    {/* Installer */}
+                    {/* Installer - No checkbox needed */}
                     <div className="flex items-start justify-between gap-2">
                       <div>
                         <p className="text-sm text-muted-foreground">Installer</p>
@@ -3116,16 +3107,6 @@ export default function Verification() {
                           )}
                         </div>
                       </div>
-                      {!isEditMode && (
-                        <Checkbox
-                          checked={!!fieldCheckStates["installer_installer"]}
-                          onCheckedChange={(checked) =>
-                            toggleFieldCheck("installer_installer", checked === true)
-                          }
-                          disabled={processing}
-                          aria-label="Mark installer as checked"
-                        />
-                      )}
                     </div>
                     {/* Location ID */}
                     <div className="flex items-start justify-between gap-2">
@@ -3285,16 +3266,6 @@ export default function Verification() {
                             : "-"}
                         </p>
                       </div>
-                      {!isEditMode && (
-                        <Checkbox
-                          checked={!!fieldCheckStates["installer_submitted"]}
-                          onCheckedChange={(checked) =>
-                            toggleFieldCheck("installer_submitted", checked === true)
-                          }
-                          disabled={processing}
-                          aria-label="Mark submitted time as checked"
-                        />
-                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -3312,14 +3283,6 @@ export default function Verification() {
                             <p className="text-sm text-muted-foreground">Device ID</p>
                             <p className="text-base font-mono font-medium">{selectedItem.serverData.deviceId}</p>
                           </div>
-                          <Checkbox
-                            checked={!!fieldCheckStates["server_deviceId"]}
-                            onCheckedChange={(checked) =>
-                              toggleFieldCheck("server_deviceId", checked === true)
-                            }
-                            disabled={processing}
-                            aria-label="Mark server device ID as checked"
-                          />
                         </div>
                         <div className="flex items-start justify-between gap-2">
                           <div>
@@ -3332,11 +3295,16 @@ export default function Verification() {
                               <p className="text-xs text-muted-foreground mt-1">{selectedItem.installation.latestDisTimestamp}</p>
                             )}
                           </div>
-                          <Checkbox
-                            checked={!!fieldCheckStates["server_sensorData"]}
-                            disabled={true}
-                            aria-label="Mark server sensor data as checked"
-                          />
+                          {!isEditMode && (
+                            <Checkbox
+                              checked={!!fieldCheckStates["server_sensorData"]}
+                              onCheckedChange={(checked) =>
+                                toggleFieldCheck("server_sensorData", checked === true)
+                              }
+                              disabled={processing}
+                              aria-label="Mark server sensor data as checked"
+                            />
+                          )}
                         </div>
                         <div className="flex items-start justify-between gap-2">
                           <div>
@@ -3350,11 +3318,6 @@ export default function Verification() {
                                     : "-")}
                             </p>
                           </div>
-                          <Checkbox
-                            checked={!!fieldCheckStates["server_receivedAt"]}
-                            disabled={true}
-                            aria-label="Mark server received at as checked"
-                          />
                         </div>
                         {selectedItem.percentageDifference !== undefined && (
                           <div className="flex items-start justify-between gap-2">
@@ -3364,11 +3327,6 @@ export default function Verification() {
                                 {selectedItem.percentageDifference.toFixed(2)}%
                               </p>
                             </div>
-                            <Checkbox
-                              checked={!!fieldCheckStates["server_variance"]}
-                              disabled={true}
-                              aria-label="Mark variance as checked"
-                            />
                           </div>
                         )}
                       </>
@@ -3394,44 +3352,24 @@ export default function Verification() {
                           <p className="text-sm text-muted-foreground">Device UID</p>
                           <p className="text-base font-mono font-medium text-xs">{selectedItem.device.id}</p>
                         </div>
-                        <Checkbox
-                          checked={!!fieldCheckStates["device_uid"]}
-                          disabled={true}
-                          aria-label="Mark device UID as checked"
-                        />
                       </div>
                       <div className="flex items-start justify-between gap-2">
                         <div>
                           <p className="text-sm text-muted-foreground">Product ID</p>
                           <p className="text-base font-medium">{selectedItem.device.productId}</p>
                         </div>
-                        <Checkbox
-                          checked={!!fieldCheckStates["device_productId"]}
-                          disabled={true}
-                          aria-label="Mark product ID as checked"
-                        />
                       </div>
                       <div className="flex items-start justify-between gap-2">
                         <div>
                           <p className="text-sm text-muted-foreground">IMEI</p>
                           <p className="text-base font-mono font-medium text-xs">{selectedItem.device.deviceImei}</p>
                         </div>
-                        <Checkbox
-                          checked={!!fieldCheckStates["device_imei"]}
-                          disabled={true}
-                          aria-label="Mark IMEI as checked"
-                        />
                       </div>
                       <div className="flex items-start justify-between gap-2">
                         <div>
                           <p className="text-sm text-muted-foreground">ICCID</p>
                           <p className="text-base font-mono font-medium text-xs">{selectedItem.device.iccid}</p>
                         </div>
-                        <Checkbox
-                          checked={!!fieldCheckStates["device_iccid"]}
-                          disabled={true}
-                          aria-label="Mark ICCID as checked"
-                        />
                       </div>
                     </div>
                   </CardContent>
@@ -3461,7 +3399,10 @@ export default function Verification() {
                             <div className="absolute top-2 left-2 bg-white/80 rounded p-1">
                               <Checkbox
                                 checked={!!fieldCheckStates[`image_${index}`]}
-                                disabled={true}
+                                onCheckedChange={(checked) =>
+                                  toggleFieldCheck(`image_${index}`, checked === true)
+                                }
+                                disabled={processing}
                                 aria-label={`Mark image ${index + 1} as checked`}
                               />
                             </div>
@@ -3574,15 +3515,6 @@ export default function Verification() {
                         controls
                         className="w-full h-64 object-cover rounded-lg border"
                       />
-                      {!isEditMode && (
-                        <div className="absolute top-2 left-2 bg-white/80 rounded p-1">
-                          <Checkbox
-                            checked={!!fieldCheckStates["video"]}
-                            disabled={true}
-                            aria-label="Mark video as checked"
-                          />
-                        </div>
-                      )}
                     </div>
                   </div>
                 )}
@@ -3602,6 +3534,26 @@ export default function Verification() {
               </div>
             </div>
           )}
+          
+          {/* Show helper message if required fields are not checked */}
+          {!isEditMode && !allMandatoryChecksCompleted && selectedItem && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-amber-900 mb-1">
+                    Please verify all required fields before approving
+                  </p>
+                  <p className="text-xs text-amber-700">
+                    Required: Device ID ✓ Location ID ✓ Sensor Reading ✓ Coordinates ✓ 
+                    {selectedItem.serverData && " Server Data ✓"}
+                    {(selectedItem.installation.imageUrls || []).length > 0 && " At least one Image ✓"}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+          
           <DialogFooter className="gap-2">
             {isEditMode ? (
               <>
