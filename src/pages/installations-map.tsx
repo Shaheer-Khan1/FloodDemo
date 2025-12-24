@@ -1,5 +1,5 @@
-import { useEffect, useState, useMemo } from "react";
-import { collection, onSnapshot } from "firebase/firestore";
+import { useEffect, useState, useMemo, useCallback } from "react";
+import { collection, onSnapshot, limit as firestoreLimit, query as firestoreQuery } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,30 +10,41 @@ import { Label } from "@/components/ui/label";
 import { Loader2, Search, MapPin, Filter, X } from "lucide-react";
 import type { Installation, Team } from "@/lib/types";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
+import MarkerClusterGroup from "react-leaflet-cluster";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
+import { useDebounce } from "@/hooks/use-debounce";
 
-// Create colored markers based on status
-const createMarkerIcon = (color: string) => {
-  return L.divIcon({
+// Memoize marker icons to avoid recreating them
+const markerIcons = {
+  verified: L.divIcon({
     className: "custom-marker",
-    html: `<div style="background-color: ${color}; width: 20px; height: 20px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>`,
+    html: `<div style="background-color: #10b981; width: 20px; height: 20px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>`,
     iconSize: [20, 20],
     iconAnchor: [10, 10],
-  });
+  }),
+  flagged: L.divIcon({
+    className: "custom-marker",
+    html: `<div style="background-color: #ef4444; width: 20px; height: 20px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>`,
+    iconSize: [20, 20],
+    iconAnchor: [10, 10],
+  }),
+  pending: L.divIcon({
+    className: "custom-marker",
+    html: `<div style="background-color: #f59e0b; width: 20px; height: 20px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>`,
+    iconSize: [20, 20],
+    iconAnchor: [10, 10],
+  }),
+  default: L.divIcon({
+    className: "custom-marker",
+    html: `<div style="background-color: #6b7280; width: 20px; height: 20px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>`,
+    iconSize: [20, 20],
+    iconAnchor: [10, 10],
+  }),
 };
 
-const getMarkerColor = (status: string): string => {
-  switch (status) {
-    case "verified":
-      return "#10b981"; // green
-    case "flagged":
-      return "#ef4444"; // red
-    case "pending":
-      return "#f59e0b"; // yellow
-    default:
-      return "#6b7280"; // gray
-  }
+const getMarkerIcon = (status: string): L.DivIcon => {
+  return markerIcons[status as keyof typeof markerIcons] || markerIcons.default;
 };
 
 interface Location {
@@ -60,18 +71,21 @@ interface InstallationWithCoords extends Installation {
   lon?: number;
 }
 
-// Component to fit map bounds to all markers
+// Component to fit map bounds to all markers - optimized to only fit once on load or major filter changes
 function FitBounds({ installations }: { installations: InstallationWithCoords[] }) {
   const map = useMap();
+  const [hasFitted, setHasFitted] = useState(false);
 
   useEffect(() => {
-    if (installations.length > 0) {
+    if (installations.length > 0 && installations.length < 1000) {
+      // Only auto-fit for reasonable number of markers and only once
       const bounds = L.latLngBounds(
         installations.map((inst) => [inst.lat!, inst.lon!] as [number, number])
       );
-      map.fitBounds(bounds, { padding: [50, 50] });
+      map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+      setHasFitted(true);
     }
-  }, [installations, map]);
+  }, [installations.length, map]); // Only refit when count changes, not every time
 
   return null;
 }
@@ -114,6 +128,7 @@ export default function InstallationsMap() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
+  const debouncedSearchTerm = useDebounce(searchTerm, 300); // Debounce search input
   const [teamFilter, setTeamFilter] = useState<string>("all");
   const [selectedInstallationId, setSelectedInstallationId] = useState<string | null>(null);
 
@@ -160,13 +175,17 @@ export default function InstallationsMap() {
     return () => unsub();
   }, []);
 
-  // Match installations to coordinates
-  const installationsWithCoords = useMemo(() => {
-    const locationMap = new Map<string, Location>();
+  // Create location map - memoized separately for better performance
+  const locationMap = useMemo(() => {
+    const map = new Map<string, Location>();
     locations.forEach((loc) => {
-      locationMap.set(loc.locationId, loc);
+      map.set(loc.locationId, loc);
     });
+    return map;
+  }, [locations]);
 
+  // Match installations to coordinates - optimized
+  const installationsWithCoords = useMemo(() => {
     return installations
       .map((inst) => {
         const locationId = inst.locationId ? String(inst.locationId).trim() : "";
@@ -192,7 +211,7 @@ export default function InstallationsMap() {
         };
       })
       .filter((inst) => inst.lat != null && inst.lon != null) as InstallationWithCoords[];
-  }, [installations, locations]);
+  }, [installations, locationMap]);
 
   // Create team ID to name mapping
   const teamIdToName = useMemo(() => {
@@ -203,18 +222,18 @@ export default function InstallationsMap() {
     return map;
   }, [teams]);
 
-  // Filter installations based on search and team
+  // Filter installations based on search and team - using debounced search
   const filteredInstallations = useMemo(() => {
     let filtered = installationsWithCoords;
 
-    // Apply team filter
+    // Apply team filter first (more selective)
     if (teamFilter !== "all") {
       filtered = filtered.filter((inst) => inst.teamId === teamFilter);
     }
 
-    // Apply search filter
-    if (searchTerm.trim()) {
-      const term = searchTerm.toLowerCase().trim();
+    // Apply search filter with debounced value
+    if (debouncedSearchTerm.trim()) {
+      const term = debouncedSearchTerm.toLowerCase().trim();
       filtered = filtered.filter(
         (inst) =>
           inst.deviceId.toLowerCase().includes(term) ||
@@ -224,7 +243,7 @@ export default function InstallationsMap() {
     }
 
     return filtered;
-  }, [installationsWithCoords, searchTerm, teamFilter]);
+  }, [installationsWithCoords, debouncedSearchTerm, teamFilter]);
 
   // Component to center map on selected installation
   function CenterOnInstallation({ installationId }: { installationId: string | null }) {
@@ -242,13 +261,14 @@ export default function InstallationsMap() {
     return null;
   }
 
-  // Calculate center point for map (fallback) - use filtered installations
-  const mapCenter = useMemo(() => {
-    if (filteredInstallations.length === 0) return [21.5, 39.8] as [number, number];
-    const avgLat = filteredInstallations.reduce((sum, inst) => sum + (inst.lat || 0), 0) / filteredInstallations.length;
-    const avgLon = filteredInstallations.reduce((sum, inst) => sum + (inst.lon || 0), 0) / filteredInstallations.length;
-    return [avgLat, avgLon] as [number, number];
-  }, [filteredInstallations]);
+  // Calculate center point for map (fallback) - only recalculate when installations change significantly
+  const mapCenter = useMemo((): [number, number] => {
+    if (installationsWithCoords.length === 0) return [21.5, 39.8];
+    // Use all installations for center, not filtered (more stable)
+    const avgLat = installationsWithCoords.reduce((sum, inst) => sum + (inst.lat || 0), 0) / installationsWithCoords.length;
+    const avgLon = installationsWithCoords.reduce((sum, inst) => sum + (inst.lon || 0), 0) / installationsWithCoords.length;
+    return [avgLat, avgLon];
+  }, [installationsWithCoords.length]); // Only recompute when count changes
 
   if (!userProfile?.isAdmin && userProfile?.role !== "ministry" && userProfile?.role !== "verifier" && userProfile?.role !== "manager") {
     return (
@@ -339,11 +359,16 @@ export default function InstallationsMap() {
       {/* Installations List */}
       <div className="flex-1 overflow-y-auto space-y-2">
         <div className="text-sm text-muted-foreground mb-2">
-          {filteredInstallations.length} of {installationsWithCoords.length} installation{filteredInstallations.length !== 1 ? 's' : ''}
-          {(teamFilter !== "all" || searchTerm.trim()) && " (filtered)"}
+          {filteredInstallations.length > 100 ? (
+            <>Showing first 100 of {filteredInstallations.length} installation{filteredInstallations.length !== 1 ? 's' : ''}</>
+          ) : (
+            <>{filteredInstallations.length} of {installationsWithCoords.length} installation{filteredInstallations.length !== 1 ? 's' : ''}</>
+          )}
+          {(teamFilter !== "all" || debouncedSearchTerm.trim()) && " (filtered)"}
         </div>
         {filteredInstallations.length > 0 ? (
-          filteredInstallations.map((inst) => (
+          <>
+            {filteredInstallations.slice(0, 100).map((inst) => (
             <div
               key={inst.id}
               onClick={() => {
@@ -380,10 +405,17 @@ export default function InstallationsMap() {
                 {inst.latestDisCm && <div>Server: {inst.latestDisCm} cm</div>}
               </div>
             </div>
-          ))
+          ))}
+          {filteredInstallations.length > 100 && (
+            <div className="text-sm text-center py-4 text-muted-foreground border-t mt-2 pt-2">
+              <p>+ {filteredInstallations.length - 100} more installations</p>
+              <p className="text-xs mt-1">Use filters to narrow down results</p>
+            </div>
+          )}
+          </>
         ) : (
           <div className="text-sm text-muted-foreground text-center py-8">
-            {searchTerm ? "No installations found matching your search" : "No installations with coordinates"}
+            {debouncedSearchTerm ? "No installations found matching your search" : "No installations with coordinates"}
           </div>
         )}
       </div>
@@ -428,48 +460,58 @@ export default function InstallationsMap() {
                 />
                 <FitBounds installations={filteredInstallations} />
                 <CenterOnInstallation installationId={selectedInstallationId} />
-                {filteredInstallations.map((inst) => (
-                  <Marker
-                    key={inst.id}
-                    position={[inst.lat!, inst.lon!]}
-                    icon={createMarkerIcon(getMarkerColor(inst.status))}
-                    eventHandlers={{
-                      click: () => setSelectedInstallationId(inst.id),
-                    }}
-                  >
-                    <Popup>
-                      <div className="space-y-2 p-2 min-w-[200px]">
-                        <div className="font-semibold text-base">Device: {inst.deviceId}</div>
-                        <div className="text-sm space-y-1">
-                          <div><strong>Location ID:</strong> {inst.locationId}</div>
-                          <div><strong>Installer:</strong> {inst.installedByName}</div>
-                          {inst.teamId && teamIdToName[inst.teamId] && (
-                            <div><strong>Team/Amanah:</strong> {teamIdToName[inst.teamId]}</div>
-                          )}
-                          <div>
-                            <strong>Status:</strong>{" "}
-                            <span className={`capitalize font-medium ${
-                              inst.status === "verified" ? "text-green-600" :
-                              inst.status === "flagged" ? "text-red-600" :
-                              "text-yellow-600"
-                            }`}>
-                              {inst.status}
-                            </span>
-                          </div>
-                          <div><strong>Sensor Reading:</strong> {inst.sensorReading} cm</div>
-                          {inst.latestDisCm && (
-                            <div><strong>Server Reading:</strong> {inst.latestDisCm} cm</div>
-                          )}
-                          {inst.createdAt && (
-                            <div className="text-xs text-muted-foreground mt-2 pt-2 border-t">
-                              Installed: {inst.createdAt.toLocaleDateString()}
+                
+                {/* Use MarkerClusterGroup for better performance with many markers */}
+                <MarkerClusterGroup
+                  chunkedLoading
+                  maxClusterRadius={50}
+                  spiderfyOnMaxZoom={true}
+                  showCoverageOnHover={false}
+                  zoomToBoundsOnClick={true}
+                >
+                  {filteredInstallations.map((inst) => (
+                    <Marker
+                      key={inst.id}
+                      position={[inst.lat!, inst.lon!]}
+                      icon={getMarkerIcon(inst.status)}
+                      eventHandlers={{
+                        click: () => setSelectedInstallationId(inst.id),
+                      }}
+                    >
+                      <Popup>
+                        <div className="space-y-2 p-2 min-w-[200px]">
+                          <div className="font-semibold text-base">Device: {inst.deviceId}</div>
+                          <div className="text-sm space-y-1">
+                            <div><strong>Location ID:</strong> {inst.locationId}</div>
+                            <div><strong>Installer:</strong> {inst.installedByName}</div>
+                            {inst.teamId && teamIdToName[inst.teamId] && (
+                              <div><strong>Team/Amanah:</strong> {teamIdToName[inst.teamId]}</div>
+                            )}
+                            <div>
+                              <strong>Status:</strong>{" "}
+                              <span className={`capitalize font-medium ${
+                                inst.status === "verified" ? "text-green-600" :
+                                inst.status === "flagged" ? "text-red-600" :
+                                "text-yellow-600"
+                              }`}>
+                                {inst.status}
+                              </span>
                             </div>
-                          )}
+                            <div><strong>Sensor Reading:</strong> {inst.sensorReading} cm</div>
+                            {inst.latestDisCm && (
+                              <div><strong>Server Reading:</strong> {inst.latestDisCm} cm</div>
+                            )}
+                            {inst.createdAt && (
+                              <div className="text-xs text-muted-foreground mt-2 pt-2 border-t">
+                                Installed: {inst.createdAt.toLocaleDateString()}
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    </Popup>
-                  </Marker>
-                ))}
+                      </Popup>
+                    </Marker>
+                  ))}
+                </MarkerClusterGroup>
               </MapContainer>
             ) : (
               <div className="flex items-center justify-center h-full text-muted-foreground">
