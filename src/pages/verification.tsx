@@ -86,6 +86,10 @@ export default function Verification() {
   const [exportDate, setExportDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
   const [autoServerFetchEnabled, setAutoServerFetchEnabled] = useState(false);
   
+  // Refresh options
+  const [refreshOption, setRefreshOption] = useState<'all' | 'days'>('days');
+  const [refreshDays, setRefreshDays] = useState<number>(5);
+  
   // Edit mode states
   const [isEditMode, setIsEditMode] = useState(false);
   const [editedDeviceId, setEditedDeviceId] = useState<string>("");
@@ -1462,8 +1466,12 @@ export default function Verification() {
       const translatedAmanah = translateTeamNameToArabic(teamName);
       const amanah = translatedAmanah ?? teamName ?? "-";
 
+      // Get actual installer name
+      const installer = installation.installedByName || "-";
+
       return [
         installation.deviceId,
+        installer,
         amanah,
         rawLocationId || "-",
         coordinates,
@@ -1471,7 +1479,12 @@ export default function Verification() {
       ];
     });
 
-    downloadCsv(csvRows, "verification-installations.csv", ["Device ID", "Amanah", "Location ID", "Coordinates", "Sensor Reading"]);
+    // Generate filename with filter and date
+    const filterName = activeFilter === 'all' ? 'all' : activeFilter === 'verified' ? 'verified' : activeFilter;
+    const currentDate = format(new Date(), "yyyy-MM-dd");
+    const filename = `verification-installations_${filterName}_${currentDate}.csv`;
+
+    downloadCsv(csvRows, filename, ["Device ID", "Installer", "Amanah", "Location ID", "Coordinates", "Sensor Reading"]);
 
     toast({
       title: "CSV downloaded",
@@ -1584,7 +1597,7 @@ export default function Verification() {
       ];
     });
 
-    downloadCsv(rows, `installations-${targetDate}.csv`, [
+    downloadCsv(rows, `verification-installations_daily_${targetDate}.csv`, [
       "Device ID",
       "Installer",
       "Amanah (Arabic / English)",
@@ -1719,24 +1732,79 @@ export default function Verification() {
     
     setRefreshingAll(true);
     
-    // Refresh all installations (no date threshold)
+    // Filter installations based on user selection
     const installationsToRefresh = allInstallations.filter((installation) => {
-      // Only include installations with a deviceId
-      return !!installation.deviceId;
+      // Always need a deviceId
+      if (!installation.deviceId) return false;
+      
+      // If "all" option selected, refresh everything
+      if (refreshOption === 'all') {
+        return true;
+      }
+      
+      // Otherwise, filter by days
+      const cutoff = new Date();
+      cutoff.setHours(0, 0, 0, 0);
+      cutoff.setDate(cutoff.getDate() - refreshDays);
+      
+      // If no server data, include it
+      if (!installation.latestDisCm && !installation.latestDisTimestamp && !installation.serverRefreshedAt) {
+        return true;
+      }
+      
+      // If we have serverRefreshedAt, check if it's older than cutoff
+      if (installation.serverRefreshedAt) {
+        const refreshedDate = new Date(installation.serverRefreshedAt);
+        refreshedDate.setHours(0, 0, 0, 0);
+        // Only refresh if older than cutoff
+        if (refreshedDate.getTime() < cutoff.getTime()) {
+          return true;
+        }
+      }
+      
+      // If we have latestDisTimestamp, check if it's older than cutoff
+      if (installation.latestDisTimestamp) {
+        try {
+          const timestampDate = new Date(installation.latestDisTimestamp);
+          timestampDate.setHours(0, 0, 0, 0);
+          // Only refresh if older than cutoff
+          if (timestampDate.getTime() < cutoff.getTime()) {
+            return true;
+          }
+        } catch {
+          // If we can't parse the timestamp, refresh it
+          return true;
+        }
+      }
+      
+      // If we have latestDisCm but no timestamp, refresh it to get the timestamp
+      if (installation.latestDisCm && !installation.latestDisTimestamp) {
+        return true;
+      }
+      
+      // Default: don't refresh if we have data but can't determine date
+      return false;
     });
     
     if (installationsToRefresh.length === 0) {
+      const message = refreshOption === 'all' 
+        ? "No installations with device IDs found."
+        : `All installations already have server data within ${refreshDays} days.`;
       toast({
         title: "No Installations to Refresh",
-        description: "No installations with device IDs found.",
+        description: message,
       });
       setRefreshingAll(false);
       return;
     }
     
+    const refreshDesc = refreshOption === 'all'
+      ? `Refreshing all ${installationsToRefresh.length} installation(s)...`
+      : `Refreshing ${installationsToRefresh.length} installation(s) (missing or older than ${refreshDays} days)...`;
+    
     toast({
       title: "Refreshing Server Data",
-      description: `Fetching data for ${installationsToRefresh.length} installation(s) in batches of 500...`,
+      description: refreshDesc,
     });
 
     // Open dialog and set pending statuses
@@ -1752,74 +1820,61 @@ export default function Verification() {
     let errorCount = 0;
     let skippedCount = 0;
 
-    // PHASE 1: Fetch API data in batches of 500 (parallel requests, no Firebase writes yet)
-    const BATCH_SIZE = 500;
+    // PHASE 1: Fetch ALL API data in parallel (store in memory/cache, no Firebase writes yet)
+    toast({
+      title: "Fetching All Data",
+      description: `Making ${installationsToRefresh.length} parallel API requests...`,
+    });
+
     const fetchResults: Array<{
       installation: Installation;
       data?: any;
       error?: boolean;
       skipped?: boolean;
-    }> = [];
+    }> = await Promise.all(
+      installationsToRefresh.map(async (installation) => {
+        if (!installation.deviceId) {
+          return { installation, skipped: true };
+        }
 
-    console.log(`🚀 Fetching data for ${installationsToRefresh.length} installations in batches of ${BATCH_SIZE}...`);
-    
-    for (let i = 0; i < installationsToRefresh.length; i += BATCH_SIZE) {
-      const batch = installationsToRefresh.slice(i, i + BATCH_SIZE);
-      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-      const totalBatches = Math.ceil(installationsToRefresh.length / BATCH_SIZE);
-      
-      console.log(`📡 Fetching batch ${batchNum}/${totalBatches} (${batch.length} requests)...`);
-      
-      toast({
-        title: "Fetching Data",
-        description: `Batch ${batchNum}/${totalBatches}: ${batch.length} requests...`,
-      });
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 15000);
+          
+          const apiResponse = await fetch(
+            `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`,
+            {
+              method: 'GET',
+              headers: {
+                'X-API-KEY': import.meta.env.VITE_API_KEY || ''
+              },
+              signal: controller.signal
+            }
+          );
+          
+          clearTimeout(timeoutId);
 
-      const batchResults = await Promise.all(
-        batch.map(async (installation) => {
-          if (!installation.deviceId) {
+          if (apiResponse.status === 404) {
             return { installation, skipped: true };
           }
 
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000);
-            
-            const apiResponse = await fetch(
-              `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`,
-              {
-                method: 'GET',
-                headers: {
-                  'X-API-KEY': import.meta.env.VITE_API_KEY || ''
-                },
-                signal: controller.signal
-              }
-            );
-            
-            clearTimeout(timeoutId);
-
-            if (apiResponse.status === 404) {
-              return { installation, skipped: true };
-            }
-
-            if (!apiResponse.ok) {
-              return { installation, error: true };
-            }
-
-            const apiData = await apiResponse.json();
-            return { installation, data: apiData };
-          } catch (error) {
-            console.error(`Failed to fetch ${installation.deviceId}:`, error);
+          if (!apiResponse.ok) {
             return { installation, error: true };
           }
-        })
-      );
 
-      fetchResults.push(...batchResults);
-      console.log(`✅ Batch ${batchNum}/${totalBatches} complete (${batchResults.length} results)`);
-    }
+          const apiData = await apiResponse.json();
+          return { installation, data: apiData };
+        } catch (error) {
+          console.error(`Failed to fetch ${installation.deviceId}:`, error);
+          return { installation, error: true };
+        }
+      })
+    );
 
-    console.log(`✅ Fetched all ${fetchResults.length} results, now processing in memory...`);
+    toast({
+      title: "Processing Data",
+      description: `Fetched ${fetchResults.length} results, preparing database updates...`,
+    });
 
     // PHASE 2: Process results and prepare batch writes (in memory)
     const installationUpdates: Array<{ id: string; data: any }> = [];
@@ -1902,8 +1957,6 @@ export default function Verification() {
     }
 
     // PHASE 3: Batch write to Firestore (fast!)
-    console.log(`💾 Writing ${installationUpdates.length + deviceUpdates.length} updates to Firebase...`);
-    
     toast({
       title: "Saving to Database",
       description: `Writing ${installationUpdates.length + deviceUpdates.length} updates...`,
@@ -1915,15 +1968,10 @@ export default function Verification() {
         ...deviceUpdates.map(u => ({ collection: 'devices', ...u }))
       ];
 
-      const totalBatches = Math.ceil(allUpdates.length / 500);
-      
       // Process in batches of 500 (Firestore limit)
       for (let i = 0; i < allUpdates.length; i += 500) {
         const batch = writeBatch(db);
         const batchUpdates = allUpdates.slice(i, i + 500);
-        const batchNum = Math.floor(i / 500) + 1;
-
-        console.log(`📝 Writing batch ${batchNum}/${totalBatches} (${batchUpdates.length} updates)...`);
 
         for (const update of batchUpdates) {
           const docRef = doc(db, update.collection, update.id);
@@ -1932,8 +1980,6 @@ export default function Verification() {
 
         await batch.commit();
       }
-
-      console.log(`✅ All batches written successfully!`);
 
       toast({
         title: "Refresh Complete! 🚀",
@@ -2082,7 +2128,9 @@ export default function Verification() {
               Refresh Queue
             </DialogTitle>
             <p className="text-sm text-muted-foreground">
-              Refreshing all installations with device IDs.
+              {refreshOption === 'all' 
+                ? 'Showing all installations being refreshed.'
+                : `Showing installations being refreshed (missing data or older than ${refreshDays} days).`}
             </p>
           </DialogHeader>
           <div className="max-h-[420px] overflow-y-auto space-y-3">
@@ -2422,7 +2470,37 @@ export default function Verification() {
                   ? `Escalated Installations (${displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}${displayedItems.length})`
                   : `Pending Installations (${displayedItems.length > displayLimit ? `${paginatedDisplayedItems.length} of ` : ''}${displayedItems.length})`}
               </CardTitle>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Refresh Options */}
+                <div className="flex items-center gap-2 border rounded-md px-3 py-1.5">
+                  <Label className="text-sm whitespace-nowrap">Refresh:</Label>
+                  <Select
+                    value={refreshOption}
+                    onValueChange={(value: 'all' | 'days') => setRefreshOption(value)}
+                  >
+                    <SelectTrigger className="w-[100px] h-8">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="days">By Days</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {refreshOption === 'days' && (
+                    <>
+                      <Input
+                        type="number"
+                        min="1"
+                        max="30"
+                        value={refreshDays}
+                        onChange={(e) => setRefreshDays(Math.max(1, Math.min(30, parseInt(e.target.value) || 1)))}
+                        className="w-[70px] h-8"
+                      />
+                      <span className="text-sm text-muted-foreground">days</span>
+                    </>
+                  )}
+                </div>
+                
                 <Button
                   variant="outline"
                   className="flex items-center gap-2"
@@ -2437,7 +2515,7 @@ export default function Verification() {
                   ) : (
                     <>
                       <RefreshCw className="h-4 w-4" />
-                      Refresh All Server Data
+                      Refresh Server Data
                     </>
                   )}
                 </Button>
