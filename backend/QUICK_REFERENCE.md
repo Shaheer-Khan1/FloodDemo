@@ -19,6 +19,9 @@ Server runs at: `http://localhost:3001`
 | `GET /health` | Health check | `curl http://localhost:3001/health` |
 | `GET /api/installations` | Get all installations | `curl http://localhost:3001/api/installations` |
 | `GET /api/installations/device/:deviceId` | Get installations by device | `curl http://localhost:3001/api/installations/device/device123` |
+| `GET /api/installations/amanah/:teamName` | Get installations by team/amanah | `curl http://localhost:3001/api/installations/amanah/Damascus` |
+| `GET /api/installations/date/:date` | Get installations by date | `curl http://localhost:3001/api/installations/date/2025-12-28` |
+| `GET /api/devices/installed` | Get list of installed devices | `curl http://localhost:3001/api/devices/installed` |
 | `GET /api/installations/:id` | Get single installation | `curl http://localhost:3001/api/installations/abc123` |
 | `GET /api/installations/stats/summary` | Get statistics | `curl http://localhost:3001/api/installations/stats/summary` |
 | `GET /api/installations/export/json` | Export all data | `curl http://localhost:3001/api/installations/export/json -o data.json` |

@@ -268,6 +268,201 @@ app.get('/api/installations/:id', async (req, res) => {
   }
 });
 
+// Get list of all installed devices (devices that have installations)
+app.get('/api/devices/installed', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ 
+        error: 'Service unavailable', 
+        message: 'Firebase is not initialized' 
+      });
+    }
+
+    const snapshot = await db.collection('installations').get();
+    
+    // Extract unique device IDs
+    const deviceMap = new Map();
+    snapshot.docs.forEach(doc => {
+      const data = doc.data();
+      if (data.deviceId && !deviceMap.has(data.deviceId)) {
+        deviceMap.set(data.deviceId, {
+          deviceId: data.deviceId,
+          firstInstallation: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
+          status: data.status,
+          locationId: data.locationId,
+          teamId: data.teamId
+        });
+      }
+    });
+
+    const installedDevices = Array.from(deviceMap.values());
+
+    res.json({
+      success: true,
+      data: installedDevices,
+      metadata: {
+        total: installedDevices.length,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching installed devices:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      message: error.message 
+    });
+  }
+});
+
+// Get installations by team/amanah name
+app.get('/api/installations/amanah/:teamName', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ 
+        error: 'Service unavailable', 
+        message: 'Firebase is not initialized' 
+      });
+    }
+
+    const { teamName } = req.params;
+    
+    // First, get all teams to find the matching team ID
+    const teamsSnapshot = await db.collection('teams').get();
+    let matchingTeamId = null;
+    let matchingTeamFullName = null;
+    
+    teamsSnapshot.docs.forEach(doc => {
+      const teamData = doc.data();
+      // Case-insensitive search
+      if (teamData.name && teamData.name.toLowerCase().includes(teamName.toLowerCase())) {
+        matchingTeamId = doc.id;
+        matchingTeamFullName = teamData.name;
+      }
+    });
+
+    if (!matchingTeamId) {
+      return res.status(404).json({
+        error: 'Not found',
+        message: `No team/amanah found matching: ${teamName}`
+      });
+    }
+
+    // Now get installations for this team
+    const snapshot = await db.collection('installations')
+      .where('teamId', '==', matchingTeamId)
+      .get();
+    
+    const installations = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
+        verifiedAt: data.verifiedAt?.toDate?.()?.toISOString() || data.verifiedAt,
+        systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate?.()?.toISOString() || data.systemPreVerifiedAt,
+        escalatedAt: data.escalatedAt?.toDate?.()?.toISOString() || data.escalatedAt
+      };
+    });
+
+    res.json({
+      success: true,
+      data: installations,
+      metadata: {
+        teamId: matchingTeamId,
+        teamName: matchingTeamFullName,
+        searchTerm: teamName,
+        total: installations.length,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching installations by amanah:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      message: error.message 
+    });
+  }
+});
+
+// Get installations by creation date
+app.get('/api/installations/date/:date', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ 
+        error: 'Service unavailable', 
+        message: 'Firebase is not initialized' 
+      });
+    }
+
+    const { date } = req.params;
+    
+    // Parse the date (expects YYYY-MM-DD format)
+    let targetDate;
+    try {
+      targetDate = new Date(date);
+      if (isNaN(targetDate.getTime())) {
+        throw new Error('Invalid date');
+      }
+    } catch (err) {
+      return res.status(400).json({
+        error: 'Bad request',
+        message: 'Invalid date format. Please use YYYY-MM-DD format (e.g., 2025-12-28)'
+      });
+    }
+
+    // Get start and end of the day
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    // Get all installations
+    const snapshot = await db.collection('installations').get();
+    
+    const installations = snapshot.docs
+      .map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
+          updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
+          verifiedAt: data.verifiedAt?.toDate?.()?.toISOString() || data.verifiedAt,
+          systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate?.()?.toISOString() || data.systemPreVerifiedAt,
+          escalatedAt: data.escalatedAt?.toDate?.()?.toISOString() || data.escalatedAt
+        };
+      })
+      .filter(inst => {
+        if (!inst.createdAt) return false;
+        const createdDate = new Date(inst.createdAt);
+        return createdDate >= startOfDay && createdDate <= endOfDay;
+      });
+
+    res.json({
+      success: true,
+      data: installations,
+      metadata: {
+        date: date,
+        startOfDay: startOfDay.toISOString(),
+        endOfDay: endOfDay.toISOString(),
+        total: installations.length,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching installations by date:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      message: error.message 
+    });
+  }
+});
+
 // Get installation statistics
 app.get('/api/installations/stats/summary', async (req, res) => {
   try {
@@ -380,10 +575,15 @@ app.use((err, req, res, next) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 FloodWatch Backend API running on http://localhost:${PORT}`);
-  console.log(`📊 Health check: http://localhost:${PORT}/health`);
-  console.log(`📦 Installations API: http://localhost:${PORT}/api/installations`);
-  console.log(`🔍 By Device: http://localhost:${PORT}/api/installations/device/:deviceId`);
-  console.log(`📈 Stats API: http://localhost:${PORT}/api/installations/stats/summary`);
-  console.log(`💾 Export API: http://localhost:${PORT}/api/installations/export/json`);
+  console.log(`\n📍 Main Endpoints:`);
+  console.log(`   📊 Health: http://localhost:${PORT}/health`);
+  console.log(`   📦 All Installations: http://localhost:${PORT}/api/installations`);
+  console.log(`   🔍 By Device: http://localhost:${PORT}/api/installations/device/:deviceId`);
+  console.log(`   🏢 By Amanah: http://localhost:${PORT}/api/installations/amanah/:teamName`);
+  console.log(`   📅 By Date: http://localhost:${PORT}/api/installations/date/:date`);
+  console.log(`\n📊 Additional Endpoints:`);
+  console.log(`   🖥️  Installed Devices: http://localhost:${PORT}/api/devices/installed`);
+  console.log(`   📈 Statistics: http://localhost:${PORT}/api/installations/stats/summary`);
+  console.log(`   💾 Export: http://localhost:${PORT}/api/installations/export/json`);
 });
 

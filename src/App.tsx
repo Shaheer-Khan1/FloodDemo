@@ -29,10 +29,14 @@ import MinistryDevices from "@/pages/ministry-devices";
 import MinistryStats from "@/pages/ministry-stats";
 import InstallationsMap from "@/pages/installations-map";
 import ReviewAudit from "@/pages/review-audit";
+import ApiInstallations from "@/pages/api-installations";
 
 function Router() {
   return (
     <Switch>
+      {/* API Endpoint - No Layout */}
+      <Route path="/api/installations" component={ApiInstallations} />
+      
       <Route path="/login" component={Login} />
       <Route path="/profile-setup" component={ProfileSetup} />
       <Route path="/role-selection" component={RoleSelection} />

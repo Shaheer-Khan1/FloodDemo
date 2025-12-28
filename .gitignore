@@ -10,5 +10,10 @@ vite.config.ts.*
 .env.local
 .env.*.local
 
+# Backend
+backend/.env
+backend/service-account-key.json
+backend/node_modules
+
 # Local state
 .local/
