@@ -30,6 +30,7 @@ import MinistryStats from "@/pages/ministry-stats";
 import InstallationsMap from "@/pages/installations-map";
 import ReviewAudit from "@/pages/review-audit";
 import ApiInstallations from "@/pages/api-installations";
+import BoxStatus from "@/pages/box-status";
 
 function Router() {
   return (
@@ -173,6 +174,14 @@ function Router() {
         <ProtectedRoute>
           <AppLayout>
             <ReviewAudit />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/box-status">
+        <ProtectedRoute>
+          <AppLayout>
+            <BoxStatus />
           </AppLayout>
         </ProtectedRoute>
       </Route>
