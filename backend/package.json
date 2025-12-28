@@ -1,0 +1,29 @@
+{
+  "name": "floodwatch-backend",
+  "version": "1.0.0",
+  "description": "Backend API for FloodWatch Console",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "start:client": "node server-client.js",
+    "dev": "node --watch server.js",
+    "dev:client": "node --watch server-client.js",
+    "test": "node test-api.js",
+    "setup": "node setup-from-frontend.js"
+  },
+  "keywords": [
+    "api",
+    "firebase",
+    "installations"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "firebase": "^12.7.0",
+    "firebase-admin": "^12.0.0"
+  }
+}

@@ -1,0 +1,389 @@
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import admin from 'firebase-admin';
+
+// Load environment variables
+dotenv.config();
+
+// Initialize Express app
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+// Initialize Firebase Admin
+let firebaseInitialized = false;
+try {
+  // Try to parse service account from env variable
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+    firebaseInitialized = true;
+    console.log('✅ Firebase Admin initialized with service account');
+  } else if (process.env.FIREBASE_PROJECT_ID) {
+    // Alternative: use individual env variables
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n')
+      })
+    });
+    firebaseInitialized = true;
+    console.log('✅ Firebase Admin initialized with individual credentials');
+  } else {
+    console.warn('⚠️  Firebase credentials not found in environment variables');
+  }
+} catch (error) {
+  console.error('❌ Failed to initialize Firebase Admin:', error.message);
+}
+
+const db = firebaseInitialized ? admin.firestore() : null;
+
+// CORS configuration
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',') 
+  : ['http://localhost:5173'];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  }
+}));
+
+app.use(express.json());
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    firebaseInitialized 
+  });
+});
+
+// Get all installations
+app.get('/api/installations', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ 
+        error: 'Service unavailable', 
+        message: 'Firebase is not initialized' 
+      });
+    }
+
+    // Query parameters for filtering
+    const { 
+      teamId, 
+      status, 
+      limit, 
+      offset,
+      startDate,
+      endDate,
+      deviceId,
+      locationId
+    } = req.query;
+
+    let query = db.collection('installations');
+
+    // Apply filters
+    if (teamId) {
+      query = query.where('teamId', '==', teamId);
+    }
+    if (status) {
+      query = query.where('status', '==', status);
+    }
+    if (deviceId) {
+      query = query.where('deviceId', '==', deviceId);
+    }
+    if (locationId) {
+      query = query.where('locationId', '==', locationId);
+    }
+
+    // Get the data
+    const snapshot = await query.get();
+    
+    let installations = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        // Convert Firestore timestamps to ISO strings
+        createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
+        verifiedAt: data.verifiedAt?.toDate?.()?.toISOString() || data.verifiedAt,
+        systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate?.()?.toISOString() || data.systemPreVerifiedAt,
+        escalatedAt: data.escalatedAt?.toDate?.()?.toISOString() || data.escalatedAt
+      };
+    });
+
+    // Apply date range filter (after fetching, since Firestore needs exact field for where clauses)
+    if (startDate) {
+      const start = new Date(startDate);
+      installations = installations.filter(inst => 
+        inst.createdAt && new Date(inst.createdAt) >= start
+      );
+    }
+    if (endDate) {
+      const end = new Date(endDate);
+      installations = installations.filter(inst => 
+        inst.createdAt && new Date(inst.createdAt) <= end
+      );
+    }
+
+    // Apply pagination
+    const totalCount = installations.length;
+    const startIndex = offset ? parseInt(offset) : 0;
+    const endIndex = limit ? startIndex + parseInt(limit) : installations.length;
+    
+    const paginatedInstallations = installations.slice(startIndex, endIndex);
+
+    res.json({
+      success: true,
+      data: paginatedInstallations,
+      metadata: {
+        total: totalCount,
+        returned: paginatedInstallations.length,
+        offset: startIndex,
+        limit: limit ? parseInt(limit) : null,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching installations:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      message: error.message 
+    });
+  }
+});
+
+// Get installations by device ID
+app.get('/api/installations/device/:deviceId', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ 
+        error: 'Service unavailable', 
+        message: 'Firebase is not initialized' 
+      });
+    }
+
+    const { deviceId } = req.params;
+    
+    // Query installations by deviceId
+    const snapshot = await db.collection('installations')
+      .where('deviceId', '==', deviceId)
+      .get();
+    
+    if (snapshot.empty) {
+      return res.json({
+        success: true,
+        data: [],
+        message: `No installations found for device ${deviceId}`
+      });
+    }
+
+    const installations = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
+        verifiedAt: data.verifiedAt?.toDate?.()?.toISOString() || data.verifiedAt,
+        systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate?.()?.toISOString() || data.systemPreVerifiedAt,
+        escalatedAt: data.escalatedAt?.toDate?.()?.toISOString() || data.escalatedAt
+      };
+    });
+
+    res.json({
+      success: true,
+      data: installations,
+      metadata: {
+        deviceId: deviceId,
+        total: installations.length,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching installations by device:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      message: error.message 
+    });
+  }
+});
+
+// Get single installation by ID
+app.get('/api/installations/:id', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ 
+        error: 'Service unavailable', 
+        message: 'Firebase is not initialized' 
+      });
+    }
+
+    const { id } = req.params;
+    const doc = await db.collection('installations').doc(id).get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ 
+        error: 'Not found', 
+        message: `Installation with ID ${id} not found` 
+      });
+    }
+
+    const data = doc.data();
+    const installation = {
+      id: doc.id,
+      ...data,
+      createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
+      updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
+      verifiedAt: data.verifiedAt?.toDate?.()?.toISOString() || data.verifiedAt,
+      systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate?.()?.toISOString() || data.systemPreVerifiedAt,
+      escalatedAt: data.escalatedAt?.toDate?.()?.toISOString() || data.escalatedAt
+    };
+
+    res.json({
+      success: true,
+      data: installation
+    });
+
+  } catch (error) {
+    console.error('Error fetching installation:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      message: error.message 
+    });
+  }
+});
+
+// Get installation statistics
+app.get('/api/installations/stats/summary', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ 
+        error: 'Service unavailable', 
+        message: 'Firebase is not initialized' 
+      });
+    }
+
+    const snapshot = await db.collection('installations').get();
+    const installations = snapshot.docs.map(doc => doc.data());
+
+    const stats = {
+      total: installations.length,
+      byStatus: {
+        pending: installations.filter(i => i.status === 'pending').length,
+        verified: installations.filter(i => i.status === 'verified').length,
+        flagged: installations.filter(i => i.status === 'flagged').length
+      },
+      systemPreVerified: installations.filter(i => i.systemPreVerified).length,
+      withImages: installations.filter(i => i.imageUrls?.length > 0).length,
+      withVideo: installations.filter(i => i.videoUrl).length,
+      timestamp: new Date().toISOString()
+    };
+
+    // Group by team if teamId exists
+    const teamStats = {};
+    installations.forEach(inst => {
+      if (inst.teamId) {
+        teamStats[inst.teamId] = (teamStats[inst.teamId] || 0) + 1;
+      }
+    });
+    stats.byTeam = teamStats;
+
+    res.json({
+      success: true,
+      data: stats
+    });
+
+  } catch (error) {
+    console.error('Error fetching stats:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      message: error.message 
+    });
+  }
+});
+
+// Export installations as JSON (full data dump)
+app.get('/api/installations/export/json', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ 
+        error: 'Service unavailable', 
+        message: 'Firebase is not initialized' 
+      });
+    }
+
+    const snapshot = await db.collection('installations').get();
+    const installations = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
+        verifiedAt: data.verifiedAt?.toDate?.()?.toISOString() || data.verifiedAt,
+        systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate?.()?.toISOString() || data.systemPreVerifiedAt,
+        escalatedAt: data.escalatedAt?.toDate?.()?.toISOString() || data.escalatedAt
+      };
+    });
+
+    // Set headers for file download
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename=installations_${Date.now()}.json`);
+    
+    res.json({
+      exportedAt: new Date().toISOString(),
+      totalRecords: installations.length,
+      data: installations
+    });
+
+  } catch (error) {
+    console.error('Error exporting installations:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      message: error.message 
+    });
+  }
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ 
+    error: 'Not found', 
+    message: 'The requested endpoint does not exist' 
+  });
+});
+
+// Error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ 
+    error: 'Internal server error', 
+    message: err.message 
+  });
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`🚀 FloodWatch Backend API running on http://localhost:${PORT}`);
+  console.log(`📊 Health check: http://localhost:${PORT}/health`);
+  console.log(`📦 Installations API: http://localhost:${PORT}/api/installations`);
+  console.log(`🔍 By Device: http://localhost:${PORT}/api/installations/device/:deviceId`);
+  console.log(`📈 Stats API: http://localhost:${PORT}/api/installations/stats/summary`);
+  console.log(`💾 Export API: http://localhost:${PORT}/api/installations/export/json`);
+});
+
