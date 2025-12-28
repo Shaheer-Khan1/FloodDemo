@@ -13,6 +13,8 @@ import { useLocation } from "wouter";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { translateTeamNameToArabic } from "@/lib/amanah-translations";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 
 interface BoxAssignment {
   key: string;
@@ -35,6 +37,7 @@ export default function BoxImport() {
 
   const [teams, setTeams] = useState<Team[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
+  const [installations, setInstallations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -52,6 +55,30 @@ export default function BoxImport() {
   const [transferToTeamId, setTransferToTeamId] = useState<string>("");
   const [transferCount, setTransferCount] = useState<number | "">("");
   const [transferring, setTransferring] = useState(false);
+  
+  // Track devices in selected transfer box
+  const transferBoxDevices = useMemo(() => {
+    if (!transferBoxNumber) return { all: [], transferable: [], withInstallation: [] };
+    
+    const allDevices = devices.filter(
+      (d) => d.boxNumber === transferBoxNumber && d.teamId
+    );
+    
+    // Create a set of deviceIds that have installations
+    const deviceIdsWithInstallations = new Set(
+      installations.map((inst: any) => inst.deviceId)
+    );
+    
+    const transferable = allDevices.filter(
+      (d) => !deviceIdsWithInstallations.has(d.id)
+    );
+    
+    const withInstallation = allDevices.filter(
+      (d) => deviceIdsWithInstallations.has(d.id)
+    );
+    
+    return { all: allDevices, transferable, withInstallation };
+  }, [devices, installations, transferBoxNumber]);
 
   // Only managers (and admins, if you want) can assign boxes
   const isManager =
@@ -80,9 +107,18 @@ export default function BoxImport() {
       setLoading(false);
     });
 
+    const installationsUnsub = onSnapshot(collection(db, "installations"), (snapshot) => {
+      const loadedInstallations = snapshot.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as any),
+      }));
+      setInstallations(loadedInstallations);
+    });
+
     return () => {
       teamsUnsub();
       devicesUnsub();
+      installationsUnsub();
     };
   }, [userProfile, isManager]);
 
@@ -350,16 +386,14 @@ export default function BoxImport() {
       return;
     }
 
-    // Find devices in the selected box
-    const boxDevices = devices.filter(
-      (d) => d.boxNumber === transferBoxNumber && d.teamId
-    );
+    // Only transfer devices that do NOT have an installation submission
+    const transferableDevices = transferBoxDevices.transferable;
 
-    if (boxDevices.length === 0) {
+    if (transferableDevices.length === 0) {
       toast({
         variant: "destructive",
-        title: "No devices found",
-        description: "This box has no devices to transfer.",
+        title: "No transferable devices",
+        description: "All devices in this box have installation submissions and cannot be transferred.",
       });
       return;
     }
@@ -367,18 +401,21 @@ export default function BoxImport() {
     // Determine which devices to transfer
     let devicesToTransfer: Device[];
     if (typeof transferCount === "number" && transferCount > 0) {
-      devicesToTransfer = boxDevices.slice(0, Math.min(transferCount, boxDevices.length));
+      devicesToTransfer = transferableDevices.slice(0, Math.min(transferCount, transferableDevices.length));
     } else {
-      devicesToTransfer = boxDevices; // Transfer all
+      devicesToTransfer = transferableDevices; // Transfer all transferable devices
     }
 
-    const fromTeamId = boxDevices[0].teamId;
+    const fromTeamId = transferableDevices[0].teamId;
     const fromTeamName = teams.find((t) => t.id === fromTeamId)?.name || fromTeamId;
     const toTeamName = teams.find((t) => t.id === transferToTeamId)?.name || transferToTeamId;
 
-    const confirmed = window.confirm(
-      `Transfer ${devicesToTransfer.length} device(s) from box ${transferBoxNumber} from ${fromTeamName} to ${toTeamName}?`
-    );
+    const withInstallationCount = transferBoxDevices.withInstallation.length;
+    const confirmMessage = withInstallationCount > 0
+      ? `Transfer ${devicesToTransfer.length} device(s) from box ${transferBoxNumber} from ${fromTeamName} to ${toTeamName}?\n\nNote: ${withInstallationCount} device(s) with installation submissions will remain with ${fromTeamName}.`
+      : `Transfer ${devicesToTransfer.length} device(s) from box ${transferBoxNumber} from ${fromTeamName} to ${toTeamName}?`;
+
+    const confirmed = window.confirm(confirmMessage);
     if (!confirmed) return;
 
     setTransferring(true);
@@ -396,7 +433,7 @@ export default function BoxImport() {
 
       toast({
         title: "Box transferred successfully",
-        description: `${devicesToTransfer.length} device(s) transferred from ${fromTeamName} to ${toTeamName}.`,
+        description: `${devicesToTransfer.length} device(s) transferred from ${fromTeamName} to ${toTeamName}.${withInstallationCount > 0 ? ` ${withInstallationCount} device(s) with installations remained.` : ''}`,
       });
 
       // Reset transfer form
@@ -846,22 +883,90 @@ export default function BoxImport() {
                 id="transfer-count"
                 type="number"
                 min="1"
-                placeholder="All devices"
+                placeholder="All transferable"
                 value={transferCount}
                 onChange={(e) =>
                   setTransferCount(e.target.value ? parseInt(e.target.value, 10) : "")
                 }
               />
               <p className="text-xs text-muted-foreground">
-                Leave empty to transfer all devices in the box
+                Leave empty to transfer all transferable devices
               </p>
             </div>
           </div>
 
-          <div className="flex justify-end">
+          {/* Device Status Table */}
+          {transferBoxNumber && transferBoxDevices.all.length > 0 && (
+            <div className="mt-6">
+              <h3 className="text-sm font-semibold mb-3">Devices in Box {transferBoxNumber}</h3>
+              <div className="border rounded-lg overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Device ID</TableHead>
+                      <TableHead>IMEI</TableHead>
+                      <TableHead>Installation</TableHead>
+                      <TableHead>Transferable</TableHead>
+                      <TableHead>Installer</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {transferBoxDevices.all.map((device) => {
+                      const hasInstallation = installations.some((inst: any) => inst.deviceId === device.id);
+                      const isTransferable = !hasInstallation;
+                      return (
+                        <TableRow key={device.id}>
+                          <TableCell className="font-mono text-xs">{device.id}</TableCell>
+                          <TableCell className="font-mono text-xs">{device.deviceImei}</TableCell>
+                          <TableCell>
+                            {hasInstallation ? (
+                              <Badge variant="default">
+                                Has Installation
+                              </Badge>
+                            ) : (
+                              <Badge variant="secondary">
+                                No Installation
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {isTransferable ? (
+                              <Badge variant="outline" className="bg-green-50 text-green-700 border-green-300">
+                                Yes
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline" className="bg-red-50 text-red-700 border-red-300">
+                                No
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-xs">
+                            {device.assignedInstallerName || "-"}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+              <div className="mt-3 flex gap-4 text-sm">
+                <span className="text-muted-foreground">
+                  Total: <span className="font-semibold text-foreground">{transferBoxDevices.all.length}</span>
+                </span>
+                <span className="text-green-700">
+                  Transferable: <span className="font-semibold">{transferBoxDevices.transferable.length}</span>
+                </span>
+                <span className="text-red-700">
+                  With Installation: <span className="font-semibold">{transferBoxDevices.withInstallation.length}</span>
+                </span>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end mt-4">
             <Button
               onClick={handleTransferBox}
-              disabled={transferring || !transferBoxNumber || !transferToTeamId}
+              disabled={transferring || !transferBoxNumber || !transferToTeamId || transferBoxDevices.transferable.length === 0}
             >
               {transferring ? (
                 <>
@@ -869,7 +974,7 @@ export default function BoxImport() {
                   Transferring...
                 </>
               ) : (
-                "Transfer Box"
+                `Transfer Box (${transferBoxDevices.transferable.length} devices)`
               )}
             </Button>
           </div>
@@ -878,8 +983,9 @@ export default function BoxImport() {
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Note</AlertTitle>
             <AlertDescription>
-              Transferring a box will move the specified number of devices (or all devices if not specified) 
-              to the destination Amanah. Installer assignments will be cleared for transferred devices.
+              Only devices without installation submissions can be transferred. Devices that have installation 
+              submissions will remain with the current Amanah. Installer assignments will be cleared for 
+              transferred devices.
             </AlertDescription>
           </Alert>
         </CardContent>
