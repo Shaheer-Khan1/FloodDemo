@@ -474,7 +474,15 @@ export default function MinistryDevices() {
       const groupedByAmanah: Record<string, typeof location9999Installations> = {};
       
       location9999Installations.forEach(row => {
-        const amanahName = row.amanah || "Unknown";
+        const englishAmanahName = row.amanah || "Unknown";
+        const translatedAmanah = translateTeamNameToArabic(
+          englishAmanahName === "Unknown" ? null : englishAmanahName
+        );
+        // Format: ArabicName_EnglishTeamName
+        const amanahName = translatedAmanah 
+          ? `${translatedAmanah}_${englishAmanahName}`
+          : englishAmanahName;
+        
         if (!groupedByAmanah[amanahName]) {
           groupedByAmanah[amanahName] = [];
         }
@@ -510,13 +518,22 @@ export default function MinistryDevices() {
             coordinates = formatCoordinates(latitude, longitude);
           }
           
+          const englishAmanahName = row.amanah || "-";
+          const translatedAmanah = translateTeamNameToArabic(
+            englishAmanahName === "-" ? null : englishAmanahName
+          );
+          // Format: ArabicName_EnglishTeamName
+          const amanahForExport = translatedAmanah 
+            ? `${translatedAmanah}_${englishAmanahName}`
+            : englishAmanahName;
+          
           return [
             (index + 1).toString(),
             locationId || "-",
             coordinates,
             device.id,
             inst.installedByName || "-",
-            row.amanah || "-",
+            amanahForExport,
             location?.municipalityName || "-",
             inst.sensorReading != null ? inst.sensorReading.toString() : "-"
           ];
@@ -623,7 +640,10 @@ export default function MinistryDevices() {
         const translatedAmanah = translateTeamNameToArabic(
           englishAmanahName === "-" ? null : englishAmanahName
         );
-        const amanahForExport = translatedAmanah ?? englishAmanahName;
+        // Format: ArabicName_EnglishTeamName
+        const amanahForExport = translatedAmanah 
+          ? `${translatedAmanah}_${englishAmanahName}`
+          : englishAmanahName;
         
         return [
           (index + 1).toString(),
@@ -764,7 +784,10 @@ export default function MinistryDevices() {
       const translatedAmanah = translateTeamNameToArabic(
         englishAmanahName === "-" ? null : englishAmanahName
       );
-      const amanahForExport = translatedAmanah ?? englishAmanahName;
+      // Format: ArabicName_EnglishTeamName
+      const amanahForExport = translatedAmanah 
+        ? `${translatedAmanah}_${englishAmanahName}`
+        : englishAmanahName;
       const municipalityName = location?.municipalityName || "-";
 
       const csvRow = [
@@ -894,7 +917,10 @@ export default function MinistryDevices() {
         const translatedAmanah = translateTeamNameToArabic(
           englishAmanahName === "-" ? null : englishAmanahName
         );
-        const amanahForExport = translatedAmanah ?? englishAmanahName;
+        // Format: ArabicName_EnglishTeamName
+        const amanahForExport = translatedAmanah 
+          ? `${translatedAmanah}_${englishAmanahName}`
+          : englishAmanahName;
         const municipalityName = location?.municipalityName || "-";
 
         const csvRow = [
@@ -1271,7 +1297,15 @@ export default function MinistryDevices() {
     try {
       // Group rows by Amanah
       const groupedByAmanah = rows.reduce((acc, row) => {
-        const amanah = row.amanah || "Unknown";
+        const englishAmanahName = row.amanah || "Unknown";
+        const translatedAmanah = translateTeamNameToArabic(
+          englishAmanahName === "Unknown" ? null : englishAmanahName
+        );
+        // Format: ArabicName_EnglishTeamName
+        const amanah = translatedAmanah 
+          ? `${translatedAmanah}_${englishAmanahName}`
+          : englishAmanahName;
+        
         if (!acc[amanah]) {
           acc[amanah] = [];
         }
