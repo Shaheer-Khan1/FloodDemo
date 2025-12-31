@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, FileUp, Plus, List, CheckSquare, Box, UserPlus, MapPin, ChevronLeft, ChevronRight, ClipboardList, PackageCheck } from "lucide-react";
+import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, Plus, ChevronLeft, ChevronRight, Settings, Map } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
@@ -42,54 +42,41 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   };
 
   const menuItems = [
-    // Dashboard, Teams - for non-installer, non-manager roles
+    // Dashboard - for non-installer, non-manager roles
     ...(userProfile && userProfile.role !== "installer" && userProfile.role !== "manager"
       ? [
           { title: "Dashboard", icon: LayoutDashboard, url: "/dashboard" },
-          // Hide Teams for ministry role
-          ...(userProfile.role !== "ministry" ? [{ title: "Teams", icon: Users, url: "/teams" }] : [] as any),
         ].flat()
       : []),
-    // Admin menu items
+    // Admin menu items - grouped
     ...(userProfile?.isAdmin ? [
-      { title: "Admin", icon: Shield, url: "/admin" },
-      { title: "Create User", icon: UserPlus, url: "/create-user" },
-      { title: "Devices", icon: Package, url: "/devices" },
-      { title: "Import Devices", icon: FileUp, url: "/device-import" },
-      { title: "Assign Box", icon: Box, url: "/assign-box" },
-      { title: "Open Boxes", icon: Box, url: "/open-boxes" },
-      { title: "Box Status", icon: PackageCheck, url: "/box-status" },
-      { title: "Verification", icon: CheckSquare, url: "/verification" },
-      { title: "Review Audit", icon: ClipboardList, url: "/review-audit" },
-      { title: "Installations Map", icon: MapPin, url: "/installations-map" },
-      { title: "New Installation", icon: Plus, url: "/new-installation" },
-      { title: "My Submissions", icon: List, url: "/my-submissions" },
+      { title: "Administration", icon: Shield, url: "/admin-management" },
+      { title: "Box Management", icon: Package, url: "/box-management" },
+      { title: "Device Management", icon: Package, url: "/device-management" },
+      { title: "Installation Management", icon: Settings, url: "/installation-management" },
     ] : []),
     // Installer-specific menu items
     ...(userProfile?.role === "installer" && !userProfile?.isAdmin ? [
-      { title: "New Installation", icon: Plus, url: "/new-installation" },
-      { title: "My Submissions", icon: List, url: "/my-submissions" },
+      { title: "Installation Management", icon: Settings, url: "/installation-management" },
     ] : []),
     // Verifier-specific menu items
     ...(userProfile?.role === "verifier" && !userProfile?.isAdmin ? [
-      { title: "Create Installer", icon: UserPlus, url: "/create-user" },
-      { title: "Verification", icon: CheckSquare, url: "/verification" },
-      { title: "Open Boxes", icon: Box, url: "/open-boxes" },
-      { title: "Installations Map", icon: MapPin, url: "/installations-map" },
+      { title: "Box Management", icon: Package, url: "/box-management" },
+      { title: "Installation Management", icon: Settings, url: "/installation-management" },
     ] : []),
     // Manager-specific menu items (limited)
     ...(userProfile?.role === "manager" && !userProfile?.isAdmin
       ? [
           { title: "Teams", icon: Users, url: "/teams" },
-          { title: "Assign Box", icon: Box, url: "/assign-box" },
-          { title: "Verification", icon: CheckSquare, url: "/verification" },
+          { title: "Box Management", icon: Package, url: "/box-management" },
+          { title: "Installation Management", icon: Settings, url: "/installation-management" },
         ]
       : []),
     // Ministry-specific menu items
     ...(userProfile?.role === "ministry" && !userProfile?.isAdmin ? [
       { title: "All Devices", icon: Package, url: "/ministry-devices" },
       { title: "Installation Stats", icon: LayoutDashboard, url: "/ministry-stats" },
-      { title: "Installations Map", icon: MapPin, url: "/installations-map" },
+      { title: "Installations Map", icon: Map, url: "/installations-map" },
     ] : []),
   ];
 

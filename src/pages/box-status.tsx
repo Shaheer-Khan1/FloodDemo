@@ -67,11 +67,17 @@ export default function BoxStatus() {
     };
   }, [isAdmin]);
 
-  // Create a map of deviceId -> installation status
+  // Create a map of deviceId -> installation
   const deviceInstallationMap = useMemo(() => {
-    const map = new Map<string, boolean>();
+    const map = new Map<string, Installation>();
     installations.forEach((inst) => {
-      map.set(inst.deviceId, true);
+      // If multiple installations exist for a device, keep the latest one
+      const existing = map.get(inst.deviceId);
+      if (!existing || (inst.createdAt && existing.createdAt && inst.createdAt > existing.createdAt)) {
+        map.set(inst.deviceId, inst);
+      } else if (!existing) {
+        map.set(inst.deviceId, inst);
+      }
     });
     return map;
   }, [installations]);
@@ -111,7 +117,8 @@ export default function BoxStatus() {
       groups[key].devices.push(device);
       
       // Check installation status
-      if (deviceInstallationMap.has(device.id)) {
+      const installation = deviceInstallationMap.get(device.id);
+      if (installation) {
         groups[key].installedCount++;
       } else {
         groups[key].pendingCount++;
@@ -259,7 +266,7 @@ export default function BoxStatus() {
                             <TableRow>
                               <TableHead>Device ID</TableHead>
                               <TableHead>IMEI</TableHead>
-                              <TableHead>Serial ID</TableHead>
+                              <TableHead>Installation Date</TableHead>
                               <TableHead>Box Opened</TableHead>
                               <TableHead>Installer</TableHead>
                               <TableHead>Status</TableHead>
@@ -267,7 +274,7 @@ export default function BoxStatus() {
                           </TableHeader>
                           <TableBody>
                             {box.devices.map((device) => {
-                              const hasInstallation = deviceInstallationMap.has(device.id);
+                              const installation = deviceInstallationMap.get(device.id);
                               return (
                                 <TableRow key={device.id}>
                                   <TableCell className="font-mono text-xs">
@@ -276,8 +283,15 @@ export default function BoxStatus() {
                                   <TableCell className="font-mono text-xs">
                                     {device.deviceImei}
                                   </TableCell>
-                                  <TableCell className="font-mono text-xs">
-                                    {device.deviceSerialId}
+                                  <TableCell className="text-xs">
+                                    {installation?.createdAt 
+                                      ? new Date(installation.createdAt).toLocaleDateString('en-GB', {
+                                          day: '2-digit',
+                                          month: 'short',
+                                          year: 'numeric',
+                                        })
+                                      : '-'
+                                    }
                                   </TableCell>
                                   <TableCell>
                                     {device.boxOpened ? (
@@ -294,7 +308,7 @@ export default function BoxStatus() {
                                     {device.assignedInstallerName || "-"}
                                   </TableCell>
                                   <TableCell>
-                                    {hasInstallation ? (
+                                    {installation ? (
                                       <Badge variant="default" className="bg-green-600">
                                         Installed
                                       </Badge>

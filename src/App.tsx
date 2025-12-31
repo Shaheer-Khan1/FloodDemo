@@ -31,6 +31,11 @@ import InstallationsMap from "@/pages/installations-map";
 import ReviewAudit from "@/pages/review-audit";
 import ApiInstallations from "@/pages/api-installations";
 import BoxStatus from "@/pages/box-status";
+// Management Hub Pages
+import BoxManagement from "@/pages/box-management";
+import DeviceManagement from "@/pages/device-management";
+import InstallationManagement from "@/pages/installation-management";
+import AdminManagement from "@/pages/admin-management";
 
 function Router() {
   return (
@@ -182,6 +187,39 @@ function Router() {
         <ProtectedRoute>
           <AppLayout>
             <BoxStatus />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      {/* Management Hub Pages */}
+      <Route path="/box-management">
+        <ProtectedRoute>
+          <AppLayout>
+            <BoxManagement />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/device-management">
+        <ProtectedRoute>
+          <AppLayout>
+            <DeviceManagement />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/installation-management">
+        <ProtectedRoute>
+          <AppLayout>
+            <InstallationManagement />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/admin-management">
+        <ProtectedRoute>
+          <AppLayout>
+            <AdminManagement />
           </AppLayout>
         </ProtectedRoute>
       </Route>

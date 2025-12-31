@@ -74,6 +74,12 @@ export default function Admin() {
   const [loadingExportMatches, setLoadingExportMatches] = useState(false);
   const [exportingSelectedInstallations, setExportingSelectedInstallations] = useState(false);
 
+  // ICCID Lookup State
+  const [iccidInput, setIccidInput] = useState("");
+  const [iccidLookupResults, setIccidLookupResults] = useState<Array<{ iccid: string; deviceUid: string | null }>>([]);
+  const [lookingUpIccids, setLookingUpIccids] = useState(false);
+  const [devices, setDevices] = useState<any[]>([]);
+
   // Real-time users listener
   useEffect(() => {
     if (!userProfile?.isAdmin) return;
@@ -105,6 +111,27 @@ export default function Admin() {
 
     return () => unsubscribe();
   }, [userProfile, toast]);
+
+  // Real-time devices listener for ICCID lookup
+  useEffect(() => {
+    if (!userProfile?.isAdmin) return;
+    
+    const unsubscribe = onSnapshot(
+      collection(db, "devices"),
+      (snapshot) => {
+        const devicesData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setDevices(devicesData);
+      },
+      (error) => {
+        console.error("Failed to load devices:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [userProfile]);
 
   // Real-time teams listener
   useEffect(() => {
@@ -1233,6 +1260,71 @@ export default function Admin() {
     }
   };
 
+  // Function to lookup device UIDs by ICCIDs
+  const lookupDeviceUidsByIccids = async () => {
+    if (!iccidInput.trim()) {
+      toast({
+        variant: "destructive",
+        title: "ICCIDs Required",
+        description: "Please enter ICCIDs (one per line).",
+      });
+      return;
+    }
+
+    setLookingUpIccids(true);
+    setIccidLookupResults([]);
+
+    try {
+      // Parse ICCIDs from input (one per line)
+      const iccids = iccidInput
+        .split('\n')
+        .map(id => id.trim())
+        .filter(id => id.length > 0);
+
+      if (iccids.length === 0) {
+        toast({
+          variant: "destructive",
+          title: "No Valid ICCIDs",
+          description: "Please enter at least one ICCID.",
+        });
+        setLookingUpIccids(false);
+        return;
+      }
+
+      // Create a map for quick lookup
+      const iccidToDeviceUid = new Map<string, string>();
+      
+      devices.forEach(device => {
+        if (device.iccid) {
+          iccidToDeviceUid.set(device.iccid.trim(), device.id);
+        }
+      });
+
+      // Build results
+      const results = iccids.map(iccid => ({
+        iccid,
+        deviceUid: iccidToDeviceUid.get(iccid) || null
+      }));
+
+      setIccidLookupResults(results);
+
+      const foundCount = results.filter(r => r.deviceUid !== null).length;
+      toast({
+        title: "Lookup Complete",
+        description: `Found ${foundCount} device UID(s) out of ${iccids.length} ICCID(s).`,
+      });
+    } catch (error: any) {
+      console.error("Error looking up ICCIDs:", error);
+      toast({
+        variant: "destructive",
+        title: "Lookup Failed",
+        description: error.message || "An error occurred during ICCID lookup.",
+      });
+    } finally {
+      setLookingUpIccids(false);
+    }
+  };
+
   const findInstallationsForExport = async () => {
     if (!exportDeviceIdsInput.trim()) {
       toast({
@@ -2282,6 +2374,105 @@ export default function Admin() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* ICCID to Device UID Lookup */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Search className="h-5 w-5" />
+            Lookup Device UIDs by ICCIDs
+          </CardTitle>
+          <CardDescription>Paste ICCIDs to find corresponding device UIDs</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="space-y-2">
+            <Label htmlFor="iccidInput">ICCIDs (one per line)</Label>
+            <Textarea
+              id="iccidInput"
+              value={iccidInput}
+              onChange={(e) => setIccidInput(e.target.value)}
+              placeholder="89966062900089808307&#10;89966062900089808315&#10;89966062900089808323&#10;..."
+              className="font-mono h-48"
+              disabled={lookingUpIccids}
+            />
+            <p className="text-xs text-muted-foreground">
+              Enter ICCIDs, one per line. Will find the corresponding device UIDs.
+            </p>
+          </div>
+
+          <div className="flex gap-3">
+            <Button
+              onClick={lookupDeviceUidsByIccids}
+              disabled={!iccidInput.trim() || lookingUpIccids}
+            >
+              {lookingUpIccids ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Looking up...
+                </>
+              ) : (
+                <>
+                  <Search className="h-4 w-4 mr-2" />
+                  Lookup Device UIDs
+                </>
+              )}
+            </Button>
+          </div>
+
+          {iccidLookupResults.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-lg bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-blue-600" />
+                  <span className="font-semibold text-blue-600">
+                    Found {iccidLookupResults.filter(r => r.deviceUid !== null).length} of {iccidLookupResults.length} device UID(s)
+                  </span>
+                </div>
+              </div>
+
+              <div className="border rounded-lg p-4 max-h-96 overflow-y-auto bg-muted/30">
+                <p className="text-sm font-semibold mb-3">Results:</p>
+                <div className="space-y-2">
+                  {iccidLookupResults.map((result, index) => (
+                    <div 
+                      key={index} 
+                      className={`flex items-center justify-between p-3 rounded-md text-sm ${
+                        result.deviceUid 
+                          ? 'bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-800'
+                          : 'bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800'
+                      }`}
+                    >
+                      <div className="flex-1 space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground">ICCID:</span>
+                          <span className="font-mono text-xs">{result.iccid}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground">Device UID:</span>
+                          {result.deviceUid ? (
+                            <span className="font-mono font-medium text-green-700 dark:text-green-400">{result.deviceUid}</span>
+                          ) : (
+                            <span className="text-red-600 dark:text-red-400 text-xs font-medium">Not Found</span>
+                          )}
+                        </div>
+                      </div>
+                      {result.deviceUid ? (
+                        <CheckCircle2 className="h-5 w-5 text-green-600" />
+                      ) : (
+                        <XCircle className="h-5 w-5 text-red-600" />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="text-xs text-muted-foreground">
+                <p><strong>Tip:</strong> Copy the device UIDs from the results above and use them in other features like "Export Installations by Device UIDs".</p>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Export Installations by Device UIDs */}
       <Card className="border shadow-sm">

@@ -24,7 +24,7 @@ const ENGLISH_TO_ARABIC_AMANAH: Record<string, string> = {
   "qassim": "أمانة منطقة القصيم",
   "taif team": "أمانة محافظة الطائف",
   "taif": "أمانة محافظة الطائف",
-  "tabuk": "أمانة تبوك",
+  "tabuk": "أمانة منطقة تبوك",
 
 };
 
