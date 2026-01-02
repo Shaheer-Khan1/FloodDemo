@@ -135,7 +135,51 @@ app.get('/api/installations', async (req, res) => {
 
     const snapshot = await getDocs(q);
     
-    let installations = snapshot.docs.map(doc => docToObject(doc));
+    // Fetch all locations for coordinate lookup
+    const locationsSnapshot = await getDocs(collection(db, 'locations'));
+    const locationsMap = new Map();
+    locationsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      locationsMap.set(doc.id, {
+        latitude: data.latitude,
+        longitude: data.longitude,
+        municipalityName: data.municipalityName
+      });
+      // Also map by locationId field if it exists and differs from doc.id
+      if (data.locationId && data.locationId !== doc.id) {
+        locationsMap.set(data.locationId, {
+          latitude: data.latitude,
+          longitude: data.longitude,
+          municipalityName: data.municipalityName
+        });
+      }
+    });
+    
+    let installations = snapshot.docs.map(doc => {
+      const installation = docToObject(doc);
+      
+      // Get location coordinates if locationId exists
+      let locationCoordinates = null;
+      if (installation.locationId) {
+        const location = locationsMap.get(installation.locationId);
+        if (location) {
+          locationCoordinates = {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            municipalityName: location.municipalityName
+          };
+        }
+      }
+      
+      return {
+        ...installation,
+        // User-entered coordinates (kept as is)
+        userLatitude: installation.latitude,
+        userLongitude: installation.longitude,
+        // Location-based coordinates (from locations collection)
+        locationCoordinates: locationCoordinates
+      };
+    });
 
     // Apply date filters client-side (since Firestore client SDK has limitations)
     if (startDate) {
@@ -207,7 +251,51 @@ app.get('/api/installations/device/:deviceId', async (req, res) => {
       });
     }
 
-    const installations = snapshot.docs.map(doc => docToObject(doc));
+    // Fetch all locations for coordinate lookup
+    const locationsSnapshot = await getDocs(collection(db, 'locations'));
+    const locationsMap = new Map();
+    locationsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      locationsMap.set(doc.id, {
+        latitude: data.latitude,
+        longitude: data.longitude,
+        municipalityName: data.municipalityName
+      });
+      // Also map by locationId field if it exists and differs from doc.id
+      if (data.locationId && data.locationId !== doc.id) {
+        locationsMap.set(data.locationId, {
+          latitude: data.latitude,
+          longitude: data.longitude,
+          municipalityName: data.municipalityName
+        });
+      }
+    });
+    
+    const installations = snapshot.docs.map(doc => {
+      const installation = docToObject(doc);
+      
+      // Get location coordinates if locationId exists
+      let locationCoordinates = null;
+      if (installation.locationId) {
+        const location = locationsMap.get(installation.locationId);
+        if (location) {
+          locationCoordinates = {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            municipalityName: location.municipalityName
+          };
+        }
+      }
+      
+      return {
+        ...installation,
+        // User-entered coordinates (kept as is)
+        userLatitude: installation.latitude,
+        userLongitude: installation.longitude,
+        // Location-based coordinates (from locations collection)
+        locationCoordinates: locationCoordinates
+      };
+    });
 
     res.json({
       success: true,
@@ -249,9 +337,33 @@ app.get('/api/installations/:id', async (req, res) => {
       });
     }
 
+    const installation = docToObject(docSnap);
+    
+    // Get location coordinates if locationId exists
+    let locationCoordinates = null;
+    if (installation.locationId) {
+      const locationRef = doc(db, 'locations', installation.locationId);
+      const locationSnap = await getDoc(locationRef);
+      if (locationSnap.exists()) {
+        const locationData = locationSnap.data();
+        locationCoordinates = {
+          latitude: locationData.latitude,
+          longitude: locationData.longitude,
+          municipalityName: locationData.municipalityName
+        };
+      }
+    }
+
     res.json({
       success: true,
-      data: docToObject(docSnap)
+      data: {
+        ...installation,
+        // User-entered coordinates (kept as is)
+        userLatitude: installation.latitude,
+        userLongitude: installation.longitude,
+        // Location-based coordinates (from locations collection)
+        locationCoordinates: locationCoordinates
+      }
     });
 
   } catch (error) {

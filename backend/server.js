@@ -110,11 +110,50 @@ app.get('/api/installations', async (req, res) => {
     // Get the data
     const snapshot = await query.get();
     
+    // Fetch all locations for coordinate lookup
+    const locationsSnapshot = await db.collection('locations').get();
+    const locationsMap = new Map();
+    locationsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      locationsMap.set(doc.id, {
+        latitude: data.latitude,
+        longitude: data.longitude,
+        municipalityName: data.municipalityName
+      });
+      // Also map by locationId field if it exists and differs from doc.id
+      if (data.locationId && data.locationId !== doc.id) {
+        locationsMap.set(data.locationId, {
+          latitude: data.latitude,
+          longitude: data.longitude,
+          municipalityName: data.municipalityName
+        });
+      }
+    });
+    
     let installations = snapshot.docs.map(doc => {
       const data = doc.data();
+      
+      // Get location coordinates if locationId exists
+      let locationCoordinates = null;
+      if (data.locationId) {
+        const location = locationsMap.get(data.locationId);
+        if (location) {
+          locationCoordinates = {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            municipalityName: location.municipalityName
+          };
+        }
+      }
+      
       return {
         id: doc.id,
         ...data,
+        // User-entered coordinates (kept as is)
+        userLatitude: data.latitude,
+        userLongitude: data.longitude,
+        // Location-based coordinates (from locations collection)
+        locationCoordinates: locationCoordinates,
         // Convert Firestore timestamps to ISO strings
         createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
         updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
@@ -191,11 +230,50 @@ app.get('/api/installations/device/:deviceId', async (req, res) => {
       });
     }
 
+    // Fetch all locations for coordinate lookup
+    const locationsSnapshot = await db.collection('locations').get();
+    const locationsMap = new Map();
+    locationsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      locationsMap.set(doc.id, {
+        latitude: data.latitude,
+        longitude: data.longitude,
+        municipalityName: data.municipalityName
+      });
+      // Also map by locationId field if it exists and differs from doc.id
+      if (data.locationId && data.locationId !== doc.id) {
+        locationsMap.set(data.locationId, {
+          latitude: data.latitude,
+          longitude: data.longitude,
+          municipalityName: data.municipalityName
+        });
+      }
+    });
+    
     const installations = snapshot.docs.map(doc => {
       const data = doc.data();
+      
+      // Get location coordinates if locationId exists
+      let locationCoordinates = null;
+      if (data.locationId) {
+        const location = locationsMap.get(data.locationId);
+        if (location) {
+          locationCoordinates = {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            municipalityName: location.municipalityName
+          };
+        }
+      }
+      
       return {
         id: doc.id,
         ...data,
+        // User-entered coordinates (kept as is)
+        userLatitude: data.latitude,
+        userLongitude: data.longitude,
+        // Location-based coordinates (from locations collection)
+        locationCoordinates: locationCoordinates,
         createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
         updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
         verifiedAt: data.verifiedAt?.toDate?.()?.toISOString() || data.verifiedAt,
@@ -244,9 +322,29 @@ app.get('/api/installations/:id', async (req, res) => {
     }
 
     const data = doc.data();
+    
+    // Get location coordinates if locationId exists
+    let locationCoordinates = null;
+    if (data.locationId) {
+      const locationDoc = await db.collection('locations').doc(data.locationId).get();
+      if (locationDoc.exists) {
+        const locationData = locationDoc.data();
+        locationCoordinates = {
+          latitude: locationData.latitude,
+          longitude: locationData.longitude,
+          municipalityName: locationData.municipalityName
+        };
+      }
+    }
+    
     const installation = {
       id: doc.id,
       ...data,
+      // User-entered coordinates (kept as is)
+      userLatitude: data.latitude,
+      userLongitude: data.longitude,
+      // Location-based coordinates (from locations collection)
+      locationCoordinates: locationCoordinates,
       createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
       updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
       verifiedAt: data.verifiedAt?.toDate?.()?.toISOString() || data.verifiedAt,
