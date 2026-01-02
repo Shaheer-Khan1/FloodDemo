@@ -110,25 +110,30 @@ app.get('/api/installations', async (req, res) => {
     // Get the data
     const snapshot = await query.get();
     
-    // Fetch all locations for coordinate lookup
-    const locationsSnapshot = await db.collection('locations').get();
-    const locationsMap = new Map();
-    locationsSnapshot.docs.forEach(doc => {
-      const data = doc.data();
-      locationsMap.set(doc.id, {
-        latitude: data.latitude,
-        longitude: data.longitude,
-        municipalityName: data.municipalityName
-      });
-      // Also map by locationId field if it exists and differs from doc.id
-      if (data.locationId && data.locationId !== doc.id) {
-        locationsMap.set(data.locationId, {
+    // Fetch all locations for coordinate lookup (with error handling)
+    let locationsMap = new Map();
+    try {
+      const locationsSnapshot = await db.collection('locations').get();
+      locationsSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        locationsMap.set(doc.id, {
           latitude: data.latitude,
           longitude: data.longitude,
           municipalityName: data.municipalityName
         });
-      }
-    });
+        // Also map by locationId field if it exists and differs from doc.id
+        if (data.locationId && data.locationId !== doc.id) {
+          locationsMap.set(data.locationId, {
+            latitude: data.latitude,
+            longitude: data.longitude,
+            municipalityName: data.municipalityName
+          });
+        }
+      });
+    } catch (locError) {
+      console.warn('Warning: Could not fetch locations:', locError.message);
+      // Continue without location data
+    }
     
     let installations = snapshot.docs.map(doc => {
       const data = doc.data();
@@ -230,25 +235,30 @@ app.get('/api/installations/device/:deviceId', async (req, res) => {
       });
     }
 
-    // Fetch all locations for coordinate lookup
-    const locationsSnapshot = await db.collection('locations').get();
-    const locationsMap = new Map();
-    locationsSnapshot.docs.forEach(doc => {
-      const data = doc.data();
-      locationsMap.set(doc.id, {
-        latitude: data.latitude,
-        longitude: data.longitude,
-        municipalityName: data.municipalityName
-      });
-      // Also map by locationId field if it exists and differs from doc.id
-      if (data.locationId && data.locationId !== doc.id) {
-        locationsMap.set(data.locationId, {
+    // Fetch all locations for coordinate lookup (with error handling)
+    let locationsMap = new Map();
+    try {
+      const locationsSnapshot = await db.collection('locations').get();
+      locationsSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        locationsMap.set(doc.id, {
           latitude: data.latitude,
           longitude: data.longitude,
           municipalityName: data.municipalityName
         });
-      }
-    });
+        // Also map by locationId field if it exists and differs from doc.id
+        if (data.locationId && data.locationId !== doc.id) {
+          locationsMap.set(data.locationId, {
+            latitude: data.latitude,
+            longitude: data.longitude,
+            municipalityName: data.municipalityName
+          });
+        }
+      });
+    } catch (locError) {
+      console.warn('Warning: Could not fetch locations:', locError.message);
+      // Continue without location data
+    }
     
     const installations = snapshot.docs.map(doc => {
       const data = doc.data();
@@ -323,17 +333,22 @@ app.get('/api/installations/:id', async (req, res) => {
 
     const data = doc.data();
     
-    // Get location coordinates if locationId exists
+    // Get location coordinates if locationId exists (with error handling)
     let locationCoordinates = null;
     if (data.locationId) {
-      const locationDoc = await db.collection('locations').doc(data.locationId).get();
-      if (locationDoc.exists) {
-        const locationData = locationDoc.data();
-        locationCoordinates = {
-          latitude: locationData.latitude,
-          longitude: locationData.longitude,
-          municipalityName: locationData.municipalityName
-        };
+      try {
+        const locationDoc = await db.collection('locations').doc(data.locationId).get();
+        if (locationDoc.exists) {
+          const locationData = locationDoc.data();
+          locationCoordinates = {
+            latitude: locationData.latitude,
+            longitude: locationData.longitude,
+            municipalityName: locationData.municipalityName
+          };
+        }
+      } catch (locError) {
+        console.warn(`Warning: Could not fetch location ${data.locationId}:`, locError.message);
+        // Continue without location data
       }
     }
     
@@ -406,6 +421,144 @@ app.get('/api/devices/installed', async (req, res) => {
 
   } catch (error) {
     console.error('Error fetching installed devices:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      message: error.message 
+    });
+  }
+});
+
+// Get installations from a specific date/time until now
+app.get('/api/installations/since/:timestamp', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ 
+        error: 'Service unavailable', 
+        message: 'Firebase is not initialized' 
+      });
+    }
+
+    const { timestamp } = req.params;
+    
+    // Parse the timestamp (supports ISO string or Unix timestamp in milliseconds)
+    let startDate;
+    try {
+      if (timestamp.match(/^\d+$/)) {
+        // Unix timestamp in milliseconds
+        startDate = new Date(parseInt(timestamp));
+      } else {
+        // ISO string
+        startDate = new Date(timestamp);
+      }
+      
+      if (isNaN(startDate.getTime())) {
+        return res.status(400).json({
+          error: 'Bad request',
+          message: 'Invalid timestamp format. Use ISO string (2024-01-01T00:00:00Z) or Unix timestamp in milliseconds.'
+        });
+      }
+    } catch (error) {
+      return res.status(400).json({
+        error: 'Bad request',
+        message: 'Invalid timestamp format. Use ISO string (2024-01-01T00:00:00Z) or Unix timestamp in milliseconds.'
+      });
+    }
+
+    const currentDate = new Date();
+    
+    // Convert to Firestore Timestamp for querying
+    const startTimestamp = admin.firestore.Timestamp.fromDate(startDate);
+    
+    // Query installations created after the given timestamp
+    const snapshot = await db.collection('installations')
+      .where('createdAt', '>=', startTimestamp)
+      .orderBy('createdAt', 'asc')
+      .get();
+    
+    if (snapshot.empty) {
+      return res.json({
+        success: true,
+        data: [],
+        message: `No installations found since ${startDate.toISOString()}`,
+        metadata: {
+          startDate: startDate.toISOString(),
+          endDate: currentDate.toISOString(),
+          total: 0,
+          timestamp: currentDate.toISOString()
+        }
+      });
+    }
+
+    // Fetch all locations for coordinate lookup (with error handling)
+    let locationsMap = new Map();
+    try {
+      const locationsSnapshot = await db.collection('locations').get();
+      locationsSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        locationsMap.set(doc.id, {
+          latitude: data.latitude,
+          longitude: data.longitude,
+          municipalityName: data.municipalityName
+        });
+        // Also map by locationId field if it exists and differs from doc.id
+        if (data.locationId && data.locationId !== doc.id) {
+          locationsMap.set(data.locationId, {
+            latitude: data.latitude,
+            longitude: data.longitude,
+            municipalityName: data.municipalityName
+          });
+        }
+      });
+    } catch (locError) {
+      console.warn('Warning: Could not fetch locations:', locError.message);
+      // Continue without location data
+    }
+
+    const installations = snapshot.docs.map(doc => {
+      const data = doc.data();
+      
+      // Get location coordinates if locationId exists
+      let locationCoordinates = null;
+      if (data.locationId) {
+        const location = locationsMap.get(data.locationId);
+        if (location) {
+          locationCoordinates = {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            municipalityName: location.municipalityName
+          };
+        }
+      }
+      
+      return {
+        id: doc.id,
+        ...data,
+        // User-entered coordinates (kept as is)
+        userLatitude: data.latitude,
+        userLongitude: data.longitude,
+        // Location-based coordinates (from locations collection)
+        locationCoordinates: locationCoordinates,
+        createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
+        verifiedAt: data.verifiedAt?.toDate?.()?.toISOString() || data.verifiedAt,
+        systemPreVerifiedAt: data.systemPreVerifiedAt?.toDate?.()?.toISOString() || data.systemPreVerifiedAt,
+        escalatedAt: data.escalatedAt?.toDate?.()?.toISOString() || data.escalatedAt
+      };
+    });
+
+    res.json({
+      success: true,
+      data: installations,
+      metadata: {
+        startDate: startDate.toISOString(),
+        endDate: currentDate.toISOString(),
+        total: installations.length,
+        timestamp: currentDate.toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching installations since timestamp:', error);
     res.status(500).json({ 
       error: 'Internal server error', 
       message: error.message 

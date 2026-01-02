@@ -76,6 +76,12 @@ service cloud.firestore {
       allow create, update: if isAdmin();
       allow delete: if isAdmin();
     }
+    
+    // Locations collection (coordinate database)
+    match /locations/{locationId} {
+      allow read: if true; // Public read access for coordinate lookup
+      allow create, update, delete: if isAdmin();
+    }
   }
 }
 
