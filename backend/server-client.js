@@ -780,6 +780,305 @@ app.get('/api/installations/export/json', async (req, res) => {
   }
 });
 
+// ============================================================================
+// ADMIN MENU - Device Filtering & CSV Export
+// ============================================================================
+
+// Admin: Get devices with filters and export as CSV
+app.get('/api/admin/devices/filter', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ 
+        error: 'Service unavailable', 
+        message: 'Firebase is not initialized' 
+      });
+    }
+
+    const { 
+      variance,           // Filter by variance threshold (e.g., "10" for devices with variance >= 10)
+      readings,           // Comma-separated readings (e.g., "z,y,m")
+      noServerData,       // "true" to filter devices with no server data
+      format              // "csv" or "json"
+    } = req.query;
+
+    // Fetch all installations
+    const installationsSnapshot = await getDocs(collection(db, 'installations'));
+    
+    // Fetch all locations for coordinate lookup
+    let locationsMap = new Map();
+    try {
+      const locationsSnapshot = await getDocs(collection(db, 'locations'));
+      locationsSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        locationsMap.set(doc.id, {
+          latitude: data.latitude,
+          longitude: data.longitude,
+          municipalityName: data.municipalityName
+        });
+        if (data.locationId && data.locationId !== doc.id) {
+          locationsMap.set(data.locationId, {
+            latitude: data.latitude,
+            longitude: data.longitude,
+            municipalityName: data.municipalityName
+          });
+        }
+      });
+    } catch (locError) {
+      console.warn('Warning: Could not fetch locations:', locError.message);
+    }
+
+    // Fetch device readings/data (assuming there's a 'deviceData' or 'readings' collection)
+    let deviceDataMap = new Map();
+    try {
+      // Try to fetch device data - adjust collection name as needed
+      const deviceDataSnapshot = await getDocs(collection(db, 'deviceData'));
+      deviceDataSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        if (data.deviceId) {
+          if (!deviceDataMap.has(data.deviceId)) {
+            deviceDataMap.set(data.deviceId, []);
+          }
+          deviceDataMap.get(data.deviceId).push(data);
+        }
+      });
+    } catch (dataError) {
+      console.warn('Warning: Could not fetch device data:', dataError.message);
+    }
+
+    // Process installations and build device list
+    const deviceList = [];
+    const processedDevices = new Set();
+
+    installationsSnapshot.docs.forEach(doc => {
+      const installation = docToObject(doc);
+      const deviceId = installation.deviceId;
+
+      // Skip if already processed
+      if (processedDevices.has(deviceId)) return;
+      processedDevices.add(deviceId);
+
+      // Get location coordinates (prefer location relation, fallback to user-entered)
+      let coordinates = null;
+      if (installation.locationId) {
+        const location = locationsMap.get(installation.locationId);
+        if (location && location.latitude && location.longitude) {
+          coordinates = {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            source: 'location_relation'
+          };
+        }
+      }
+      
+      // Fallback to user-entered coordinates
+      if (!coordinates && installation.latitude && installation.longitude) {
+        coordinates = {
+          latitude: installation.latitude,
+          longitude: installation.longitude,
+          source: 'user_entered'
+        };
+      }
+
+      // Get device data
+      const deviceData = deviceDataMap.get(deviceId) || [];
+      
+      // Calculate variance if data exists
+      let calculatedVariance = null;
+      if (deviceData.length > 0) {
+        const values = deviceData
+          .filter(d => d.value !== undefined && d.value !== null)
+          .map(d => parseFloat(d.value));
+        
+        if (values.length > 1) {
+          const mean = values.reduce((sum, val) => sum + val, 0) / values.length;
+          const squaredDiffs = values.map(val => Math.pow(val - mean, 2));
+          calculatedVariance = Math.sqrt(squaredDiffs.reduce((sum, val) => sum + val, 0) / values.length);
+        }
+      }
+
+      // Get latest readings
+      const latestReadings = deviceData.length > 0 
+        ? deviceData.sort((a, b) => {
+            const timeA = a.timestamp ? new Date(convertTimestamp(a.timestamp)).getTime() : 0;
+            const timeB = b.timestamp ? new Date(convertTimestamp(b.timestamp)).getTime() : 0;
+            return timeB - timeA;
+          }).slice(0, 10)
+        : [];
+
+      const device = {
+        deviceId: deviceId,
+        installerName: installation.installerName || installation.teamId || 'Unknown',
+        latitude: coordinates?.latitude || '',
+        longitude: coordinates?.longitude || '',
+        coordinateSource: coordinates?.source || 'none',
+        locationId: installation.locationId || '',
+        hasServerData: deviceData.length > 0,
+        variance: calculatedVariance !== null ? calculatedVariance.toFixed(2) : 'N/A',
+        dataPointsCount: deviceData.length,
+        latestReadings: latestReadings,
+        installationDate: installation.createdAt || '',
+        status: installation.status || ''
+      };
+
+      deviceList.push(device);
+    });
+
+    // Apply filters
+    let filteredDevices = deviceList;
+
+    // Filter by variance
+    if (variance) {
+      const varianceThreshold = parseFloat(variance);
+      filteredDevices = filteredDevices.filter(device => {
+        if (device.variance === 'N/A') return false;
+        return parseFloat(device.variance) >= varianceThreshold;
+      });
+    }
+
+    // Filter by specific readings
+    if (readings) {
+      const targetReadings = readings.split(',').map(r => r.trim().toLowerCase());
+      filteredDevices = filteredDevices.filter(device => {
+        return device.latestReadings.some(reading => {
+          const readingType = (reading.type || reading.readingType || '').toLowerCase();
+          return targetReadings.includes(readingType);
+        });
+      });
+    }
+
+    // Filter by no server data
+    if (noServerData === 'true') {
+      filteredDevices = filteredDevices.filter(device => !device.hasServerData);
+    }
+
+    // Return as CSV or JSON
+    if (format === 'csv') {
+      // Generate CSV
+      const csvRows = [];
+      csvRows.push(['Device ID', 'Installer Name', 'Latitude', 'Longitude', 'Coordinate Source', 'Location ID', 'Has Server Data', 'Variance', 'Data Points', 'Status', 'Installation Date']);
+      
+      filteredDevices.forEach(device => {
+        csvRows.push([
+          device.deviceId,
+          device.installerName,
+          device.latitude,
+          device.longitude,
+          device.coordinateSource,
+          device.locationId,
+          device.hasServerData ? 'Yes' : 'No',
+          device.variance,
+          device.dataPointsCount,
+          device.status,
+          device.installationDate
+        ]);
+      });
+
+      const csvContent = csvRows.map(row => 
+        row.map(cell => {
+          // Escape cells containing commas, quotes, or newlines
+          const cellStr = String(cell);
+          if (cellStr.includes(',') || cellStr.includes('"') || cellStr.includes('\n')) {
+            return `"${cellStr.replace(/"/g, '""')}"`;
+          }
+          return cellStr;
+        }).join(',')
+      ).join('\n');
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=devices_filtered_${Date.now()}.csv`);
+      res.send(csvContent);
+    } else {
+      // Return as JSON
+      res.json({
+        success: true,
+        data: filteredDevices,
+        metadata: {
+          total: filteredDevices.length,
+          filters: {
+            variance: variance || null,
+            readings: readings || null,
+            noServerData: noServerData === 'true'
+          },
+          timestamp: new Date().toISOString()
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('Error filtering devices:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      message: error.message 
+    });
+  }
+});
+
+// Admin: Get device statistics
+app.get('/api/admin/devices/stats', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ 
+        error: 'Service unavailable', 
+        message: 'Firebase is not initialized' 
+      });
+    }
+
+    // Fetch all installations
+    const installationsSnapshot = await getDocs(collection(db, 'installations'));
+    
+    // Fetch device data
+    let deviceDataMap = new Map();
+    try {
+      const deviceDataSnapshot = await getDocs(collection(db, 'deviceData'));
+      deviceDataSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        if (data.deviceId) {
+          if (!deviceDataMap.has(data.deviceId)) {
+            deviceDataMap.set(data.deviceId, 0);
+          }
+          deviceDataMap.set(data.deviceId, deviceDataMap.get(data.deviceId) + 1);
+        }
+      });
+    } catch (dataError) {
+      console.warn('Warning: Could not fetch device data:', dataError.message);
+    }
+
+    const uniqueDevices = new Set();
+    installationsSnapshot.docs.forEach(doc => {
+      const installation = doc.data();
+      if (installation.deviceId) {
+        uniqueDevices.add(installation.deviceId);
+      }
+    });
+
+    const devicesWithData = Array.from(uniqueDevices).filter(deviceId => 
+      deviceDataMap.has(deviceId) && deviceDataMap.get(deviceId) > 0
+    );
+
+    const devicesWithoutData = Array.from(uniqueDevices).filter(deviceId => 
+      !deviceDataMap.has(deviceId) || deviceDataMap.get(deviceId) === 0
+    );
+
+    res.json({
+      success: true,
+      data: {
+        totalDevices: uniqueDevices.size,
+        devicesWithData: devicesWithData.length,
+        devicesWithoutData: devicesWithoutData.length,
+        devicesWithoutDataList: devicesWithoutData,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching device stats:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      message: error.message 
+    });
+  }
+});
+
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ 
@@ -810,6 +1109,10 @@ app.listen(PORT, () => {
   console.log(`   🖥️  Installed Devices: http://localhost:${PORT}/api/devices/installed`);
   console.log(`   📈 Statistics: http://localhost:${PORT}/api/installations/stats/summary`);
   console.log(`   💾 Export: http://localhost:${PORT}/api/installations/export/json`);
+  console.log(`\n🔐 Admin Endpoints:`);
+  console.log(`   🔍 Filter Devices: http://localhost:${PORT}/api/admin/devices/filter`);
+  console.log(`      Query params: ?variance=10&readings=z,y,m&noServerData=true&format=csv`);
+  console.log(`   📊 Device Stats: http://localhost:${PORT}/api/admin/devices/stats`);
   console.log(`\n💡 Note: Using Firebase Client SDK (no service account required)`);
 });
 

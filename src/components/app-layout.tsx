@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, Plus, ChevronLeft, ChevronRight, Settings, Map } from "lucide-react";
+import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, Plus, ChevronLeft, ChevronRight, Settings, Map, Filter } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
@@ -53,6 +53,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       { title: "Administration", icon: Shield, url: "/admin-management" },
       { title: "Box Management", icon: Package, url: "/box-management" },
       { title: "Device Management", icon: Package, url: "/device-management" },
+      { title: "Device Filter", icon: Filter, url: "/admin-device-filter" },
       { title: "Installation Management", icon: Settings, url: "/installation-management" },
     ] : []),
     // Installer-specific menu items

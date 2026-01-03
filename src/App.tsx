@@ -36,6 +36,7 @@ import BoxManagement from "@/pages/box-management";
 import DeviceManagement from "@/pages/device-management";
 import InstallationManagement from "@/pages/installation-management";
 import AdminManagement from "@/pages/admin-management";
+import AdminDeviceFilter from "@/pages/admin-device-filter";
 
 function Router() {
   return (
@@ -220,6 +221,14 @@ function Router() {
         <ProtectedRoute>
           <AppLayout>
             <AdminManagement />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/admin-device-filter">
+        <ProtectedRoute>
+          <AppLayout>
+            <AdminDeviceFilter />
           </AppLayout>
         </ProtectedRoute>
       </Route>
