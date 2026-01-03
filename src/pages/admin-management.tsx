@@ -1,7 +1,7 @@
 import { useAuth } from "@/lib/auth-context";
 import { useLocation } from "wouter";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Shield, UserPlus, Users, ChevronRight } from "lucide-react";
+import { Shield, UserPlus, Users, ChevronRight, Filter } from "lucide-react";
 
 export default function AdminManagement() {
   const { userProfile } = useAuth();
@@ -17,6 +17,13 @@ export default function AdminManagement() {
       icon: Shield,
       url: "/admin",
       color: "from-amber-500 to-amber-600",
+    },
+    {
+      title: "Device Filter",
+      description: "Filter devices by variance, readings, and export to CSV",
+      icon: Filter,
+      url: "/admin-device-filter",
+      color: "from-purple-500 to-purple-600",
     },
     {
       title: "Teams",

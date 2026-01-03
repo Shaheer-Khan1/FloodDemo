@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Download, Filter, Loader2, AlertCircle } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -8,6 +8,13 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   Table,
   TableBody,
   TableCell,
@@ -15,6 +22,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { db } from '@/lib/firebase';
+import { collection, getDocs } from 'firebase/firestore';
 
 interface DeviceData {
   deviceId: string;
@@ -28,6 +37,8 @@ interface DeviceData {
   dataPointsCount: number;
   status: string;
   installationDate: string;
+  teamId?: string;
+  teamName?: string;
 }
 
 interface DeviceStats {
@@ -37,17 +48,42 @@ interface DeviceStats {
   devicesWithoutDataList: string[];
 }
 
+interface Team {
+  id: string;
+  name: string;
+}
+
 export default function AdminDeviceFilter() {
   const [variance, setVariance] = useState('');
   const [readings, setReadings] = useState('');
   const [noServerData, setNoServerData] = useState(false);
+  const [teamId, setTeamId] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [devices, setDevices] = useState<DeviceData[]>([]);
   const [stats, setStats] = useState<DeviceStats | null>(null);
   const [showResults, setShowResults] = useState(false);
+  const [teams, setTeams] = useState<Team[]>([]);
 
   const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+
+  // Fetch teams on component mount
+  useEffect(() => {
+    const fetchTeams = async () => {
+      try {
+        const teamsSnapshot = await getDocs(collection(db, 'teams'));
+        const teamsData = teamsSnapshot.docs.map(doc => ({
+          id: doc.id,
+          name: doc.data().name || 'Unnamed Team'
+        }));
+        setTeams(teamsData);
+      } catch (err) {
+        console.error('Failed to fetch teams:', err);
+      }
+    };
+
+    fetchTeams();
+  }, []);
 
   const fetchStats = async () => {
     try {
@@ -72,6 +108,7 @@ export default function AdminDeviceFilter() {
       if (variance) params.append('variance', variance);
       if (readings) params.append('readings', readings);
       if (noServerData) params.append('noServerData', 'true');
+      if (teamId) params.append('teamId', teamId);
       params.append('format', 'json');
 
       const response = await fetch(`${API_BASE}/api/admin/devices/filter?${params.toString()}`);
@@ -100,6 +137,7 @@ export default function AdminDeviceFilter() {
       if (variance) params.append('variance', variance);
       if (readings) params.append('readings', readings);
       if (noServerData) params.append('noServerData', 'true');
+      if (teamId) params.append('teamId', teamId);
       params.append('format', 'csv');
 
       const response = await fetch(`${API_BASE}/api/admin/devices/filter?${params.toString()}`);
@@ -169,7 +207,7 @@ export default function AdminDeviceFilter() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <div className="space-y-2">
               <Label htmlFor="variance">Variance Threshold</Label>
               <Input
@@ -196,6 +234,26 @@ export default function AdminDeviceFilter() {
               />
               <p className="text-xs text-muted-foreground">
                 Comma-separated reading types
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="teamId">Team / Amanah</Label>
+              <Select value={teamId || "all"} onValueChange={(value) => setTeamId(value === "all" ? "" : value)}>
+                <SelectTrigger id="teamId">
+                  <SelectValue placeholder="All Teams" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Teams</SelectItem>
+                  {teams.map((team) => (
+                    <SelectItem key={team.id} value={team.id}>
+                      {team.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Filter by specific team/amanah
               </p>
             </div>
           </div>
@@ -280,6 +338,7 @@ export default function AdminDeviceFilter() {
                     <TableRow>
                       <TableHead>Device ID</TableHead>
                       <TableHead>Installer Name</TableHead>
+                      <TableHead>Team/Amanah</TableHead>
                       <TableHead>Coordinates</TableHead>
                       <TableHead>Source</TableHead>
                       <TableHead>Server Data</TableHead>
@@ -295,6 +354,13 @@ export default function AdminDeviceFilter() {
                           {device.deviceId}
                         </TableCell>
                         <TableCell>{device.installerName}</TableCell>
+                        <TableCell>
+                          {device.teamName ? (
+                            <Badge variant="outline">{device.teamName}</Badge>
+                          ) : (
+                            <span className="text-muted-foreground text-sm">No team</span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-sm">
                           {device.latitude && device.longitude ? (
                             <div className="space-y-1">

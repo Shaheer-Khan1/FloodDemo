@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { MapPin, Users, Shield } from "lucide-react";
+import { MapPin, Users, Shield, Filter } from "lucide-react";
 import { useLocation } from "wouter";
 import { useState, useEffect } from "react";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
@@ -204,6 +204,19 @@ export default function Dashboard() {
                 <div className="text-left">
                   <div className="font-semibold text-lg">Import Devices</div>
                   <div className="text-sm text-muted-foreground">Bulk import from CSV</div>
+                </div>
+              </Button>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setLocation("/admin-device-filter")}
+              >
+                <div className="h-12 w-12 rounded-xl bg-orange-100 dark:bg-orange-950 flex items-center justify-center mr-4">
+                  <Filter className="h-6 w-6 text-orange-600 dark:text-orange-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Device Filter</div>
+                  <div className="text-sm text-muted-foreground">Filter by variance & export CSV</div>
                 </div>
               </Button>
               <Button 

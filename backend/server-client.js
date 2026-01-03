@@ -798,6 +798,7 @@ app.get('/api/admin/devices/filter', async (req, res) => {
       variance,           // Filter by variance threshold (e.g., "10" for devices with variance >= 10)
       readings,           // Comma-separated readings (e.g., "z,y,m")
       noServerData,       // "true" to filter devices with no server data
+      teamId,             // Filter by specific team/amanah
       format              // "csv" or "json"
     } = req.query;
 
@@ -912,6 +913,8 @@ app.get('/api/admin/devices/filter', async (req, res) => {
         longitude: coordinates?.longitude || '',
         coordinateSource: coordinates?.source || 'none',
         locationId: installation.locationId || '',
+        teamId: installation.teamId || '',
+        teamName: installation.teamId || '',
         hasServerData: deviceData.length > 0,
         variance: calculatedVariance !== null ? calculatedVariance.toFixed(2) : 'N/A',
         dataPointsCount: deviceData.length,
@@ -925,6 +928,11 @@ app.get('/api/admin/devices/filter', async (req, res) => {
 
     // Apply filters
     let filteredDevices = deviceList;
+
+    // Filter by team/amanah
+    if (teamId) {
+      filteredDevices = filteredDevices.filter(device => device.teamId === teamId);
+    }
 
     // Filter by variance
     if (variance) {
@@ -955,21 +963,14 @@ app.get('/api/admin/devices/filter', async (req, res) => {
     if (format === 'csv') {
       // Generate CSV
       const csvRows = [];
-      csvRows.push(['Device ID', 'Installer Name', 'Latitude', 'Longitude', 'Coordinate Source', 'Location ID', 'Has Server Data', 'Variance', 'Data Points', 'Status', 'Installation Date']);
+      csvRows.push(['Device ID', 'Installer Name', 'Latitude', 'Longitude']);
       
       filteredDevices.forEach(device => {
         csvRows.push([
           device.deviceId,
           device.installerName,
           device.latitude,
-          device.longitude,
-          device.coordinateSource,
-          device.locationId,
-          device.hasServerData ? 'Yes' : 'No',
-          device.variance,
-          device.dataPointsCount,
-          device.status,
-          device.installationDate
+          device.longitude
         ]);
       });
 

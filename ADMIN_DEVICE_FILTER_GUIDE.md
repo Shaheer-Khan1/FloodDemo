@@ -10,6 +10,7 @@ The Admin Device Filter feature allows administrators to filter devices based on
 
 - **Variance Threshold**: Filter devices with variance greater than or equal to a specified value
 - **Specific Readings**: Filter devices that have specific reading types (comma-separated, e.g., "z,y,m")
+- **Team/Amanah**: Filter devices by specific team or amanah assignment
 - **No Server Data**: Filter devices that haven't reported any data to the server
 
 ### 2. CSV Export
@@ -17,14 +18,8 @@ The Admin Device Filter feature allows administrators to filter devices based on
 Export filtered device data with the following columns:
 - Device ID
 - Installer Name
-- Latitude & Longitude (prefers location_id relation, falls back to user-entered)
-- Coordinate Source (location_relation, user_entered, or none)
-- Location ID
-- Has Server Data (Yes/No)
-- Variance
-- Data Points Count
-- Status
-- Installation Date
+- Latitude (prefers location_id relation, falls back to user-entered)
+- Longitude (prefers location_id relation, falls back to user-entered)
 
 ### 3. Device Statistics
 
@@ -42,6 +37,7 @@ View real-time statistics including:
 **Query Parameters**:
 - `variance` (optional): Minimum variance threshold (e.g., "10")
 - `readings` (optional): Comma-separated reading types (e.g., "z,y,m")
+- `teamId` (optional): Filter by specific team/amanah ID
 - `noServerData` (optional): Set to "true" to show only devices without server data
 - `format` (optional): "json" (default) or "csv"
 
@@ -54,11 +50,14 @@ GET http://localhost:3001/api/admin/devices/filter?variance=10&format=json
 # Get devices with specific readings as CSV
 GET http://localhost:3001/api/admin/devices/filter?readings=z,y,m&format=csv
 
+# Get devices for a specific team
+GET http://localhost:3001/api/admin/devices/filter?teamId=team123&format=json
+
 # Get devices with no server data
 GET http://localhost:3001/api/admin/devices/filter?noServerData=true&format=json
 
 # Combined filters
-GET http://localhost:3001/api/admin/devices/filter?variance=5&readings=z,y&noServerData=false&format=csv
+GET http://localhost:3001/api/admin/devices/filter?variance=5&readings=z,y&teamId=team123&noServerData=false&format=csv
 ```
 
 ### Device Statistics
@@ -99,15 +98,17 @@ GET http://localhost:3001/api/admin/devices/stats
 1. **Set Filter Criteria**:
    - Enter a variance threshold (e.g., 10)
    - Enter comma-separated readings (e.g., z,y,m)
+   - Select a specific team/amanah from the dropdown (optional)
    - Check "Show only devices with no server data" if needed
 
 2. **View Results**:
    - Click **Filter Devices** to see results in a table
-   - Results show device ID, installer, coordinates, and data statistics
+   - Results show device ID, installer, team/amanah, coordinates, and data statistics
 
 3. **Export to CSV**:
    - Click **Export CSV** to download filtered results
-   - CSV will include all device information with proper coordinate handling
+   - CSV includes only: Device ID, Installer Name, Latitude, Longitude
+   - Coordinates prioritize location_id relation, then fall back to user-entered coordinates
 
 ## Coordinate Handling
 
