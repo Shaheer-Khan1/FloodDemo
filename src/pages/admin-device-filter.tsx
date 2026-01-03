@@ -35,6 +35,8 @@ interface DeviceData {
   locationId: string;
   hasServerData: boolean;
   variance: string;
+  userReading: number | null;
+  serverReading: number | null;
   dataPointsCount: number;
   status: string;
   installationDate: string;
@@ -90,43 +92,25 @@ export default function AdminDeviceFilter() {
     try {
       const installationsSnapshot = await getDocs(collection(db, 'installations'));
       const uniqueDevices = new Set<string>();
+      const devicesWithServerData = new Set<string>();
       
       installationsSnapshot.docs.forEach(doc => {
         const data = doc.data();
         if (data.deviceId) {
           uniqueDevices.add(data.deviceId);
+          // Check if device has server data (latestDisCm)
+          if (data.latestDisCm != null) {
+            devicesWithServerData.add(data.deviceId);
+          }
         }
       });
 
-      // Try to fetch device data from multiple possible collections
-      let devicesWithData = 0;
-      const possibleCollections = ['deviceData', 'serverData', 'readings', 'sensorData'];
-      
-      for (const collectionName of possibleCollections) {
-        try {
-          const snapshot = await getDocs(collection(db, collectionName));
-          if (!snapshot.empty) {
-            const deviceIds = new Set<string>();
-            snapshot.docs.forEach(doc => {
-              const data = doc.data();
-              const deviceId = data.deviceId || data.device_id || data.DeviceId;
-              if (deviceId) {
-                deviceIds.add(deviceId);
-              }
-            });
-            devicesWithData = Array.from(uniqueDevices).filter(id => deviceIds.has(id)).length;
-            console.log(`Stats: Found ${devicesWithData} devices with data in ${collectionName}`);
-            break; // Stop after finding first valid collection
-          }
-        } catch (err) {
-          console.warn(`Could not fetch stats from ${collectionName}:`, err);
-        }
-      }
+      console.log(`Stats: Total ${uniqueDevices.size} devices, ${devicesWithServerData.size} with server data`);
 
       setStats({
         totalDevices: uniqueDevices.size,
-        devicesWithData: devicesWithData,
-        devicesWithoutData: uniqueDevices.size - devicesWithData,
+        devicesWithData: devicesWithServerData.size,
+        devicesWithoutData: uniqueDevices.size - devicesWithServerData.size,
         devicesWithoutDataList: []
       });
     } catch (err) {
@@ -158,37 +142,8 @@ export default function AdminDeviceFilter() {
         console.warn('Could not fetch locations:', err);
       }
 
-      // Fetch device data - try multiple collection names
-      const deviceDataMap = new Map<string, any[]>();
-      
-      // Try different possible collection names
-      const possibleCollections = ['deviceData', 'serverData', 'readings', 'sensorData'];
-      
-      for (const collectionName of possibleCollections) {
-        try {
-          const snapshot = await getDocs(collection(db, collectionName));
-          if (!snapshot.empty) {
-            console.log(`Found ${snapshot.size} documents in collection: ${collectionName}`);
-            let matchedDevices = 0;
-            snapshot.docs.forEach(doc => {
-              const data = doc.data();
-              const deviceId = data.deviceId || data.device_id || data.DeviceId;
-              if (deviceId) {
-                if (!deviceDataMap.has(deviceId)) {
-                  deviceDataMap.set(deviceId, []);
-                  matchedDevices++;
-                }
-                deviceDataMap.get(deviceId)!.push(data);
-              }
-            });
-            console.log(`Matched ${matchedDevices} unique devices in ${collectionName}`);
-            break; // Stop after finding first valid collection
-          }
-        } catch (err) {
-          console.warn(`Could not fetch from ${collectionName}:`, err);
-        }
-      }
-      console.log(`Total devices with server data: ${deviceDataMap.size}`);
+      // No need to fetch separate device data - it's in installations as latestDisCm
+      console.log('Processing installations for server data...');
 
       // Process installations
       const deviceList: DeviceData[] = [];
@@ -217,21 +172,15 @@ export default function AdminDeviceFilter() {
           coordinateSource = 'user_entered';
         }
 
-        // Get device data
-        const deviceData = deviceDataMap.get(deviceId) || [];
+        // Get readings from installation
+        const userReading = installation.sensorReading != null ? installation.sensorReading : null;
+        const serverReading = installation.latestDisCm != null ? installation.latestDisCm : null;
         
-        // Calculate variance
+        // Calculate variance (percentage difference between user and server readings)
         let calculatedVariance: number | null = null;
-        if (deviceData.length > 1) {
-          const values = deviceData
-            .filter(d => d.value !== undefined && d.value !== null)
-            .map(d => parseFloat(d.value));
-          
-          if (values.length > 1) {
-            const mean = values.reduce((sum, val) => sum + val, 0) / values.length;
-            const squaredDiffs = values.map(val => Math.pow(val - mean, 2));
-            calculatedVariance = Math.sqrt(squaredDiffs.reduce((sum, val) => sum + val, 0) / values.length);
-          }
+        if (userReading != null && serverReading != null && userReading !== 0) {
+          const diff = Math.abs(serverReading - userReading);
+          calculatedVariance = (diff / userReading) * 100;
         }
 
         deviceList.push({
@@ -243,9 +192,11 @@ export default function AdminDeviceFilter() {
           locationId: installation.locationId || '',
           teamId: installation.teamId || '',
           teamName: installation.teamId || '',
-          hasServerData: deviceData.length > 0,
+          userReading: userReading,
+          serverReading: serverReading,
+          hasServerData: serverReading != null,
           variance: calculatedVariance !== null ? calculatedVariance.toFixed(2) : 'N/A',
-          dataPointsCount: deviceData.length,
+          dataPointsCount: serverReading != null ? 1 : 0,
           status: installation.status || '',
           installationDate: installation.createdAt || ''
         });
@@ -255,19 +206,49 @@ export default function AdminDeviceFilter() {
       let filteredDevices = deviceList;
       console.log('Total devices before filtering:', deviceList.length);
 
+      // Separate devices with and without server data
+      const devicesWithoutServerData = deviceList.filter(device => !device.hasServerData);
+      let devicesWithServerData = deviceList.filter(device => device.hasServerData);
+
+      // Apply team filter to both groups
       if (teamId) {
-        filteredDevices = filteredDevices.filter(device => device.teamId === teamId);
-        console.log('After team filter:', filteredDevices.length);
+        devicesWithServerData = devicesWithServerData.filter(device => device.teamId === teamId);
+        const devicesWithoutServerDataFiltered = devicesWithoutServerData.filter(device => device.teamId === teamId);
+        console.log('After team filter - with data:', devicesWithServerData.length, 'without data:', devicesWithoutServerDataFiltered.length);
+        
+        // If noServerData checkbox is checked, only show devices without server data
+        if (noServerData) {
+          filteredDevices = devicesWithoutServerDataFiltered;
+        } else {
+          // Otherwise, combine both groups
+          filteredDevices = [...devicesWithServerData, ...devicesWithoutServerDataFiltered];
+        }
+      } else {
+        // No team filter
+        if (noServerData) {
+          filteredDevices = devicesWithoutServerData;
+        } else {
+          filteredDevices = deviceList;
+        }
       }
 
-      if (variance && variance.trim() !== '' && parseFloat(variance) > 0) {
+      // Apply variance filter ONLY to devices with server data, then add back devices without server data
+      if (variance && variance.trim() !== '' && parseFloat(variance) > 0 && !noServerData) {
         const varianceThreshold = parseFloat(variance);
         console.log('Applying variance filter with threshold:', varianceThreshold);
-        filteredDevices = filteredDevices.filter(device => {
+        
+        // Filter devices WITH server data by variance
+        const filteredWithData = filteredDevices.filter(device => device.hasServerData).filter(device => {
           if (device.variance === 'N/A') return false;
           return parseFloat(device.variance) >= varianceThreshold;
         });
-        console.log('After variance filter:', filteredDevices.length);
+        
+        // Keep all devices WITHOUT server data (if team filter was applied, these are already filtered)
+        const withoutData = filteredDevices.filter(device => !device.hasServerData);
+        
+        // Combine: devices matching variance filter + all devices without server data
+        filteredDevices = [...filteredWithData, ...withoutData];
+        console.log('After variance filter - with data:', filteredWithData.length, 'without data:', withoutData.length);
       }
 
       if (readings && readings.trim() !== '') {
@@ -275,12 +256,6 @@ export default function AdminDeviceFilter() {
         console.log('Applying readings filter:', targetReadings);
         // Filter by readings (this would require device data to have reading types)
         // For now, skip this filter or implement based on your data structure
-      }
-
-      if (noServerData) {
-        console.log('Applying no server data filter');
-        filteredDevices = filteredDevices.filter(device => !device.hasServerData);
-        console.log('After no server data filter:', filteredDevices.length);
       }
 
       console.log('Final filtered devices:', filteredDevices.length);
@@ -317,14 +292,21 @@ export default function AdminDeviceFilter() {
 
       // Generate CSV
       const csvRows = [];
-      csvRows.push(['Device ID', 'Installer Name', 'Latitude', 'Longitude']);
+      csvRows.push(['Device ID', 'Installer Name', 'Coordinates', 'User Reading (cm)', 'Server Reading (cm)', 'Variance (%)']);
       
       devices.forEach(device => {
+        // Combine lat/long into one field
+        const coordinates = (device.latitude && device.longitude) 
+          ? `${device.latitude},${device.longitude}` 
+          : 'N/A';
+        
         csvRows.push([
           device.deviceId,
           device.installerName,
-          device.latitude,
-          device.longitude
+          coordinates,
+          device.userReading != null ? device.userReading : 'N/A',
+          device.serverReading != null ? device.serverReading : 'N/A',
+          device.variance
         ]);
       });
 
@@ -540,11 +522,10 @@ export default function AdminDeviceFilter() {
                       <TableHead>Device ID</TableHead>
                       <TableHead>Installer Name</TableHead>
                       <TableHead>Team/Amanah</TableHead>
+                      <TableHead>User Reading (cm)</TableHead>
+                      <TableHead>Server Reading (cm)</TableHead>
+                      <TableHead>Variance (%)</TableHead>
                       <TableHead>Coordinates</TableHead>
-                      <TableHead>Source</TableHead>
-                      <TableHead>Server Data</TableHead>
-                      <TableHead>Variance</TableHead>
-                      <TableHead>Data Points</TableHead>
                       <TableHead>Status</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -562,6 +543,25 @@ export default function AdminDeviceFilter() {
                             <span className="text-muted-foreground text-sm">No team</span>
                           )}
                         </TableCell>
+                        <TableCell className="font-mono">
+                          {device.userReading != null ? device.userReading : (
+                            <span className="text-muted-foreground">N/A</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="font-mono">
+                          {device.serverReading != null ? device.serverReading : (
+                            <span className="text-muted-foreground">N/A</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="font-mono">
+                          {device.variance !== 'N/A' ? (
+                            <Badge variant={parseFloat(device.variance) > 10 ? 'destructive' : 'default'}>
+                              {device.variance}%
+                            </Badge>
+                          ) : (
+                            <span className="text-muted-foreground">N/A</span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-sm">
                           {device.latitude && device.longitude ? (
                             <div className="space-y-1">
@@ -572,21 +572,6 @@ export default function AdminDeviceFilter() {
                             <span className="text-muted-foreground">No coordinates</span>
                           )}
                         </TableCell>
-                        <TableCell>
-                          <Badge variant={device.coordinateSource === 'location_relation' ? 'default' : 'secondary'}>
-                            {device.coordinateSource === 'location_relation' ? 'Location' : 
-                             device.coordinateSource === 'user_entered' ? 'User' : 'None'}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={device.hasServerData ? 'default' : 'destructive'}>
-                            {device.hasServerData ? 'Yes' : 'No'}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="font-mono">
-                          {device.variance}
-                        </TableCell>
-                        <TableCell>{device.dataPointsCount}</TableCell>
                         <TableCell>
                           <Badge variant={
                             device.status === 'verified' ? 'default' :

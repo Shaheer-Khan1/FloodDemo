@@ -18,8 +18,10 @@ The Admin Device Filter feature allows administrators to filter devices based on
 Export filtered device data with the following columns:
 - Device ID
 - Installer Name
-- Latitude (prefers location_id relation, falls back to user-entered)
-- Longitude (prefers location_id relation, falls back to user-entered)
+- Coordinates - Latitude and longitude combined as "lat,long" (prefers location_id relation, falls back to user-entered)
+- User Reading (cm) - The sensor reading entered by the installer
+- Server Reading (cm) - The latest reading from the server (latestDisCm)
+- Variance (%) - Percentage difference between user and server readings
 
 ### 3. Device Statistics
 
@@ -96,19 +98,22 @@ GET http://localhost:3001/api/admin/devices/stats
 ### Using the Filter Interface
 
 1. **Set Filter Criteria**:
-   - Enter a variance threshold (e.g., 10)
+   - Enter a variance threshold (e.g., 10) - filters devices WITH server data
    - Enter comma-separated readings (e.g., z,y,m)
    - Select a specific team/amanah from the dropdown (optional)
-   - Check "Show only devices with no server data" if needed
+   - Check "Show only devices with no server data" to exclude devices with server data
 
 2. **View Results**:
    - Click **Filter Devices** to see results in a table
-   - Results show device ID, installer, team/amanah, coordinates, and data statistics
+   - **Important**: Devices WITHOUT server data are ALWAYS included in results (unless the checkbox is checked)
+   - Variance filter only applies to devices WITH server data
+   - Results show device ID, installer, team/amanah, readings, variance, and coordinates
 
 3. **Export to CSV**:
    - Click **Export CSV** to download filtered results
-   - CSV includes only: Device ID, Installer Name, Latitude, Longitude
-   - Coordinates prioritize location_id relation, then fall back to user-entered coordinates
+   - CSV includes: Device ID, Installer Name, Coordinates, User Reading, Server Reading, Variance
+   - Coordinates are combined as "lat,long" in one column
+   - Includes both devices with and without server data
 
 ## Coordinate Handling
 
@@ -122,46 +127,54 @@ The `coordinateSource` field in the response indicates which source was used.
 
 ## Notes
 
-- The API assumes a `deviceData` collection exists for device readings/telemetry
-- If the `deviceData` collection doesn't exist, all devices will show as having no server data
-- Variance is calculated as the standard deviation of all numeric values in device data
+- Server data is read directly from the `installations` collection (`latestDisCm` field)
+- User reading is the installer's sensor reading (`sensorReading` field)
+- Variance is calculated as the percentage difference: `((|serverReading - userReading|) / userReading) × 100`
+- Devices with variance > 10% are highlighted in red in the results table
+- **Important**: Devices without server data are ALWAYS included in filter results (unless "Show only devices with no server data" is checked)
+- Variance filter only applies to devices WITH server data - devices without server data pass through all filters
 - The frontend page is accessible at `/admin-device-filter` (admin users only)
 
 ## Data Collections
 
 The feature interacts with these Firestore collections:
 
-- **installations**: Device installation records
+- **installations**: Device installation records (contains both user and server readings)
 - **locations**: Location coordinates and metadata
-- **deviceData**: Device telemetry and readings (may need to be created)
+- **teams**: Team/amanah information for filtering
 
-### Expected deviceData Document Structure
+### Installation Document Fields Used
 
 ```json
 {
   "deviceId": "device-001",
-  "value": 123.45,
-  "type": "z",  // or "y", "m", etc.
-  "readingType": "z",  // alternative field name
-  "timestamp": "2026-01-04T12:00:00.000Z"
+  "sensorReading": 125.5,  // User reading in cm
+  "latestDisCm": 123.0,    // Server reading in cm
+  "latestDisTimestamp": "2026-01-04T12:00:00.000Z",
+  "locationId": "location-xyz",
+  "teamId": "team-abc",
+  "installedByName": "John Doe",
+  "status": "verified",
+  "latitude": 12.345678,
+  "longitude": 98.765432
 }
 ```
 
 ## Troubleshooting
 
-### No devices showing data
+### No devices showing server data
 
 If all devices show "No Server Data":
-1. Verify the `deviceData` collection exists in Firestore
-2. Check that device data documents have a `deviceId` field matching installation records
-3. Ensure the backend can access the collection (check Firebase rules)
+1. Check if installations have the `latestDisCm` field populated
+2. Verify that the server data sync process is running
+3. Look in the browser console for any fetch errors
 
 ### Variance shows "N/A"
 
 This occurs when:
-- Device has no data points
-- Device has only one data point (variance requires 2+ values)
-- Device data doesn't have numeric `value` fields
+- Device has no server reading (`latestDisCm` is null)
+- Device has no user reading (`sensorReading` is null)
+- User reading is 0 (division by zero protection)
 
 ### Coordinates missing
 
