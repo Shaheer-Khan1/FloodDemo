@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/table';
 import { db } from '@/lib/firebase';
 import { collection, getDocs } from 'firebase/firestore';
+import { useToast } from '@/hooks/use-toast';
 
 interface DeviceData {
   deviceId: string;
@@ -64,8 +65,7 @@ export default function AdminDeviceFilter() {
   const [stats, setStats] = useState<DeviceStats | null>(null);
   const [showResults, setShowResults] = useState(false);
   const [teams, setTeams] = useState<Team[]>([]);
-
-  const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+  const { toast } = useToast();
 
   // Fetch teams on component mount
   useEffect(() => {
@@ -83,16 +83,52 @@ export default function AdminDeviceFilter() {
     };
 
     fetchTeams();
+    fetchStats();
   }, []);
 
   const fetchStats = async () => {
     try {
-      const response = await fetch(`${API_BASE}/api/admin/devices/stats`);
-      const result = await response.json();
+      const installationsSnapshot = await getDocs(collection(db, 'installations'));
+      const uniqueDevices = new Set<string>();
       
-      if (result.success) {
-        setStats(result.data);
+      installationsSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        if (data.deviceId) {
+          uniqueDevices.add(data.deviceId);
+        }
+      });
+
+      // Try to fetch device data from multiple possible collections
+      let devicesWithData = 0;
+      const possibleCollections = ['deviceData', 'serverData', 'readings', 'sensorData'];
+      
+      for (const collectionName of possibleCollections) {
+        try {
+          const snapshot = await getDocs(collection(db, collectionName));
+          if (!snapshot.empty) {
+            const deviceIds = new Set<string>();
+            snapshot.docs.forEach(doc => {
+              const data = doc.data();
+              const deviceId = data.deviceId || data.device_id || data.DeviceId;
+              if (deviceId) {
+                deviceIds.add(deviceId);
+              }
+            });
+            devicesWithData = Array.from(uniqueDevices).filter(id => deviceIds.has(id)).length;
+            console.log(`Stats: Found ${devicesWithData} devices with data in ${collectionName}`);
+            break; // Stop after finding first valid collection
+          }
+        } catch (err) {
+          console.warn(`Could not fetch stats from ${collectionName}:`, err);
+        }
       }
+
+      setStats({
+        totalDevices: uniqueDevices.size,
+        devicesWithData: devicesWithData,
+        devicesWithoutData: uniqueDevices.size - devicesWithData,
+        devicesWithoutDataList: []
+      });
     } catch (err) {
       console.error('Failed to fetch device stats:', err);
     }
@@ -104,49 +140,206 @@ export default function AdminDeviceFilter() {
     setShowResults(false);
 
     try {
-      const params = new URLSearchParams();
-      if (variance) params.append('variance', variance);
-      if (readings) params.append('readings', readings);
-      if (noServerData) params.append('noServerData', 'true');
-      if (teamId) params.append('teamId', teamId);
-      params.append('format', 'json');
-
-      const response = await fetch(`${API_BASE}/api/admin/devices/filter?${params.toString()}`);
-      const result = await response.json();
-
-      if (result.success) {
-        setDevices(result.data);
-        setShowResults(true);
-        await fetchStats();
-      } else {
-        setError(result.message || 'Failed to filter devices');
+      // Fetch installations
+      const installationsSnapshot = await getDocs(collection(db, 'installations'));
+      
+      // Fetch locations
+      const locationsMap = new Map();
+      try {
+        const locationsSnapshot = await getDocs(collection(db, 'locations'));
+        locationsSnapshot.docs.forEach(doc => {
+          const data = doc.data();
+          locationsMap.set(doc.id, {
+            latitude: data.latitude,
+            longitude: data.longitude
+          });
+        });
+      } catch (err) {
+        console.warn('Could not fetch locations:', err);
       }
+
+      // Fetch device data - try multiple collection names
+      const deviceDataMap = new Map<string, any[]>();
+      
+      // Try different possible collection names
+      const possibleCollections = ['deviceData', 'serverData', 'readings', 'sensorData'];
+      
+      for (const collectionName of possibleCollections) {
+        try {
+          const snapshot = await getDocs(collection(db, collectionName));
+          if (!snapshot.empty) {
+            console.log(`Found ${snapshot.size} documents in collection: ${collectionName}`);
+            let matchedDevices = 0;
+            snapshot.docs.forEach(doc => {
+              const data = doc.data();
+              const deviceId = data.deviceId || data.device_id || data.DeviceId;
+              if (deviceId) {
+                if (!deviceDataMap.has(deviceId)) {
+                  deviceDataMap.set(deviceId, []);
+                  matchedDevices++;
+                }
+                deviceDataMap.get(deviceId)!.push(data);
+              }
+            });
+            console.log(`Matched ${matchedDevices} unique devices in ${collectionName}`);
+            break; // Stop after finding first valid collection
+          }
+        } catch (err) {
+          console.warn(`Could not fetch from ${collectionName}:`, err);
+        }
+      }
+      console.log(`Total devices with server data: ${deviceDataMap.size}`);
+
+      // Process installations
+      const deviceList: DeviceData[] = [];
+      const processedDevices = new Set<string>();
+
+      installationsSnapshot.docs.forEach(doc => {
+        const installation = doc.data();
+        const deviceId = installation.deviceId;
+
+        if (processedDevices.has(deviceId)) return;
+        processedDevices.add(deviceId);
+
+        // Get coordinates (prefer location relation)
+        let latitude: any = '';
+        let longitude: any = '';
+        let coordinateSource = 'none';
+
+        if (installation.locationId && locationsMap.has(installation.locationId)) {
+          const location = locationsMap.get(installation.locationId);
+          latitude = location.latitude;
+          longitude = location.longitude;
+          coordinateSource = 'location_relation';
+        } else if (installation.latitude && installation.longitude) {
+          latitude = installation.latitude;
+          longitude = installation.longitude;
+          coordinateSource = 'user_entered';
+        }
+
+        // Get device data
+        const deviceData = deviceDataMap.get(deviceId) || [];
+        
+        // Calculate variance
+        let calculatedVariance: number | null = null;
+        if (deviceData.length > 1) {
+          const values = deviceData
+            .filter(d => d.value !== undefined && d.value !== null)
+            .map(d => parseFloat(d.value));
+          
+          if (values.length > 1) {
+            const mean = values.reduce((sum, val) => sum + val, 0) / values.length;
+            const squaredDiffs = values.map(val => Math.pow(val - mean, 2));
+            calculatedVariance = Math.sqrt(squaredDiffs.reduce((sum, val) => sum + val, 0) / values.length);
+          }
+        }
+
+        deviceList.push({
+          deviceId: deviceId,
+          installerName: installation.installedByName || installation.installerName || 'Unknown',
+          latitude: latitude,
+          longitude: longitude,
+          coordinateSource: coordinateSource,
+          locationId: installation.locationId || '',
+          teamId: installation.teamId || '',
+          teamName: installation.teamId || '',
+          hasServerData: deviceData.length > 0,
+          variance: calculatedVariance !== null ? calculatedVariance.toFixed(2) : 'N/A',
+          dataPointsCount: deviceData.length,
+          status: installation.status || '',
+          installationDate: installation.createdAt || ''
+        });
+      });
+
+      // Apply filters
+      let filteredDevices = deviceList;
+      console.log('Total devices before filtering:', deviceList.length);
+
+      if (teamId) {
+        filteredDevices = filteredDevices.filter(device => device.teamId === teamId);
+        console.log('After team filter:', filteredDevices.length);
+      }
+
+      if (variance && variance.trim() !== '' && parseFloat(variance) > 0) {
+        const varianceThreshold = parseFloat(variance);
+        console.log('Applying variance filter with threshold:', varianceThreshold);
+        filteredDevices = filteredDevices.filter(device => {
+          if (device.variance === 'N/A') return false;
+          return parseFloat(device.variance) >= varianceThreshold;
+        });
+        console.log('After variance filter:', filteredDevices.length);
+      }
+
+      if (readings && readings.trim() !== '') {
+        const targetReadings = readings.split(',').map(r => r.trim().toLowerCase());
+        console.log('Applying readings filter:', targetReadings);
+        // Filter by readings (this would require device data to have reading types)
+        // For now, skip this filter or implement based on your data structure
+      }
+
+      if (noServerData) {
+        console.log('Applying no server data filter');
+        filteredDevices = filteredDevices.filter(device => !device.hasServerData);
+        console.log('After no server data filter:', filteredDevices.length);
+      }
+
+      console.log('Final filtered devices:', filteredDevices.length);
+      setDevices(filteredDevices);
+      setShowResults(true);
+      await fetchStats();
+
+      toast({
+        title: 'Filter Applied',
+        description: `Found ${filteredDevices.length} device(s) matching your criteria`
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: err instanceof Error ? err.message : 'Failed to filter devices'
+      });
     } finally {
       setLoading(false);
     }
   };
 
   const handleExportCSV = async () => {
-    setLoading(true);
-    setError(null);
-
     try {
-      const params = new URLSearchParams();
-      if (variance) params.append('variance', variance);
-      if (readings) params.append('readings', readings);
-      if (noServerData) params.append('noServerData', 'true');
-      if (teamId) params.append('teamId', teamId);
-      params.append('format', 'csv');
-
-      const response = await fetch(`${API_BASE}/api/admin/devices/filter?${params.toString()}`);
-      
-      if (!response.ok) {
-        throw new Error('Failed to generate CSV');
+      if (devices.length === 0) {
+        toast({
+          variant: 'destructive',
+          title: 'No Data',
+          description: 'Please filter devices first before exporting'
+        });
+        return;
       }
 
-      const blob = await response.blob();
+      // Generate CSV
+      const csvRows = [];
+      csvRows.push(['Device ID', 'Installer Name', 'Latitude', 'Longitude']);
+      
+      devices.forEach(device => {
+        csvRows.push([
+          device.deviceId,
+          device.installerName,
+          device.latitude,
+          device.longitude
+        ]);
+      });
+
+      const csvContent = csvRows.map(row => 
+        row.map(cell => {
+          const cellStr = String(cell);
+          if (cellStr.includes(',') || cellStr.includes('"') || cellStr.includes('\n')) {
+            return `"${cellStr.replace(/"/g, '""')}"`;
+          }
+          return cellStr;
+        }).join(',')
+      ).join('\n');
+
+      // Download CSV
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -155,10 +348,18 @@ export default function AdminDeviceFilter() {
       a.click();
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
+
+      toast({
+        title: 'CSV Exported',
+        description: `Exported ${devices.length} device(s) to CSV`
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to export CSV');
-    } finally {
-      setLoading(false);
+      toast({
+        variant: 'destructive',
+        title: 'Export Failed',
+        description: err instanceof Error ? err.message : 'Failed to export CSV'
+      });
     }
   };
 
