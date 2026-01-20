@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp, deleteDoc, writeBatch } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, auth } from "@/lib/firebase";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
+import { getInstallationsCollection, getDevicesCollection } from "@/lib/user-utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -189,13 +190,14 @@ export default function Verification() {
   useEffect(() => {
     if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
 
-    // Fetch installations
+    // Fetch installations (or smartLPG data for Smart LPG users)
     // - Admins: All installations
     // - Managers: All installations (to see escalated items from any team)
     // - Verifiers: Filter by team
+    const collectionName = getInstallationsCollection(auth.currentUser);
     const installationsQuery = (userProfile.isAdmin || userProfile.role === "manager")
-      ? collection(db, "installations")
-      : query(collection(db, "installations"), where("teamId", "==", userProfile.teamId || null));
+      ? collection(db, collectionName)
+      : query(collection(db, collectionName), where("teamId", "==", userProfile.teamId || null));
 
     const unsubscribe = onSnapshot(
       installationsQuery as any,
@@ -259,8 +261,9 @@ export default function Verification() {
   useEffect(() => {
     if (!userProfile?.isAdmin && userProfile?.role !== "verifier" && userProfile?.role !== "manager") return;
 
+    const devicesCollectionName = getDevicesCollection(auth.currentUser);
     const unsubscribe = onSnapshot(
-      collection(db, "devices"),
+      collection(db, devicesCollectionName),
       (snapshot) => {
         const devicesData = snapshot.docs.map(doc => ({
           ...doc.data(),
@@ -1615,11 +1618,17 @@ export default function Verification() {
   const fetchInProgressRef = useRef<Set<string>>(new Set());
 
   const fetchLatestServerReadings = async (installation: Installation) => {
-    if (!installation?.deviceId) return;
+    if (!installation?.deviceId) {
+      console.warn('⚠️ fetchLatestServerReadings called without deviceId');
+      return;
+    }
     
     // Prevent duplicate fetches for the same device
     const fetchKey = `${installation.deviceId}_${installation.id}`;
+    console.log(`🔄 Refreshing device: ${installation.deviceId} (Installation: ${installation.id})`);
+    
     if (fetchInProgressRef.current.has(fetchKey)) {
+      console.warn(`⚠️ Fetch already in progress for ${fetchKey}, skipping`);
       return;
     }
     
@@ -1628,9 +1637,15 @@ export default function Verification() {
     
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+      const timeoutId = setTimeout(() => {
+        console.warn(`⏱️ Request timeout after 15s for device ${installation.deviceId}, aborting...`);
+        controller.abort();
+      }, 15000); // 15 second timeout
       
-      const apiResponse = await fetch(`https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`, {
+      const apiUrl = `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`;
+      console.log(`📡 Fetching from API: ${apiUrl}`);
+      
+      const apiResponse = await fetch(apiUrl, {
         method: 'GET',
         headers: {
           'X-API-KEY': import.meta.env.VITE_API_KEY || ''
@@ -1639,9 +1654,11 @@ export default function Verification() {
       });
       
       clearTimeout(timeoutId);
+      console.log(`✅ API Response received: Status ${apiResponse.status}`);
       
       // If server hasn't ingested data yet, the API may return 404. Show a friendly message instead of an error.
       if (apiResponse.status === 404) {
+        console.log(`ℹ️ Device ${installation.deviceId} not found on server (404) - marking as refreshed`);
         await updateDoc(doc(db, "installations", installation.id), {
           serverRefreshedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -1651,8 +1668,19 @@ export default function Verification() {
         });
         return;
       }
-      if (!apiResponse.ok) throw new Error(`API ${apiResponse.status}`);
+      
+      if (!apiResponse.ok) {
+        console.error(`❌ API returned error status: ${apiResponse.status}`);
+        throw new Error(`API ${apiResponse.status}`);
+      }
+      
+      console.log('📦 Parsing API response JSON...');
       const apiData = await apiResponse.json();
+      console.log('📊 API Data received:', {
+        recordsCount: apiData?.records?.length || 0,
+        latestRecord: apiData?.records?.[0] || null
+      });
+      
       const latestRecord = apiData?.records?.[0];
       const latestDistance = latestRecord?.dis_cm ?? null;
 
@@ -1663,6 +1691,15 @@ export default function Verification() {
         ? (Math.abs(latestDistance - installation.sensorReading) / installation.sensorReading) * 100
         : undefined;
       const preVerified = variancePct !== undefined && variancePct < 5;
+
+      console.log(`📊 Device data processed:`, {
+        deviceId: installation.deviceId,
+        userReading: installation.sensorReading,
+        serverReading: latestDistance,
+        variancePct: variancePct?.toFixed(2),
+        preVerified,
+        hasServerData
+      });
 
       if (variancePct !== undefined && variancePct > 10) {
         // Auto-reject due to high variance
@@ -1699,6 +1736,13 @@ export default function Verification() {
         });
       }
 
+      console.log(`✅ Successfully processed device ${installation.deviceId}:`, {
+        hasServerData,
+        latestDistance,
+        variancePct,
+        preVerified
+      });
+
       toast({
         title: variancePct !== undefined && variancePct > 10
           ? "Installation Auto-Rejected"
@@ -1706,6 +1750,24 @@ export default function Verification() {
         description: hasServerData ? `Latest dis_cm: ${latestDistance}` : "No valid records returned.",
       });
     } catch (e) {
+      console.error(`❌ Fetch failed for device ${installation.deviceId}:`, {
+        error: e,
+        errorName: e instanceof Error ? e.name : 'Unknown',
+        errorMessage: e instanceof Error ? e.message : String(e),
+        errorStack: e instanceof Error ? e.stack : undefined,
+        deviceId: installation.deviceId,
+        installationId: installation.id
+      });
+
+      // Special handling for AbortError
+      if (e instanceof Error && e.name === 'AbortError') {
+        console.error('🚫 Request was aborted. Possible reasons:');
+        console.error('  1. Request took longer than 15 seconds (timeout)');
+        console.error('  2. Component unmounted during fetch');
+        console.error('  3. User navigated away');
+        console.error('  4. Network issue or server not responding');
+      }
+
       toast({
         variant: "destructive",
         title: "Fetch Failed",
@@ -1713,6 +1775,7 @@ export default function Verification() {
       });
     } finally {
       const fetchKey = `${installation.deviceId}_${installation.id}`;
+      console.log(`🏁 Cleanup: Removing fetch lock for ${fetchKey}`);
       fetchInProgressRef.current.delete(fetchKey);
       setFetchingMap(prev => ({ ...prev, [installation.id]: false }));
     }

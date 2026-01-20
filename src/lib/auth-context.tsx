@@ -22,7 +22,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const userDoc = await getDoc(doc(db, 'users', uid));
       if (userDoc.exists()) {
-        setUserProfile({ uid: userDoc.id, ...userDoc.data() } as UserProfile);
+        const userData = { uid: userDoc.id, ...userDoc.data() } as UserProfile;
+        
+        // Auto-grant admin access to specific emails
+        const adminEmails = ['user@smart.com']; // Add more admin emails here as needed
+        if (userData.email && adminEmails.includes(userData.email.toLowerCase())) {
+          userData.isAdmin = true;
+          console.log(`✅ Auto-granted admin access to: ${userData.email}`);
+        }
+        
+        setUserProfile(userData);
       } else {
         setUserProfile(null);
       }

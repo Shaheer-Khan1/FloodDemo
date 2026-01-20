@@ -17,8 +17,9 @@ function useDebounce<T>(value: T, delay: number): T {
   return debouncedValue;
 }
 import { collection, onSnapshot, query, orderBy, doc, updateDoc } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, auth } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
+import { getInstallationsCollection, getDevicesCollection, isSmartLPGUser } from "@/lib/user-utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -45,11 +46,12 @@ interface DeviceWithDetails extends Device {
   serverData?: ServerData;
 }
 
-const statusConfig = {
+const statusConfig: Record<string, { label: string; icon: any; color: string }> = {
   pending: { label: "Pending", icon: Clock, color: "text-yellow-600 bg-yellow-50 dark:bg-yellow-950/20 border-yellow-200 dark:border-yellow-800" },
   installed: { label: "Installed", icon: Package, color: "text-blue-600 bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800" },
   verified: { label: "Verified", icon: CheckCircle, color: "text-green-600 bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800" },
   flagged: { label: "Flagged", icon: AlertTriangle, color: "text-red-600 bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800" },
+  unknown: { label: "Unknown", icon: AlertCircle, color: "text-gray-600 bg-gray-50 dark:bg-gray-950/20 border-gray-200 dark:border-gray-800" },
 };
 
 export default function Devices() {
@@ -61,6 +63,7 @@ export default function Devices() {
   const [serverDataList, setServerDataList] = useState<ServerData[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
+  const isLPGUser = isSmartLPGUser(auth.currentUser);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [productFilter, setProductFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<string>("");
@@ -75,16 +78,24 @@ export default function Devices() {
   // Real-time devices listener (admin only)
   useEffect(() => {
     if (!userProfile?.isAdmin) return;
-    const devicesQuery = collection(db, "devices");
+    const devicesCollectionName = getDevicesCollection(auth.currentUser);
+    const devicesQuery = collection(db, devicesCollectionName);
 
     const unsubscribe = onSnapshot(
       devicesQuery as any,
       (snapshot) => {
         const devicesData = snapshot.docs.map(doc => ({
+          id: doc.id,
           ...doc.data(),
           createdAt: doc.data().createdAt?.toDate(),
           updatedAt: doc.data().updatedAt?.toDate(),
         })) as Device[];
+        
+        // Debug: Log first device to see actual structure
+        if (devicesData.length > 0 && isLPGUser) {
+          console.log('📊 Smart LPG Device Sample:', devicesData[0]);
+          console.log('📊 Available fields:', Object.keys(devicesData[0]));
+        }
         
         setDevices(devicesData);
         setLoading(false);
@@ -105,7 +116,8 @@ export default function Devices() {
   // Real-time installations listener (admin only)
   useEffect(() => {
     if (!userProfile?.isAdmin) return;
-    const installationsQuery = collection(db, "installations");
+    const installationsCollectionName = getInstallationsCollection(auth.currentUser);
+    const installationsQuery = collection(db, installationsCollectionName);
 
     const unsubscribe = onSnapshot(
       installationsQuery as any,
@@ -117,6 +129,13 @@ export default function Devices() {
           updatedAt: doc.data().updatedAt?.toDate(),
           verifiedAt: doc.data().verifiedAt?.toDate(),
         })) as Installation[];
+        
+        // Debug: Log first installation to see actual structure
+        if (installationsData.length > 0 && isLPGUser) {
+          console.log('📋 Smart LPG Installation Sample:', installationsData[0]);
+          console.log('📋 Available installation fields:', Object.keys(installationsData[0]));
+        }
+        
         setInstallations(installationsData);
       },
       (error) => {
@@ -752,34 +771,77 @@ export default function Devices() {
                   <TableHead className="px-2 py-2 w-[200px]">
                     <div className="truncate">Device UID</div>
                   </TableHead>
-                  <TableHead className="px-2 py-2 w-[70px]">
-                    <div className="truncate">Box</div>
-                  </TableHead>
-                  <TableHead className="px-2 py-2 w-[80px]">
-                    <div className="truncate">Product</div>
-                  </TableHead>
+                  {!isLPGUser && (
+                    <>
+                      <TableHead className="px-2 py-2 w-[70px]">
+                        <div className="truncate">Box</div>
+                      </TableHead>
+                      <TableHead className="px-2 py-2 w-[80px]">
+                        <div className="truncate">Product</div>
+                      </TableHead>
+                    </>
+                  )}
+                  {isLPGUser && (
+                    <>
+                      <TableHead className="px-2 py-2 w-[120px]">
+                        <div className="truncate">Device Type</div>
+                      </TableHead>
+                      <TableHead className="px-2 py-2 w-[100px]">
+                        <div className="truncate">Level (cm)</div>
+                      </TableHead>
+                      <TableHead className="px-2 py-2 w-[100px]">
+                        <div className="truncate">Level (%)</div>
+                      </TableHead>
+                      <TableHead className="px-2 py-2 w-[80px]">
+                        <div className="truncate">Battery (V)</div>
+                      </TableHead>
+                      <TableHead className="px-2 py-2 w-[80px]">
+                        <div className="truncate">Temp (°C)</div>
+                      </TableHead>
+                      <TableHead className="px-2 py-2 w-[80px]">
+                        <div className="truncate">Signal</div>
+                      </TableHead>
+                    </>
+                  )}
                   <TableHead className="px-2 py-2 w-[110px]">
                     <div className="truncate">Created At</div>
                   </TableHead>
                   <TableHead className="px-2 py-2 w-[90px]">Status</TableHead>
-                  <TableHead className="px-2 py-2 w-[100px]">
-                    <div className="truncate">Installed By</div>
-                  </TableHead>
-                  <TableHead className="px-2 py-2 w-[80px]">
-                    <div className="truncate">Location</div>
-                  </TableHead>
-                  <TableHead className="px-2 py-2 w-[70px]">
-                    <div className="truncate">Sensor</div>
-                  </TableHead>
-                  <TableHead className="px-2 py-2 w-[70px]">
-                    <div className="truncate">Server</div>
-                  </TableHead>
+                  {!isLPGUser && (
+                    <>
+                      <TableHead className="px-2 py-2 w-[100px]">
+                        <div className="truncate">Installed By</div>
+                      </TableHead>
+                      <TableHead className="px-2 py-2 w-[80px]">
+                        <div className="truncate">Location</div>
+                      </TableHead>
+                      <TableHead className="px-2 py-2 w-[70px]">
+                        <div className="truncate">Sensor</div>
+                      </TableHead>
+                      <TableHead className="px-2 py-2 w-[70px]">
+                        <div className="truncate">Server</div>
+                      </TableHead>
+                    </>
+                  )}
+                  {isLPGUser && (
+                    <>
+                      <TableHead className="px-2 py-2 w-[100px]">
+                        <div className="truncate">Manufacturer</div>
+                      </TableHead>
+                      <TableHead className="px-2 py-2 w-[100px]">
+                        <div className="truncate">Model</div>
+                      </TableHead>
+                      <TableHead className="px-2 py-2 w-[100px]">
+                        <div className="truncate">IMEI</div>
+                      </TableHead>
+                    </>
+                  )}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredDevices.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={isLPGUser ? 11 : 9} className="text-center text-muted-foreground py-8">
                       No devices found
                     </TableCell>
                   </TableRow>
@@ -787,47 +849,106 @@ export default function Devices() {
                   displayedDevices.map((device) => {
                     // Check if device has an installation
                     const hasInstallation = !!device.installation;
-                    const config = statusConfig[device.status];
+                    const config = statusConfig[device.status] || statusConfig.unknown;
                     const Icon = config.icon;
                     
                     return (
                       <TableRow key={device.id} className="text-xs">
+                        {/* Device UID */}
                         <TableCell className="px-2 py-2 font-mono font-medium">
                           <div className="whitespace-nowrap">
-                            {device.id}
+                            {isLPGUser ? ((device as any).device_id || device.id) : device.id}
                           </div>
                         </TableCell>
-                        <TableCell className="px-2 py-2 text-xs">
-                          {(() => {
-                            // Show original code as primary, and final identifier (boxNumber) as a tag below if present
-                            const original = device.boxCode || "-";
-                            const identifier = device.boxNumber;
-                            return (
-                              <div className="space-y-0.5">
-                                <div className="break-words" title={original}>
-                                  {original}
-                                </div>
-                                {identifier && (
-                                  <div className="inline-flex items-center rounded-full border border-muted px-1.5 py-0.5 text-[10px] text-muted-foreground bg-muted/40">
-                                    ID: {identifier}
+
+                        {/* Flood Sensor Specific Columns */}
+                        {!isLPGUser && (
+                          <>
+                            <TableCell className="px-2 py-2 text-xs">
+                              {(() => {
+                                const original = device.boxCode || "-";
+                                const identifier = device.boxNumber;
+                                return (
+                                  <div className="space-y-0.5">
+                                    <div className="break-words" title={original}>
+                                      {original}
+                                    </div>
+                                    {identifier && (
+                                      <div className="inline-flex items-center rounded-full border border-muted px-1.5 py-0.5 text-[10px] text-muted-foreground bg-muted/40">
+                                        ID: {identifier}
+                                      </div>
+                                    )}
                                   </div>
-                                )}
+                                );
+                              })()}
+                            </TableCell>
+                            <TableCell className="px-2 py-2">
+                              <div className="truncate max-w-[80px]" title={device.productId}>
+                                {device.productId}
                               </div>
-                            );
-                          })()}
-                        </TableCell>
-                        <TableCell className="px-2 py-2">
-                          <div className="truncate max-w-[80px]" title={device.productId}>
-                            {device.productId}
-                          </div>
-                        </TableCell>
+                            </TableCell>
+                          </>
+                        )}
+
+                        {/* Smart LPG Specific Columns */}
+                        {isLPGUser && (
+                          <>
+                            <TableCell className="px-2 py-2">
+                              <div className="truncate max-w-[120px]" title={(device as any).device_type || "-"}>
+                                {(device as any).device_type || "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell className="px-2 py-2">
+                              <div className="truncate max-w-[100px]" title={String((device as any).level_cm ?? "-")}>
+                                {(device as any).level_cm ?? "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell className="px-2 py-2">
+                              <div className="truncate max-w-[100px]" title={String((device as any).level_percent ?? "-")}>
+                                {(device as any).level_percent ?? "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell className="px-2 py-2">
+                              <div className="truncate max-w-[80px]" title={String((device as any).battery_volt ?? "-")}>
+                                {(device as any).battery_volt ?? "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell className="px-2 py-2">
+                              <div className="truncate max-w-[80px]" title={String((device as any).temp ?? "-")}>
+                                {(device as any).temp ?? "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell className="px-2 py-2">
+                              <div className="truncate max-w-[80px]" title={String((device as any).signal_rssi ?? "-")}>
+                                {(device as any).signal_rssi ?? "-"}
+                              </div>
+                            </TableCell>
+                          </>
+                        )}
+
+                        {/* Created At */}
                         <TableCell className="px-2 py-2 text-muted-foreground">
-                          <div className="truncate max-w-[110px]" title={device.createdAt ? format(device.createdAt, "MMM d, yyyy HH:mm") : "-"}>
-                            {device.createdAt 
-                              ? format(device.createdAt, "MMM d, yyyy HH:mm")
-                              : "-"}
+                          <div className="truncate max-w-[110px]" title={
+                            isLPGUser 
+                              ? ((device as any).timestamp_utc || (device as any).created_at)
+                              : (device.createdAt ? format(device.createdAt, "MMM d, yyyy HH:mm") : "-")
+                          }>
+                            {isLPGUser 
+                              ? (() => {
+                                  const timestamp = (device as any).timestamp_utc || (device as any).created_at;
+                                  if (!timestamp) return "-";
+                                  try {
+                                    return format(new Date(timestamp), "MMM d, HH:mm");
+                                  } catch {
+                                    return timestamp;
+                                  }
+                                })()
+                              : (device.createdAt ? format(device.createdAt, "MMM d, yyyy HH:mm") : "-")
+                            }
                           </div>
                         </TableCell>
+
+                        {/* Status */}
                         <TableCell className="px-2 py-2">
                           {!hasInstallation ? (
                             <Badge variant="outline" className="text-slate-600 bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-[10px] px-1.5 py-0.5">
@@ -835,32 +956,59 @@ export default function Devices() {
                               Not Installed
                             </Badge>
                           ) : (
-                          <Badge variant="outline" className={`${config.color} text-[10px] px-1.5 py-0.5`}>
-                            <Icon className="h-2.5 w-2.5 mr-0.5" />
-                            {config.label}
-                          </Badge>
+                            <Badge variant="outline" className={`${config.color} text-[10px] px-1.5 py-0.5`}>
+                              <Icon className="h-2.5 w-2.5 mr-0.5" />
+                              {config.label}
+                            </Badge>
                           )}
                         </TableCell>
-                        <TableCell className="px-2 py-2">
-                          <div className="truncate max-w-[100px]" title={device.installation?.installedByName || "-"}>
-                            {device.installation?.installedByName || "-"}
-                          </div>
-                        </TableCell>
-                        <TableCell className="px-2 py-2">
-                          <div className="truncate max-w-[80px]" title={device.installation?.locationId || "-"}>
-                            {device.installation?.locationId || "-"}
-                          </div>
-                        </TableCell>
-                        <TableCell className="px-2 py-2">
-                          <div className="truncate max-w-[70px]" title={String(device.installation?.sensorReading ?? "-")}>
-                            {device.installation?.sensorReading ?? "-"}
-                          </div>
-                        </TableCell>
-                        <TableCell className="px-2 py-2">
-                          <div className="truncate max-w-[70px]" title={String(device.serverData?.sensorData ?? "-")}>
-                            {device.serverData?.sensorData ?? "-"}
-                          </div>
-                        </TableCell>
+
+                        {/* Flood Sensor Additional Columns */}
+                        {!isLPGUser && (
+                          <>
+                            <TableCell className="px-2 py-2">
+                              <div className="truncate max-w-[100px]" title={device.installation?.installedByName || "-"}>
+                                {device.installation?.installedByName || "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell className="px-2 py-2">
+                              <div className="truncate max-w-[80px]" title={device.installation?.locationId || "-"}>
+                                {device.installation?.locationId || "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell className="px-2 py-2">
+                              <div className="truncate max-w-[70px]" title={String(device.installation?.sensorReading ?? "-")}>
+                                {device.installation?.sensorReading ?? "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell className="px-2 py-2">
+                              <div className="truncate max-w-[70px]" title={String(device.serverData?.sensorData ?? "-")}>
+                                {device.serverData?.sensorData ?? "-"}
+                              </div>
+                            </TableCell>
+                          </>
+                        )}
+
+                        {/* Smart LPG Additional Columns */}
+                        {isLPGUser && (
+                          <>
+                            <TableCell className="px-2 py-2">
+                              <div className="truncate max-w-[100px]" title={(device as any).manufacturer || "-"}>
+                                {(device as any).manufacturer || "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell className="px-2 py-2">
+                              <div className="truncate max-w-[100px]" title={(device as any).model || "-"}>
+                                {(device as any).model || "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell className="px-2 py-2 font-mono text-xs">
+                              <div className="truncate max-w-[100px]" title={(device as any).imei || "-"}>
+                                {(device as any).imei || "-"}
+                              </div>
+                            </TableCell>
+                          </>
+                        )}
                       </TableRow>
                     );
                   })

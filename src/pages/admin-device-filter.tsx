@@ -22,9 +22,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { db } from '@/lib/firebase';
+import { db, auth } from '@/lib/firebase';
 import { collection, getDocs } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
+import * as XLSX from 'xlsx';
+import { onAuthStateChanged } from 'firebase/auth';
 
 interface DeviceData {
   deviceId: string;
@@ -61,51 +63,95 @@ export default function AdminDeviceFilter() {
   const [readings, setReadings] = useState('');
   const [noServerData, setNoServerData] = useState(false);
   const [teamId, setTeamId] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [devices, setDevices] = useState<DeviceData[]>([]);
   const [stats, setStats] = useState<DeviceStats | null>(null);
   const [showResults, setShowResults] = useState(false);
   const [teams, setTeams] = useState<Team[]>([]);
+  const [isSmartLPGUser, setIsSmartLPGUser] = useState(false);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
   const { toast } = useToast();
+
+  // Check user authentication and email
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user?.email) {
+        console.log('👤 Current user email:', user.email);
+        setUserEmail(user.email);
+        setIsSmartLPGUser(user.email === 'user@smart.com');
+      } else {
+        setUserEmail(null);
+        setIsSmartLPGUser(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   // Fetch teams on component mount
   useEffect(() => {
     const fetchTeams = async () => {
+      console.log('👥 Fetching teams...');
       try {
         const teamsSnapshot = await getDocs(collection(db, 'teams'));
         const teamsData = teamsSnapshot.docs.map(doc => ({
           id: doc.id,
           name: doc.data().name || 'Unnamed Team'
         }));
+        console.log(`✅ Fetched ${teamsData.length} teams`);
         setTeams(teamsData);
       } catch (err) {
-        console.error('Failed to fetch teams:', err);
+        console.error('❌ Failed to fetch teams:', {
+          error: err,
+          errorName: err instanceof Error ? err.name : 'Unknown',
+          errorMessage: err instanceof Error ? err.message : String(err),
+          errorStack: err instanceof Error ? err.stack : undefined
+        });
       }
     };
 
+    console.log('🚀 Component mounted - initializing data fetch');
     fetchTeams();
-    fetchStats();
   }, []);
 
+  // Re-fetch stats when user type changes
+  useEffect(() => {
+    if (userEmail !== null) {
+      fetchStats();
+    }
+  }, [isSmartLPGUser, userEmail]);
+
   const fetchStats = async () => {
+    console.log('📊 Fetching device stats...');
     try {
-      const installationsSnapshot = await getDocs(collection(db, 'installations'));
+      const collectionName = isSmartLPGUser ? 'smartLPG' : 'installations';
+      console.log(`📚 Using collection: ${collectionName}`);
+      
+      const dataSnapshot = await getDocs(collection(db, collectionName));
       const uniqueDevices = new Set<string>();
       const devicesWithServerData = new Set<string>();
       
-      installationsSnapshot.docs.forEach(doc => {
+      dataSnapshot.docs.forEach(doc => {
         const data = doc.data();
-        if (data.deviceId) {
-          uniqueDevices.add(data.deviceId);
-          // Check if device has server data (latestDisCm)
-          if (data.latestDisCm != null) {
-            devicesWithServerData.add(data.deviceId);
+        const deviceId = isSmartLPGUser ? data.deviceId || doc.id : data.deviceId;
+        
+        if (deviceId) {
+          uniqueDevices.add(deviceId);
+          // Check if device has server data (latestDisCm for flood, or level data for Smart LPG)
+          const hasData = isSmartLPGUser 
+            ? (data.level_cm != null || data.level_percent != null) 
+            : (data.latestDisCm != null);
+          
+          if (hasData) {
+            devicesWithServerData.add(deviceId);
           }
         }
       });
 
-      console.log(`Stats: Total ${uniqueDevices.size} devices, ${devicesWithServerData.size} with server data`);
+      console.log(`✅ Stats fetched: Total ${uniqueDevices.size} devices, ${devicesWithServerData.size} with server data`);
 
       setStats({
         totalDevices: uniqueDevices.size,
@@ -114,18 +160,27 @@ export default function AdminDeviceFilter() {
         devicesWithoutDataList: []
       });
     } catch (err) {
-      console.error('Failed to fetch device stats:', err);
+      console.error('❌ Failed to fetch device stats:', {
+        error: err,
+        errorName: err instanceof Error ? err.name : 'Unknown',
+        errorMessage: err instanceof Error ? err.message : String(err),
+        errorStack: err instanceof Error ? err.stack : undefined
+      });
     }
   };
 
   const handleFilter = async () => {
+    console.log('🔍 Starting filter operation...');
     setLoading(true);
     setError(null);
     setShowResults(false);
 
     try {
-      // Fetch installations
-      const installationsSnapshot = await getDocs(collection(db, 'installations'));
+      const collectionName = isSmartLPGUser ? 'smartLPG' : 'installations';
+      console.log(`📥 Fetching from ${collectionName} collection...`);
+      
+      const dataSnapshot = await getDocs(collection(db, collectionName));
+      console.log(`✅ Fetched ${dataSnapshot.size} records`);
       
       // Fetch locations
       const locationsMap = new Map();
@@ -142,39 +197,50 @@ export default function AdminDeviceFilter() {
         console.warn('Could not fetch locations:', err);
       }
 
-      // No need to fetch separate device data - it's in installations as latestDisCm
-      console.log('Processing installations for server data...');
+      console.log('Processing data for server readings...');
 
-      // Process installations
+      // Process data
       const deviceList: DeviceData[] = [];
       const processedDevices = new Set<string>();
 
-      installationsSnapshot.docs.forEach(doc => {
-        const installation = doc.data();
-        const deviceId = installation.deviceId;
+      dataSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        const deviceId = isSmartLPGUser ? (data.deviceId || doc.id) : data.deviceId;
 
-        if (processedDevices.has(deviceId)) return;
+        if (!deviceId || processedDevices.has(deviceId)) return;
         processedDevices.add(deviceId);
 
-        // Get coordinates (prefer location relation)
+        // Get coordinates (prefer direct coordinates, fallback to location relation)
         let latitude: any = '';
         let longitude: any = '';
         let coordinateSource = 'none';
 
-        if (installation.locationId && locationsMap.has(installation.locationId)) {
-          const location = locationsMap.get(installation.locationId);
+        if (data.latitude && data.longitude) {
+          // First priority: coordinates directly from data
+          latitude = data.latitude;
+          longitude = data.longitude;
+          coordinateSource = 'user_entered';
+        } else if (data.locationId && locationsMap.has(data.locationId)) {
+          // Fallback: get coordinates from location ID reference
+          const location = locationsMap.get(data.locationId);
           latitude = location.latitude;
           longitude = location.longitude;
           coordinateSource = 'location_relation';
-        } else if (installation.latitude && installation.longitude) {
-          latitude = installation.latitude;
-          longitude = installation.longitude;
-          coordinateSource = 'user_entered';
         }
 
-        // Get readings from installation
-        const userReading = installation.sensorReading != null ? installation.sensorReading : null;
-        const serverReading = installation.latestDisCm != null ? installation.latestDisCm : null;
+        // Get readings based on data type
+        let userReading: number | null = null;
+        let serverReading: number | null = null;
+        
+        if (isSmartLPGUser) {
+          // For Smart LPG IoT: use level data
+          userReading = data.level_cm != null ? data.level_cm : null;
+          serverReading = data.level_percent != null ? data.level_percent : null;
+        } else {
+          // For flood sensors: use distance data
+          userReading = data.sensorReading != null ? data.sensorReading : null;
+          serverReading = data.latestDisCm != null ? data.latestDisCm : null;
+        }
         
         // Calculate variance (percentage difference between user and server readings)
         let calculatedVariance: number | null = null;
@@ -183,22 +249,43 @@ export default function AdminDeviceFilter() {
           calculatedVariance = (diff / userReading) * 100;
         }
 
+        // Convert Firestore timestamp to ISO string
+        let installationDateStr = '';
+        const createdAt = data.createdAt || data.installationDate || data.timestamp;
+        if (createdAt) {
+          try {
+            // Handle Firestore Timestamp object
+            if (createdAt.toDate && typeof createdAt.toDate === 'function') {
+              installationDateStr = createdAt.toDate().toISOString();
+            } else if (createdAt.seconds) {
+              installationDateStr = new Date(createdAt.seconds * 1000).toISOString();
+            } else if (typeof createdAt === 'string') {
+              installationDateStr = createdAt;
+            } else {
+              installationDateStr = new Date(createdAt).toISOString();
+            }
+          } catch (err) {
+            console.warn('Failed to convert installation date for device:', deviceId, err);
+            installationDateStr = '';
+          }
+        }
+
         deviceList.push({
           deviceId: deviceId,
-          installerName: installation.installedByName || installation.installerName || 'Unknown',
+          installerName: data.installedByName || data.installerName || data.device_type || 'Unknown',
           latitude: latitude,
           longitude: longitude,
           coordinateSource: coordinateSource,
-          locationId: installation.locationId || '',
-          teamId: installation.teamId || '',
-          teamName: installation.teamId || '',
+          locationId: data.locationId || '',
+          teamId: data.teamId || '',
+          teamName: data.teamId || '',
           userReading: userReading,
           serverReading: serverReading,
           hasServerData: serverReading != null,
           variance: calculatedVariance !== null ? calculatedVariance.toFixed(2) : 'N/A',
           dataPointsCount: serverReading != null ? 1 : 0,
-          status: installation.status || '',
-          installationDate: installation.createdAt || ''
+          status: data.status || '',
+          installationDate: installationDateStr
         });
       });
 
@@ -251,6 +338,67 @@ export default function AdminDeviceFilter() {
         console.log('After variance filter - with data:', filteredWithData.length, 'without data:', withoutData.length);
       }
 
+      // Apply date range filter
+      if (dateFrom || dateTo) {
+        console.log('Applying date range filter:', { dateFrom, dateTo });
+        console.log('Sample device dates before filter:', filteredDevices.slice(0, 3).map(d => ({ 
+          id: d.deviceId, 
+          date: d.installationDate 
+        })));
+        
+        const beforeFilterCount = filteredDevices.length;
+        filteredDevices = filteredDevices.filter(device => {
+          if (!device.installationDate) {
+            console.log('Device has no installation date:', device.deviceId);
+            return false;
+          }
+          
+          // Parse the installation date
+          let deviceDate: Date;
+          try {
+            deviceDate = new Date(device.installationDate);
+            
+            if (isNaN(deviceDate.getTime())) {
+              console.warn('Invalid date for device:', device.deviceId, 'date value:', device.installationDate);
+              return false;
+            }
+            
+            // Reset hours for comparison
+            const deviceDateOnly = new Date(deviceDate);
+            deviceDateOnly.setHours(0, 0, 0, 0);
+            
+            // Check if device date is within range
+            if (dateFrom) {
+              const fromDate = new Date(dateFrom);
+              fromDate.setHours(0, 0, 0, 0);
+              if (deviceDateOnly < fromDate) {
+                return false;
+              }
+            }
+            
+            if (dateTo) {
+              const toDate = new Date(dateTo);
+              toDate.setHours(0, 0, 0, 0);
+              if (deviceDateOnly > toDate) {
+                return false;
+              }
+            }
+            
+            return true;
+          } catch (err) {
+            console.warn('Error parsing date for device:', device.deviceId, err);
+            return false;
+          }
+        });
+        console.log(`After date filter: ${filteredDevices.length} devices (filtered out ${beforeFilterCount - filteredDevices.length})`);
+        if (filteredDevices.length > 0) {
+          console.log('Sample device dates after filter:', filteredDevices.slice(0, 3).map(d => ({ 
+            id: d.deviceId, 
+            date: d.installationDate 
+          })));
+        }
+      }
+
       if (readings && readings.trim() !== '') {
         const targetReadings = readings.split(',').map(r => r.trim().toLowerCase());
         console.log('Applying readings filter:', targetReadings);
@@ -263,12 +411,31 @@ export default function AdminDeviceFilter() {
       setShowResults(true);
       await fetchStats();
 
+      console.log('✅ Filter operation completed successfully');
       toast({
         title: 'Filter Applied',
         description: `Found ${filteredDevices.length} device(s) matching your criteria`
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      console.error('❌ Filter operation failed:', {
+        error: err,
+        errorName: err instanceof Error ? err.name : 'Unknown',
+        errorMessage: err instanceof Error ? err.message : String(err),
+        errorStack: err instanceof Error ? err.stack : undefined,
+        errorCause: err instanceof Error && 'cause' in err ? err.cause : undefined
+      });
+      
+      // Check if it's an abort error
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.warn('⚠️ Request was aborted. This may be due to:');
+        console.warn('  - Component unmounting before fetch completes');
+        console.warn('  - Manual cancellation');
+        console.warn('  - Timeout');
+        setError('Request was cancelled. Please try again.');
+      } else {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+      }
+      
       toast({
         variant: 'destructive',
         title: 'Error',
@@ -276,12 +443,15 @@ export default function AdminDeviceFilter() {
       });
     } finally {
       setLoading(false);
+      console.log('🏁 Filter operation finished (loading state reset)');
     }
   };
 
   const handleExportCSV = async () => {
+    console.log('📥 Starting export...');
     try {
       if (devices.length === 0) {
+        console.warn('⚠️ No devices to export');
         toast({
           variant: 'destructive',
           title: 'No Data',
@@ -290,57 +460,197 @@ export default function AdminDeviceFilter() {
         return;
       }
 
-      // Generate CSV
-      const csvRows = [];
-      csvRows.push(['Device ID', 'Installer Name', 'Coordinates', 'User Reading (cm)', 'Server Reading (cm)', 'Variance (%)']);
-      
-      devices.forEach(device => {
-        // Combine lat/long into one field
-        const coordinates = (device.latitude && device.longitude) 
-          ? `${device.latitude},${device.longitude}` 
-          : 'N/A';
+      // Check if "All Teams" is selected (teamId is empty or "all")
+      const isAllTeamsSelected = !teamId || teamId === 'all';
+
+      if (isAllTeamsSelected) {
+        console.log(`📊 Generating Excel workbook with separate sheets for each team...`);
         
-        csvRows.push([
-          device.deviceId,
-          device.installerName,
-          coordinates,
-          device.userReading != null ? device.userReading : 'N/A',
-          device.serverReading != null ? device.serverReading : 'N/A',
-          device.variance
-        ]);
-      });
-
-      const csvContent = csvRows.map(row => 
-        row.map(cell => {
-          const cellStr = String(cell);
-          if (cellStr.includes(',') || cellStr.includes('"') || cellStr.includes('\n')) {
-            return `"${cellStr.replace(/"/g, '""')}"`;
+        // Group devices by team
+        const devicesByTeam = new Map<string, DeviceData[]>();
+        devices.forEach(device => {
+          const teamKey = device.teamId || 'No Team';
+          if (!devicesByTeam.has(teamKey)) {
+            devicesByTeam.set(teamKey, []);
           }
-          return cellStr;
-        }).join(',')
-      ).join('\n');
+          devicesByTeam.get(teamKey)!.push(device);
+        });
 
-      // Download CSV
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `devices_filtered_${Date.now()}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
+        console.log(`📋 Found ${devicesByTeam.size} teams to export`);
 
-      toast({
-        title: 'CSV Exported',
-        description: `Exported ${devices.length} device(s) to CSV`
-      });
+        // Create a new workbook
+        const workbook = XLSX.utils.book_new();
+
+        // Create a sheet for each team
+        devicesByTeam.forEach((teamDevices, teamKey) => {
+          // Find the team name from the teams array
+          const team = teams.find(t => t.id === teamKey);
+          const sheetName = team ? team.name : teamKey;
+          
+          console.log(`📄 Creating sheet "${sheetName}" with ${teamDevices.length} devices`);
+
+          // Prepare data for this team
+          const sheetData = [
+            [
+              'Device ID', 
+              isSmartLPGUser ? 'Device Type' : 'Installer Name', 
+              'Installation Date', 
+              'Coordinates', 
+              isSmartLPGUser ? 'Level (cm)' : 'User Reading (cm)', 
+              isSmartLPGUser ? 'Level (%)' : 'Server Reading (cm)', 
+              'Variance (%)'
+            ]
+          ];
+
+          teamDevices.forEach(device => {
+            const coordinates = (device.latitude && device.longitude) 
+              ? `${device.latitude},${device.longitude}` 
+              : 'N/A';
+            
+            // Format installation date
+            let formattedDate = 'N/A';
+            if (device.installationDate) {
+              try {
+                const date = new Date(device.installationDate);
+                if (!isNaN(date.getTime())) {
+                  formattedDate = date.toLocaleDateString();
+                }
+              } catch (err) {
+                formattedDate = 'N/A';
+              }
+            }
+            
+            sheetData.push([
+              device.deviceId,
+              device.installerName,
+              formattedDate,
+              coordinates,
+              device.userReading != null ? device.userReading.toString() : 'N/A',
+              device.serverReading != null ? device.serverReading.toString() : 'N/A',
+              device.variance
+            ]);
+          });
+
+          // Create worksheet from data
+          const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
+
+          // Set column widths for better readability
+          worksheet['!cols'] = [
+            { wch: 15 }, // Device ID
+            { wch: 20 }, // Installer Name
+            { wch: 15 }, // Installation Date
+            { wch: 25 }, // Coordinates
+            { wch: 18 }, // User Reading
+            { wch: 18 }, // Server Reading
+            { wch: 15 }  // Variance
+          ];
+
+          // Add worksheet to workbook with team name as sheet name
+          // Excel sheet names have a 31 character limit
+          const sanitizedSheetName = sheetName.substring(0, 31);
+          XLSX.utils.book_append_sheet(workbook, worksheet, sanitizedSheetName);
+        });
+
+        // Generate Excel file and download
+        const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+        const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `devices_by_team_${Date.now()}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+
+        console.log('✅ Excel export completed successfully');
+        toast({
+          title: 'Excel Exported',
+          description: `Exported ${devices.length} device(s) across ${devicesByTeam.size} team(s) to Excel`
+        });
+      } else {
+        // Single team selected - export as CSV
+        console.log(`📋 Generating CSV for ${devices.length} devices...`);
+        const csvRows = [];
+        csvRows.push([
+          'Device ID', 
+          isSmartLPGUser ? 'Customer Name' : 'Installer Name', 
+          'Installation Date', 
+          'Coordinates', 
+          isSmartLPGUser ? 'Initial Weight/Level' : 'User Reading (cm)', 
+          isSmartLPGUser ? 'Latest Weight/Level' : 'Server Reading (cm)', 
+          'Variance (%)'
+        ]);
+        
+        devices.forEach(device => {
+          const coordinates = (device.latitude && device.longitude) 
+            ? `${device.latitude},${device.longitude}` 
+            : 'N/A';
+          
+          // Format installation date
+          let formattedDate = 'N/A';
+          if (device.installationDate) {
+            try {
+              const date = new Date(device.installationDate);
+              if (!isNaN(date.getTime())) {
+                formattedDate = date.toLocaleDateString();
+              }
+            } catch (err) {
+              formattedDate = 'N/A';
+            }
+          }
+          
+          csvRows.push([
+            device.deviceId,
+            device.installerName,
+            formattedDate,
+            coordinates,
+            device.userReading != null ? device.userReading : 'N/A',
+            device.serverReading != null ? device.serverReading : 'N/A',
+            device.variance
+          ]);
+        });
+
+        const csvContent = csvRows.map(row => 
+          row.map(cell => {
+            const cellStr = String(cell);
+            if (cellStr.includes(',') || cellStr.includes('"') || cellStr.includes('\n')) {
+              return `"${cellStr.replace(/"/g, '""')}"`;
+            }
+            return cellStr;
+          }).join(',')
+        ).join('\n');
+
+        // Download CSV
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `devices_filtered_${Date.now()}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+
+        console.log('✅ CSV export completed successfully');
+        toast({
+          title: 'CSV Exported',
+          description: `Exported ${devices.length} device(s) to CSV`
+        });
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to export CSV');
+      console.error('❌ Export failed:', {
+        error: err,
+        errorName: err instanceof Error ? err.name : 'Unknown',
+        errorMessage: err instanceof Error ? err.message : String(err),
+        errorStack: err instanceof Error ? err.stack : undefined
+      });
+      
+      setError(err instanceof Error ? err.message : 'Failed to export');
       toast({
         variant: 'destructive',
         title: 'Export Failed',
-        description: err instanceof Error ? err.message : 'Failed to export CSV'
+        description: err instanceof Error ? err.message : 'Failed to export data'
       });
     }
   };
@@ -349,9 +659,14 @@ export default function AdminDeviceFilter() {
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Device Filter & Export</h1>
+          <h1 className="text-3xl font-bold">
+            {isSmartLPGUser ? 'Smart LPG Device Filter & Export' : 'Device Filter & Export'}
+          </h1>
           <p className="text-muted-foreground mt-1">
-            Filter devices by variance, readings, or server data status
+            {isSmartLPGUser 
+              ? 'Filter LPG devices by variance, weight/level, or server data status'
+              : 'Filter devices by variance, readings, or server data status'
+            }
           </p>
         </div>
       </div>
@@ -441,6 +756,34 @@ export default function AdminDeviceFilter() {
             </div>
           </div>
 
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="dateFrom">Installation Date From</Label>
+              <Input
+                id="dateFrom"
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Filter devices installed on or after this date
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="dateTo">Installation Date To</Label>
+              <Input
+                id="dateTo"
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Filter devices installed on or before this date
+              </p>
+            </div>
+          </div>
+
           <div className="flex items-center space-x-2">
             <Checkbox
               id="noServerData"
@@ -492,7 +835,7 @@ export default function AdminDeviceFilter() {
               ) : (
                 <>
                   <Download className="mr-2 h-4 w-4" />
-                  Export CSV
+                  {!teamId || teamId === 'all' ? 'Export Excel (By Team)' : 'Export CSV'}
                 </>
               )}
             </Button>
@@ -520,10 +863,11 @@ export default function AdminDeviceFilter() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Device ID</TableHead>
-                      <TableHead>Installer Name</TableHead>
+                      <TableHead>{isSmartLPGUser ? 'Device Type' : 'Installer Name'}</TableHead>
                       <TableHead>Team/Amanah</TableHead>
-                      <TableHead>User Reading (cm)</TableHead>
-                      <TableHead>Server Reading (cm)</TableHead>
+                      <TableHead>Installation Date</TableHead>
+                      <TableHead>{isSmartLPGUser ? 'Level (cm)' : 'User Reading (cm)'}</TableHead>
+                      <TableHead>{isSmartLPGUser ? 'Level (%)' : 'Server Reading (cm)'}</TableHead>
                       <TableHead>Variance (%)</TableHead>
                       <TableHead>Coordinates</TableHead>
                       <TableHead>Status</TableHead>
@@ -541,6 +885,22 @@ export default function AdminDeviceFilter() {
                             <Badge variant="outline">{device.teamName}</Badge>
                           ) : (
                             <span className="text-muted-foreground text-sm">No team</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-sm">
+                          {device.installationDate ? (
+                            (() => {
+                              try {
+                                const date = new Date(device.installationDate);
+                                return !isNaN(date.getTime()) ? date.toLocaleDateString() : (
+                                  <span className="text-muted-foreground">N/A</span>
+                                );
+                              } catch {
+                                return <span className="text-muted-foreground">N/A</span>;
+                              }
+                            })()
+                          ) : (
+                            <span className="text-muted-foreground">N/A</span>
                           )}
                         </TableCell>
                         <TableCell className="font-mono">
