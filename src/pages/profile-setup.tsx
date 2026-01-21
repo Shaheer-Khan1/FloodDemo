@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { MapPin, Loader2 } from "lucide-react";
 
 export default function ProfileSetup() {
-  const { user, userProfile, loading: authLoading } = useAuth();
+  const { user, userProfile, loading: authLoading, refreshProfile } = useAuth();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
@@ -35,9 +35,9 @@ export default function ProfileSetup() {
         return;
       }
 
-      // Try to get profile from userProfiles collection
+      // Try to get profile from users collection
       try {
-        const profileDocRef = doc(db, "userProfiles", user.uid);
+        const profileDocRef = doc(db, "users", user.uid);
         const profileSnapshot = await getDoc(profileDocRef);
         
         if (profileSnapshot.exists()) {
@@ -123,10 +123,7 @@ export default function ProfileSetup() {
         updatedAt: serverTimestamp(),
       };
 
-      // Update profile in both userProfiles and users collections
-      const userProfilesRef = doc(db, "userProfiles", user.uid);
-      await setDoc(userProfilesRef, profileData, { merge: true });
-
+      // Update profile in users collection
       const usersRef = doc(db, "users", user.uid);
       await setDoc(usersRef, profileData, { merge: true });
 
@@ -135,8 +132,11 @@ export default function ProfileSetup() {
         description: "Your profile has been updated.",
       });
       
+      // Refresh profile to get latest data
+      await refreshProfile();
+      
       // Redirect based on role
-      const profileSnapshot = await getDoc(userProfilesRef);
+      const profileSnapshot = await getDoc(usersRef);
       const userProfileData = profileSnapshot.data();
       
       if (userProfileData?.role === "installer") {

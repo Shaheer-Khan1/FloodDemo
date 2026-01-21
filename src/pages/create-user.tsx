@@ -218,10 +218,7 @@ export default function CreateUser() {
         updatedAt: serverTimestamp(),
       };
 
-      // Save to userProfiles
-      await setDoc(doc(db, "userProfiles", newUser.uid), userData);
-      
-      // Also save to users (for auth-context compatibility)
+      // Save to users collection (used by auth-context)
       await setDoc(doc(db, "users", newUser.uid), userData);
 
       // Add user to team members (installers/verifiers only; managers/ministry are global)

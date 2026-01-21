@@ -23,13 +23,7 @@ export default function RoleSelection() {
     setSelectedRole(role);
 
     try {
-      // Update both collections for consistency
-      await updateDoc(doc(db, "userProfiles", userProfile.uid), {
-        role: role,
-        updatedAt: new Date(),
-      });
-
-      // Also update users collection for auth-context compatibility
+      // Update users collection (used by auth-context)
       await updateDoc(doc(db, "users", userProfile.uid), {
         role: role,
         updatedAt: new Date(),
