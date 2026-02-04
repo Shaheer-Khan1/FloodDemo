@@ -83,6 +83,7 @@ export default function Verification() {
   const [teamIdFilter, setTeamIdFilter] = useState<string>("");
   const [dateFilter, setDateFilter] = useState<string>(() => format(new Date(), "yyyy-MM-dd"));
   const [deviceIdFilter, setDeviceIdFilter] = useState<string>("");
+  const [deviceUidsFilter, setDeviceUidsFilter] = useState<string>("");
   const [displayLimit, setDisplayLimit] = useState(500);
   const [exportDate, setExportDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
   const [autoServerFetchEnabled, setAutoServerFetchEnabled] = useState(false);
@@ -491,6 +492,20 @@ export default function Verification() {
       );
     }
 
+    // Apply device UIDs filter (exact match on multiple UIDs)
+    if (deviceUidsFilter.trim()) {
+      const deviceUidsList = deviceUidsFilter
+        .split('\n')
+        .map(uid => uid.trim().toUpperCase())
+        .filter(uid => uid.length > 0);
+      
+      if (deviceUidsList.length > 0) {
+        filtered = filtered.filter(inst => 
+          deviceUidsList.includes(inst.deviceId?.toUpperCase() || '')
+        );
+      }
+    }
+
     if (teamIdFilter && (userProfile?.isAdmin || userProfile?.role === "manager")) {
       filtered = filtered.filter((inst) => inst.teamId === teamIdFilter);
     }
@@ -510,7 +525,7 @@ export default function Verification() {
     }
 
     return filtered;
-  }, [allInstallations, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
+  }, [allInstallations, installerNameFilter, deviceIdFilter, deviceUidsFilter, teamIdFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
 
   const dashboardStats = useMemo(() => {
     // For managers (non-admin), only count escalated items; for others, count all
@@ -594,6 +609,20 @@ export default function Verification() {
       );
     }
 
+    // Apply device UIDs filter (exact match on multiple UIDs)
+    if (deviceUidsFilter.trim()) {
+      const deviceUidsList = deviceUidsFilter
+        .split('\n')
+        .map(uid => uid.trim().toUpperCase())
+        .filter(uid => uid.length > 0);
+      
+      if (deviceUidsList.length > 0) {
+        filtered = filtered.filter(i => 
+          deviceUidsList.includes(i.installation.deviceId?.toUpperCase() || '')
+        );
+      }
+    }
+
     // Apply team filter (admin and manager)
     if (teamIdFilter && (userProfile?.isAdmin || userProfile?.role === "manager")) {
       filtered = filtered.filter(i => i.installation.teamId === teamIdFilter);
@@ -622,7 +651,7 @@ export default function Verification() {
     });
 
     return filtered;
-  }, [verificationItems, activeFilter, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
+  }, [verificationItems, activeFilter, installerNameFilter, deviceIdFilter, deviceUidsFilter, teamIdFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
 
   // Limit displayed items for performance
   const paginatedDisplayedItems = useMemo(() => {
@@ -676,6 +705,20 @@ export default function Verification() {
       );
     }
 
+    // Apply device UIDs filter (exact match on multiple UIDs)
+    if (deviceUidsFilter.trim()) {
+      const deviceUidsList = deviceUidsFilter
+        .split('\n')
+        .map(uid => uid.trim().toUpperCase())
+        .filter(uid => uid.length > 0);
+      
+      if (deviceUidsList.length > 0) {
+        filtered = filtered.filter(i => 
+          deviceUidsList.includes(i.installation.deviceId?.toUpperCase() || '')
+        );
+      }
+    }
+
     // Apply team filter (admin and manager)
     if (teamIdFilter && (userProfile?.isAdmin || userProfile?.role === "manager")) {
       filtered = filtered.filter(i => i.installation.teamId === teamIdFilter);
@@ -709,7 +752,7 @@ export default function Verification() {
     });
 
     return filtered;
-  }, [verifiedInstallations, deviceMap, installerNameFilter, deviceIdFilter, teamIdFilter, activeFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
+  }, [verifiedInstallations, deviceMap, installerNameFilter, deviceIdFilter, deviceUidsFilter, teamIdFilter, activeFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
 
   // Limit displayed verified items for performance
   const paginatedVerifiedItems = useMemo(() => {
@@ -719,7 +762,7 @@ export default function Verification() {
   // Reset display limit when filters change
   useEffect(() => {
     setDisplayLimit(500);
-  }, [activeFilter, installerNameFilter, deviceIdFilter, teamIdFilter, dateFilter]);
+  }, [activeFilter, installerNameFilter, deviceIdFilter, deviceUidsFilter, teamIdFilter, dateFilter]);
 
   const handleShowMore = () => {
     setDisplayLimit(prev => prev + 500);
@@ -2331,8 +2374,34 @@ export default function Verification() {
             </div>
           </div>
 
+          {/* Device UIDs Filter */}
+          <div className="pt-4 border-t">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="device-uids-filter" className="text-sm font-semibold">
+                  Filter by Specific Device UIDs
+                </Label>
+                {deviceUidsFilter.trim() && (
+                  <Badge variant="secondary" className="text-xs">
+                    {deviceUidsFilter.split('\n').filter(uid => uid.trim()).length} UIDs entered
+                  </Badge>
+                )}
+              </div>
+              <Textarea
+                id="device-uids-filter"
+                placeholder="Enter device UIDs, one per line (e.g., E75832989D048709)"
+                value={deviceUidsFilter}
+                onChange={(e) => setDeviceUidsFilter(e.target.value)}
+                className="font-mono text-sm h-24 resize-none"
+              />
+              <p className="text-xs text-muted-foreground">
+                Enter device UIDs (one per line) to show only those devices. Leave empty to show all devices.
+              </p>
+            </div>
+          </div>
+
           {/* Clear Filters Button */}
-          {(installerNameFilter || deviceIdFilter || teamIdFilter || dateFilter || (activeFilter !== 'all' && !(userProfile?.role === "manager" && !userProfile?.isAdmin))) && (
+          {(installerNameFilter || deviceIdFilter || deviceUidsFilter || teamIdFilter || dateFilter || (activeFilter !== 'all' && !(userProfile?.role === "manager" && !userProfile?.isAdmin))) && (
             <div className="mt-4 flex items-center gap-2 flex-wrap">
               <Button
                 variant="outline"
@@ -2340,6 +2409,7 @@ export default function Verification() {
                 onClick={() => {
                   setInstallerNameFilter("");
                   setDeviceIdFilter("");
+                  setDeviceUidsFilter("");
                   setTeamIdFilter("");
                   setDateFilter("");
                   if (userProfile?.role === "manager" && !userProfile?.isAdmin) {
@@ -2362,6 +2432,11 @@ export default function Verification() {
                 {deviceIdFilter && (
                   <Badge variant="secondary" className="text-xs font-mono">
                     Device: {deviceIdFilter}
+                  </Badge>
+                )}
+                {deviceUidsFilter && (
+                  <Badge variant="secondary" className="text-xs font-mono">
+                    UIDs: {deviceUidsFilter.split('\n').filter(uid => uid.trim()).length} devices
                   </Badge>
                 )}
                 {teamIdFilter && (

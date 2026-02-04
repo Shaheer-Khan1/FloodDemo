@@ -27,6 +27,7 @@ import { collection, getDocs } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
 import * as XLSX from 'xlsx';
 import { onAuthStateChanged } from 'firebase/auth';
+import { translateTeamNameToArabic } from '@/lib/amanah-translations';
 
 interface DeviceData {
   deviceId: string;
@@ -202,6 +203,7 @@ export default function AdminDeviceFilter() {
       // Process data
       const deviceList: DeviceData[] = [];
       const processedDevices = new Set<string>();
+      let lastValidCoordinates = { latitude: '', longitude: '' };
 
       dataSnapshot.docs.forEach(doc => {
         const data = doc.data();
@@ -210,7 +212,7 @@ export default function AdminDeviceFilter() {
         if (!deviceId || processedDevices.has(deviceId)) return;
         processedDevices.add(deviceId);
 
-        // Get coordinates (prefer direct coordinates, fallback to location relation)
+        // Get coordinates with fallback chain: direct → location → last installation
         let latitude: any = '';
         let longitude: any = '';
         let coordinateSource = 'none';
@@ -221,11 +223,21 @@ export default function AdminDeviceFilter() {
           longitude = data.longitude;
           coordinateSource = 'user_entered';
         } else if (data.locationId && locationsMap.has(data.locationId)) {
-          // Fallback: get coordinates from location ID reference
+          // Second priority: get coordinates from location ID reference
           const location = locationsMap.get(data.locationId);
           latitude = location.latitude;
           longitude = location.longitude;
           coordinateSource = 'location_relation';
+        } else if (lastValidCoordinates.latitude && lastValidCoordinates.longitude) {
+          // Third priority: use coordinates from last installation
+          latitude = lastValidCoordinates.latitude;
+          longitude = lastValidCoordinates.longitude;
+          coordinateSource = 'last_installation';
+        }
+
+        // Update last valid coordinates if current device has valid coordinates
+        if (latitude && longitude) {
+          lastValidCoordinates = { latitude, longitude };
         }
 
         // Get readings based on data type
@@ -270,6 +282,10 @@ export default function AdminDeviceFilter() {
           }
         }
 
+        // Look up the actual team name from teams array
+        const teamObj = teams.find(t => t.id === data.teamId);
+        const actualTeamName = teamObj ? teamObj.name : '';
+
         deviceList.push({
           deviceId: deviceId,
           installerName: data.installedByName || data.installerName || data.device_type || 'Unknown',
@@ -278,7 +294,7 @@ export default function AdminDeviceFilter() {
           coordinateSource: coordinateSource,
           locationId: data.locationId || '',
           teamId: data.teamId || '',
-          teamName: data.teamId || '',
+          teamName: actualTeamName,
           userReading: userReading,
           serverReading: serverReading,
           hasServerData: serverReading != null,
@@ -485,9 +501,11 @@ export default function AdminDeviceFilter() {
         devicesByTeam.forEach((teamDevices, teamKey) => {
           // Find the team name from the teams array
           const team = teams.find(t => t.id === teamKey);
-          const sheetName = team ? team.name : teamKey;
+          const teamNameEnglish = team ? team.name : teamKey;
+          // Translate to Arabic for sheet name
+          const sheetName = translateTeamNameToArabic(teamNameEnglish) || teamNameEnglish;
           
-          console.log(`📄 Creating sheet "${sheetName}" with ${teamDevices.length} devices`);
+          console.log(`📄 Creating sheet "${sheetName}" (${teamNameEnglish}) with ${teamDevices.length} devices`);
 
           // Prepare data for this team
           const sheetData = [

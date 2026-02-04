@@ -475,13 +475,9 @@ export default function MinistryDevices() {
       
       location9999Installations.forEach(row => {
         const englishAmanahName = row.amanah || "Unknown";
-        const translatedAmanah = translateTeamNameToArabic(
+        const amanahName = translateTeamNameToArabic(
           englishAmanahName === "Unknown" ? null : englishAmanahName
-        );
-        // Format: ArabicName_EnglishTeamName
-        const amanahName = translatedAmanah 
-          ? `${translatedAmanah}_${englishAmanahName}`
-          : englishAmanahName;
+        ) || englishAmanahName;
         
         if (!groupedByAmanah[amanahName]) {
           groupedByAmanah[amanahName] = [];
@@ -519,13 +515,9 @@ export default function MinistryDevices() {
           }
           
           const englishAmanahName = row.amanah || "-";
-          const translatedAmanah = translateTeamNameToArabic(
+          const amanahForExport = translateTeamNameToArabic(
             englishAmanahName === "-" ? null : englishAmanahName
-          );
-          // Format: ArabicName_EnglishTeamName
-          const amanahForExport = translatedAmanah 
-            ? `${translatedAmanah}_${englishAmanahName}`
-            : englishAmanahName;
+          ) || englishAmanahName;
           
           return [
             (index + 1).toString(),
@@ -637,13 +629,9 @@ export default function MinistryDevices() {
         const locationId = inst?.locationId ? String(inst.locationId).trim() : "";
         const location = locationMap.get(locationId);
         const englishAmanahName = row.amanah || "-";
-        const translatedAmanah = translateTeamNameToArabic(
+        const amanahForExport = translateTeamNameToArabic(
           englishAmanahName === "-" ? null : englishAmanahName
-        );
-        // Format: ArabicName_EnglishTeamName
-        const amanahForExport = translatedAmanah 
-          ? `${translatedAmanah}_${englishAmanahName}`
-          : englishAmanahName;
+        ) || englishAmanahName;
         
         return [
           (index + 1).toString(),
@@ -781,13 +769,9 @@ export default function MinistryDevices() {
 
       const sensorReadingValue = inst?.sensorReading != null ? String(inst.sensorReading) : "-";
       const englishAmanahName = amanah || "-";
-      const translatedAmanah = translateTeamNameToArabic(
+      const amanahForExport = translateTeamNameToArabic(
         englishAmanahName === "-" ? null : englishAmanahName
-      );
-      // Format: ArabicName_EnglishTeamName
-      const amanahForExport = translatedAmanah 
-        ? `${translatedAmanah}_${englishAmanahName}`
-        : englishAmanahName;
+      ) || englishAmanahName;
       const municipalityName = location?.municipalityName || "-";
 
       const csvRow = [
@@ -914,13 +898,9 @@ export default function MinistryDevices() {
 
         const sensorReadingValue = inst?.sensorReading != null ? String(inst.sensorReading) : "-";
         const englishAmanahName = amanah || "-";
-        const translatedAmanah = translateTeamNameToArabic(
+        const amanahForExport = translateTeamNameToArabic(
           englishAmanahName === "-" ? null : englishAmanahName
-        );
-        // Format: ArabicName_EnglishTeamName
-        const amanahForExport = translatedAmanah 
-          ? `${translatedAmanah}_${englishAmanahName}`
-          : englishAmanahName;
+        ) || englishAmanahName;
         const municipalityName = location?.municipalityName || "-";
 
         const csvRow = [
@@ -1298,13 +1278,9 @@ export default function MinistryDevices() {
       // Group rows by Amanah
       const groupedByAmanah = rows.reduce((acc, row) => {
         const englishAmanahName = row.amanah || "Unknown";
-        const translatedAmanah = translateTeamNameToArabic(
+        const amanah = translateTeamNameToArabic(
           englishAmanahName === "Unknown" ? null : englishAmanahName
-        );
-        // Format: ArabicName_EnglishTeamName
-        const amanah = translatedAmanah 
-          ? `${translatedAmanah}_${englishAmanahName}`
-          : englishAmanahName;
+        ) || englishAmanahName;
         
         if (!acc[amanah]) {
           acc[amanah] = [];
