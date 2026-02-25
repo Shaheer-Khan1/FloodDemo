@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Search, Loader2, Shield, MapPin, Smartphone, Ruler, Users, Filter, X, Upload, Download, CheckCircle2, XCircle, Edit, RefreshCw, FileDown, AlertTriangle } from "lucide-react";
+import { Search, Loader2, Shield, MapPin, Smartphone, Ruler, Users, Filter, X, Upload, Download, CheckCircle2, XCircle, Edit, RefreshCw, FileDown, AlertTriangle, Package } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -58,6 +58,12 @@ export default function Admin() {
 
   // Duplicate Installations Export State
   const [exportingDuplicates, setExportingDuplicates] = useState(false);
+
+  // Uninstalled Devices Export State
+  const [exportingUninstalled, setExportingUninstalled] = useState(false);
+
+  // Inactive Devices Export State (no server data or data older than 10 days)
+  const [exportingInactive, setExportingInactive] = useState(false);
 
   // Bulk Team Change State
   const [deviceIdsInput, setDeviceIdsInput] = useState("");
@@ -1120,6 +1126,276 @@ export default function Admin() {
       });
     } finally {
       setExportingDuplicates(false);
+    }
+  };
+
+  // Export Uninstalled Devices with Assignments
+  const exportUninstalledDevices = async () => {
+    setExportingUninstalled(true);
+    try {
+      // Fetch all devices
+      const devicesSnapshot = await getDocs(collection(db, "devices"));
+      const allDevices = devicesSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        updatedAt: doc.data().updatedAt?.toDate?.() || doc.data().updatedAt,
+      }));
+
+      // Fetch all installations to determine which devices are installed
+      const installationsSnapshot = await getDocs(collection(db, "installations"));
+      const installedDeviceIds = new Set(
+        installationsSnapshot.docs.map(doc => doc.data().deviceId).filter(Boolean)
+      );
+
+      // Filter to get uninstalled devices
+      const uninstalledDevices = allDevices.filter(device => !installedDeviceIds.has(device.id));
+
+      if (uninstalledDevices.length === 0) {
+        toast({
+          title: "No Uninstalled Devices",
+          description: "All devices have installations.",
+        });
+        setExportingUninstalled(false);
+        return;
+      }
+
+      // Prepare CSV data
+      const csvRows = uninstalledDevices.map((device: any) => {
+        // Get team name
+        const team = teams.find(t => t.id === device.teamId);
+        const teamName = team?.name || "-";
+
+        // Format assignment date (using updatedAt)
+        let assignmentDate = "-";
+        if (device.updatedAt) {
+          try {
+            const date = device.updatedAt instanceof Date ? device.updatedAt : new Date(device.updatedAt);
+            assignmentDate = format(date, "MMM d, yyyy HH:mm");
+          } catch (e) {
+            assignmentDate = "-";
+          }
+        }
+
+        return [
+          device.id || "-",
+          device.deviceImei || "-",
+          device.iccid || "-",
+          device.productId || "-",
+          teamName,
+          device.assignedInstallerName || "-",
+          device.boxNumber || device.boxCode || "-",
+          device.status || "-",
+          assignmentDate,
+        ];
+      });
+
+      // Create CSV with headers
+      const headers = [
+        "Device UID",
+        "IMEI",
+        "ICCID",
+        "Product ID",
+        "Assigned Amanah",
+        "Assigned Installer",
+        "Box Number",
+        "Status",
+        "Assignment Date",
+      ];
+      const allRows = [headers, ...csvRows];
+      const csvContent = allRows
+        .map((row) =>
+          row
+            .map((cell) => {
+              const cellStr = String(cell ?? "");
+              return cellStr.includes(",") || cellStr.includes('"') || cellStr.includes("\n")
+                ? `"${cellStr.replace(/"/g, '""')}"`
+                : cellStr;
+            })
+            .join(",")
+        )
+        .join("\n");
+
+      // Download CSV
+      const blob = new Blob(["\ufeff" + csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `uninstalled_devices_${format(new Date(), "yyyy-MM-dd_HHmm")}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Export Complete",
+        description: `Exported ${uninstalledDevices.length} uninstalled device(s).`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error.message || "An error occurred during export.",
+      });
+    } finally {
+      setExportingUninstalled(false);
+    }
+  };
+
+  // Export devices with no server data or server data older than 10 days
+  // "Server data" = latestDisTimestamp on the installation record
+  const exportInactiveDevices = async () => {
+    setExportingInactive(true);
+    try {
+      const sixDaysAgo = new Date();
+      sixDaysAgo.setDate(sixDaysAgo.getDate() - 6);
+
+      // Fetch all devices
+      const devicesSnapshot = await getDocs(collection(db, "devices"));
+      const allDevices = devicesSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...(doc.data() as any),
+      }));
+
+      // Fetch all installations and build a map: deviceId -> most recent installation
+      // latestDisTimestamp on the installation is the "server data" timestamp
+      const installationsSnapshot = await getDocs(collection(db, "installations"));
+      const installationMap = new Map<string, any>();
+      installationsSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        if (!data.deviceId) return;
+        const createdAt = data.createdAt?.toDate?.() ?? (data.createdAt ? new Date(data.createdAt) : null);
+        const existing = installationMap.get(data.deviceId);
+        if (!existing) {
+          installationMap.set(data.deviceId, { ...data, createdAt });
+        } else {
+          // Keep most recent installation
+          const existingDate = existing.createdAt;
+          if (createdAt && existingDate && createdAt > existingDate) {
+            installationMap.set(data.deviceId, { ...data, createdAt });
+          }
+        }
+      });
+
+      // Filter: installation missing, OR latestDisCm absent, OR latestDisTimestamp older than 6 days
+      const inactiveDevices = allDevices.filter((device: any) => {
+        const inst = installationMap.get(device.id);
+        if (!inst) return true; // No installation at all
+        if (inst.latestDisCm == null) return true; // No server data ever received
+        if (!inst.latestDisTimestamp) return true; // No timestamp
+        try {
+          return new Date(inst.latestDisTimestamp) < sixDaysAgo;
+        } catch {
+          return true;
+        }
+      });
+
+      if (inactiveDevices.length === 0) {
+        toast({
+          title: "No Inactive Devices",
+          description: "All devices have server data received within the last 6 days.",
+        });
+        setExportingInactive(false);
+        return;
+      }
+
+      // Collect unique locationIds to fetch reference coordinates
+      const locationIds = new Set<string>();
+      inactiveDevices.forEach((device: any) => {
+        const inst = installationMap.get(device.id);
+        if (inst?.locationId) locationIds.add(inst.locationId);
+      });
+
+      // Fetch location documents for reference coordinates
+      const locationCoordMap = new Map<string, { latitude: number | null; longitude: number | null }>();
+      if (locationIds.size > 0) {
+        const locationsSnapshot = await getDocs(collection(db, "locations"));
+        locationsSnapshot.docs.forEach(doc => {
+          if (locationIds.has(doc.id)) {
+            const data = doc.data();
+            locationCoordMap.set(doc.id, {
+              latitude: data.latitude ?? null,
+              longitude: data.longitude ?? null,
+            });
+          }
+        });
+      }
+
+      // Build CSV rows
+      const headers = [
+        "Device UID",
+        "ICCID",
+        "User Latitude",
+        "User Longitude",
+        "Location ID",
+        "Location Ref Latitude",
+        "Location Ref Longitude",
+        "Last Server Data",
+        "Device Status",
+      ];
+
+      const csvRows = inactiveDevices.map((device: any) => {
+        const inst = installationMap.get(device.id);
+        const locationId: string = inst?.locationId ?? "";
+        const locCoords = locationId ? locationCoordMap.get(locationId) : undefined;
+
+        let lastServerData = "No data";
+        if (inst?.latestDisTimestamp) {
+          try {
+            lastServerData = format(new Date(inst.latestDisTimestamp), "yyyy-MM-dd HH:mm");
+          } catch {
+            lastServerData = inst.latestDisTimestamp;
+          }
+        }
+
+        return [
+          device.id ?? "-",
+          device.iccid ?? "-",
+          inst?.latitude != null ? String(inst.latitude) : "-",
+          inst?.longitude != null ? String(inst.longitude) : "-",
+          locationId || "-",
+          locCoords?.latitude != null ? String(locCoords.latitude) : "-",
+          locCoords?.longitude != null ? String(locCoords.longitude) : "-",
+          lastServerData,
+          device.status ?? "-",
+        ];
+      });
+
+      const allRows = [headers, ...csvRows];
+      const csvContent = allRows
+        .map(row =>
+          row
+            .map(cell => {
+              const s = String(cell ?? "");
+              return s.includes(",") || s.includes('"') || s.includes("\n")
+                ? `"${s.replace(/"/g, '""')}"`
+                : s;
+            })
+            .join(",")
+        )
+        .join("\r\n");
+
+      const blob = new Blob(["\ufeff" + csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `inactive_devices_${format(new Date(), "yyyy-MM-dd_HHmm")}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Export Complete",
+        description: `Exported ${inactiveDevices.length} inactive device(s).`,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Export Failed",
+        description: error.message || "An error occurred during export.",
+      });
+    } finally {
+      setExportingInactive(false);
     }
   };
 
@@ -2200,6 +2476,99 @@ export default function Admin() {
               <li>Sorted by Device UID for easy identification of duplicates</li>
               <li>All fields and metadata for comprehensive analysis</li>
             </ul>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Export Uninstalled Devices */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Package className="h-5 w-5 text-blue-600" />
+            Export Uninstalled Devices
+          </CardTitle>
+          <CardDescription>
+            Download a CSV report of all devices that have not been installed yet, along with their assignments
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-3">
+            <Button
+              variant="default"
+              onClick={exportUninstalledDevices}
+              disabled={exportingUninstalled}
+            >
+              {exportingUninstalled ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Exporting...
+                </>
+              ) : (
+                <>
+                  <FileDown className="h-4 w-4 mr-2" />
+                  Export Uninstalled Devices
+                </>
+              )}
+            </Button>
+          </div>
+
+          <div className="text-xs text-muted-foreground space-y-1">
+            <p><strong>Report includes:</strong></p>
+            <ul className="list-disc list-inside ml-2">
+              <li>Device UID, IMEI, ICCID, Product ID</li>
+              <li>Assigned Amanah (team name)</li>
+              <li>Assigned Installer name</li>
+              <li>Box Number and Device Status</li>
+              <li>Assignment Date (last updated date for the device)</li>
+            </ul>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Export Inactive Devices */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <AlertTriangle className="h-5 w-5 text-orange-500" />
+            Export Inactive Devices
+          </CardTitle>
+          <CardDescription>
+            Download a CSV of all devices with no server data or whose last reading is older than 6 days
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-3">
+            <Button
+              variant="default"
+              onClick={exportInactiveDevices}
+              disabled={exportingInactive}
+            >
+              {exportingInactive ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Exporting...
+                </>
+              ) : (
+                <>
+                  <FileDown className="h-4 w-4 mr-2" />
+                  Export Inactive Devices
+                </>
+              )}
+            </Button>
+          </div>
+
+          <div className="text-xs text-muted-foreground space-y-1">
+            <p><strong>Report includes:</strong></p>
+            <ul className="list-disc list-inside ml-2">
+              <li>Device UID and ICCID</li>
+              <li>User-entered GPS coordinates (from installation record)</li>
+              <li>Location reference coordinates (from linked location document)</li>
+              <li>Last received server data timestamp (or "No data")</li>
+              <li>Device status</li>
+            </ul>
+            <p className="mt-2 text-orange-600 dark:text-orange-400">
+              Includes devices with no server data ever, or last reading older than 6 days.
+            </p>
           </div>
         </CardContent>
       </Card>

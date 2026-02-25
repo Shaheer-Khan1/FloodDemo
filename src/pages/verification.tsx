@@ -492,7 +492,7 @@ export default function Verification() {
       );
     }
 
-    // Apply device UIDs filter (exact match on multiple UIDs)
+    // Apply device UIDs filter (supports partial matching)
     if (deviceUidsFilter.trim()) {
       const deviceUidsList = deviceUidsFilter
         .split('\n')
@@ -501,7 +501,7 @@ export default function Verification() {
       
       if (deviceUidsList.length > 0) {
         filtered = filtered.filter(inst => 
-          deviceUidsList.includes(inst.deviceId?.toUpperCase() || '')
+          deviceUidsList.some(uid => (inst.deviceId?.toUpperCase() || '').includes(uid))
         );
       }
     }
@@ -609,7 +609,7 @@ export default function Verification() {
       );
     }
 
-    // Apply device UIDs filter (exact match on multiple UIDs)
+    // Apply device UIDs filter (supports partial matching)
     if (deviceUidsFilter.trim()) {
       const deviceUidsList = deviceUidsFilter
         .split('\n')
@@ -618,7 +618,7 @@ export default function Verification() {
       
       if (deviceUidsList.length > 0) {
         filtered = filtered.filter(i => 
-          deviceUidsList.includes(i.installation.deviceId?.toUpperCase() || '')
+          deviceUidsList.some(uid => (i.installation.deviceId?.toUpperCase() || '').includes(uid))
         );
       }
     }
@@ -705,7 +705,7 @@ export default function Verification() {
       );
     }
 
-    // Apply device UIDs filter (exact match on multiple UIDs)
+    // Apply device UIDs filter (supports partial matching)
     if (deviceUidsFilter.trim()) {
       const deviceUidsList = deviceUidsFilter
         .split('\n')
@@ -714,7 +714,7 @@ export default function Verification() {
       
       if (deviceUidsList.length > 0) {
         filtered = filtered.filter(i => 
-          deviceUidsList.includes(i.installation.deviceId?.toUpperCase() || '')
+          deviceUidsList.some(uid => (i.installation.deviceId?.toUpperCase() || '').includes(uid))
         );
       }
     }
@@ -1498,6 +1498,22 @@ export default function Verification() {
       // Get manually entered sensor reading from installation
       const sensorReadingValue = installation?.sensorReading != null ? String(installation.sensorReading) : "-";
 
+      // Get latest distance timestamp
+      const latestTimestamp = installation.latestDisTimestamp as Date | string | undefined;
+      const latestDisDate = latestTimestamp
+        ? (latestTimestamp instanceof Date 
+            ? format(latestTimestamp, "MMM d, yyyy HH:mm") 
+            : format(new Date(latestTimestamp), "MMM d, yyyy HH:mm"))
+        : "-";
+
+      // Get installation date (createdAt)
+      const installationDate = installation.createdAt 
+        ? format(installation.createdAt instanceof Date ? installation.createdAt : new Date(installation.createdAt), "MMM d, yyyy HH:mm")
+        : "-";
+
+      // Get ICCID from device
+      const iccid = item.device?.iccid || "-";
+
       // Get team name (Amanah) and translate to Arabic when exporting
       const teamName = installation.teamId ? getTeamName(installation.teamId) : null;
       const translatedAmanah = translateTeamNameToArabic(teamName);
@@ -1513,6 +1529,9 @@ export default function Verification() {
         rawLocationId || "-",
         coordinates,
         sensorReadingValue,
+        latestDisDate,
+        installationDate,
+        iccid,
       ];
     });
 
@@ -1521,7 +1540,7 @@ export default function Verification() {
     const currentDate = format(new Date(), "yyyy-MM-dd");
     const filename = `verification-installations_${filterName}_${currentDate}.csv`;
 
-    downloadCsv(csvRows, filename, ["Device ID", "Installer", "Amanah", "Location ID", "Coordinates", "Sensor Reading"]);
+    downloadCsv(csvRows, filename, ["Device ID", "Installer", "Amanah", "Location ID", "Coordinates", "Sensor Reading", "Latest Distance Date", "Installation Date", "ICCID"]);
 
     toast({
       title: "CSV downloaded",
@@ -1616,6 +1635,10 @@ export default function Verification() {
           ) || "-"
         : "-";
 
+      // Get ICCID from device
+      const device = deviceMap.get(inst.deviceId);
+      const iccid = device?.iccid || "-";
+
       return [
         inst.deviceId,
         inst.installedByName || "-",
@@ -1631,6 +1654,7 @@ export default function Verification() {
         inst.status,
         inst.createdAt ? format(inst.createdAt, "MMM d, yyyy HH:mm") : "-",
         serverDataTime,
+        iccid,
       ];
     });
 
@@ -1649,6 +1673,7 @@ export default function Verification() {
       "Status",
       "Submitted At",
       "Server Data Time",
+      "ICCID",
     ]);
 
     toast({
@@ -2389,13 +2414,13 @@ export default function Verification() {
               </div>
               <Textarea
                 id="device-uids-filter"
-                placeholder="Enter device UIDs, one per line (e.g., E75832989D048709)"
+                placeholder="Enter device UIDs or partial IDs, one per line (e.g., E75832989D048709 or just E7583)"
                 value={deviceUidsFilter}
                 onChange={(e) => setDeviceUidsFilter(e.target.value)}
                 className="font-mono text-sm h-24 resize-none"
               />
               <p className="text-xs text-muted-foreground">
-                Enter device UIDs (one per line) to show only those devices. Leave empty to show all devices.
+                Enter device UIDs or partial matches (one per line) to show matching devices. Supports partial matching. Leave empty to show all devices.
               </p>
             </div>
           </div>

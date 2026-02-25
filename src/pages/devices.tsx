@@ -218,6 +218,7 @@ export default function Devices() {
   const filteredDevices = useMemo(() => {
     const filtered = devicesWithDetails.filter(device => {
       // Device UIDs filter (if active, only show devices in the list)
+      // Supports partial matching - matches if device ID contains any of the entered UIDs
       let matchesDeviceUids = true;
       if (debouncedDeviceUidsFilter.trim()) {
         const deviceUidsList = debouncedDeviceUidsFilter
@@ -226,7 +227,7 @@ export default function Devices() {
           .filter(uid => uid.length > 0);
         
         if (deviceUidsList.length > 0) {
-          matchesDeviceUids = deviceUidsList.includes(device.id.toUpperCase());
+          matchesDeviceUids = deviceUidsList.some(uid => device.id.toUpperCase().includes(uid));
         }
       }
 
@@ -743,13 +744,13 @@ export default function Devices() {
               </div>
               <Textarea
                 id="device-uids-filter"
-                placeholder="Enter device UIDs, one per line (e.g., E75832989D048709)"
+                placeholder="Enter device UIDs or partial IDs, one per line (e.g., E75832989D048709 or just E7583)"
                 value={deviceUidsFilter}
                 onChange={(e) => setDeviceUidsFilter(e.target.value)}
                 className="font-mono text-sm h-24 resize-none"
               />
               <p className="text-xs text-muted-foreground">
-                Enter device UIDs (one per line) to show only those devices. Leave empty to show all devices.
+                Enter device UIDs or partial matches (one per line) to show matching devices. Supports partial matching. Leave empty to show all devices.
               </p>
             </div>
           </div>

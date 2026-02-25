@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,7 +44,7 @@ function useDebounce<T>(value: T, delay: number): T {
 }
 
 export default function ReviewAudit() {
-  const { userProfile } = useAuth();
+  const { user, userProfile } = useAuth();
   const [, setLocation] = useLocation();
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,7 +53,8 @@ export default function ReviewAudit() {
   const [deviceIdFilter, setDeviceIdFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "partial" | "complete">("all");
   const [displayLimit, setDisplayLimit] = useState(500); // Show 500 reviews per page
-  
+  const [ownedTeamIds, setOwnedTeamIds] = useState<Set<string>>(new Set());
+
   // Debounce the device ID filter to prevent sluggish filtering
   const debouncedDeviceIdFilter = useDebounce(deviceIdFilter, 300);
 
@@ -63,6 +64,16 @@ export default function ReviewAudit() {
       setLocation("/dashboard");
     }
   }, [userProfile, setLocation]);
+
+  // Load teams owned by this admin to scope installations
+  useEffect(() => {
+    if (!user) return;
+    const teamsQuery = query(collection(db, "teams"), where("ownerId", "==", user.uid));
+    const unsubscribe = onSnapshot(teamsQuery, (snap) => {
+      setOwnedTeamIds(new Set(snap.docs.map(d => d.id)));
+    });
+    return () => unsubscribe();
+  }, [user]);
 
   // Load all installations
   useEffect(() => {
@@ -128,9 +139,11 @@ export default function ReviewAudit() {
     return () => unsubscribe();
   }, [userProfile]);
 
-  // Calculate review progress for each installation
+  // Calculate review progress for each installation (scoped to this admin's teams)
   const installationsWithProgress = useMemo(() => {
-    return installations.map(installation => {
+    return installations
+      .filter(inst => inst.teamId && ownedTeamIds.has(inst.teamId))
+      .map(installation => {
       const fieldCheckStates = installation.fieldCheckStates || {};
       const fieldCheckMetadata = installation.fieldCheckMetadata || {};
       

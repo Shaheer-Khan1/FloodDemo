@@ -178,7 +178,10 @@ export default function NewInstallation() {
     try {
       const devicesRef = collection(db, "devices");
       const querySnapshot = await getDocs(devicesRef);
-      const matchingDevices = querySnapshot.docs.filter(doc => doc.id.toUpperCase() === entered);
+      // Match by document ID first, then fall back to matching the `id` field inside the document
+      const matchingDevices = querySnapshot.docs.filter(
+        d => d.id.toUpperCase() === entered || (d.data().id ?? "").toString().toUpperCase() === entered
+      );
       if (matchingDevices.length === 0) {
         setDeviceValid(false);
         setDeviceErrorMessage({

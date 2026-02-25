@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { Upload, Download, CheckCircle2, XCircle, Loader2, FileSpreadsheet, AlertCircle } from "lucide-react";
+import { Upload, Download, CheckCircle2, XCircle, Loader2, FileSpreadsheet, FileJson, AlertCircle } from "lucide-react";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -30,6 +30,56 @@ export default function DeviceImport() {
   useEffect(() => {
     // Reserved for future enhancements
   }, []);
+
+  const downloadJsonTemplate = () => {
+    const sampleData = [
+      {
+        "PRODUCT COUNT": "1",
+        "TIMESTAMP": "2025-10-04 11:40:39",
+        "PRODUCT ID": "BBNGJV2I",
+        "DEVICE SERIAL ID": "SNNEP312045H0104J25000163F915135DD44169DELDYGCDK",
+        "DEVICE UID": "63F915135DD44169",
+        "DEVICE IMEI": "868927087312836",
+        "ICCID": "89966098241131297102",
+        "ORIGINAL BOX CODE": "BOX-A-001",
+      },
+      {
+        "PRODUCT COUNT": "2",
+        "TIMESTAMP": "2025-10-04 11:49:29",
+        "PRODUCT ID": "BBNGJV2I",
+        "DEVICE SERIAL ID": "SNNEP312045H0104J250002B8A5027D6B68E1CEDELDYGCDK",
+        "DEVICE UID": "B8A5027D6B68E1CE",
+        "DEVICE IMEI": "868927087312893",
+        "ICCID": "89966098241131297136",
+        "ORIGINAL BOX CODE": "BOX-A-001",
+      },
+      {
+        "PRODUCT COUNT": "3",
+        "TIMESTAMP": "2025-10-04 12:03:19",
+        "PRODUCT ID": "BBNGJV2I",
+        "DEVICE SERIAL ID": "SNNEP312045H0104J250003EE040E85BCB40FFCDELDYGCDK",
+        "DEVICE UID": "EE040E85BCB40FFC",
+        "DEVICE IMEI": "868927087294646",
+        "ICCID": "89966098241131297144",
+        "ORIGINAL BOX CODE": "BOX-A-002",
+      },
+    ];
+
+    const blob = new Blob([JSON.stringify(sampleData, null, 2)], { type: "application/json" });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "device_import_template.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+
+    toast({
+      title: "JSON Template Downloaded",
+      description: "Use this template to format your device data as a JSON array.",
+    });
+  };
 
   const downloadTemplate = () => {
     const headers = [
@@ -100,14 +150,14 @@ export default function DeviceImport() {
     const selectedFile = e.target.files?.[0];
     if (selectedFile) {
       // Check file type
-      const validTypes = ["text/csv", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"];
-      const isValidExtension = selectedFile.name.endsWith(".csv") || selectedFile.name.endsWith(".xlsx") || selectedFile.name.endsWith(".xls");
+      const validTypes = ["text/csv", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/json"];
+      const isValidExtension = selectedFile.name.endsWith(".csv") || selectedFile.name.endsWith(".xlsx") || selectedFile.name.endsWith(".xls") || selectedFile.name.endsWith(".json");
       
       if (!validTypes.includes(selectedFile.type) && !isValidExtension) {
         toast({
           variant: "destructive",
           title: "Invalid File Type",
-          description: "Please upload a CSV or Excel (.xlsx) file.",
+          description: "Please upload a CSV, Excel (.xlsx), or JSON file.",
         });
         return;
       }
@@ -159,84 +209,155 @@ export default function DeviceImport() {
     const result: ImportResult = { success: 0, failed: 0, errors: [] };
 
     try {
-      let rows: string[][];
-      
-      // Check file type and parse accordingly
-      if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
-        rows = await parseExcel(file);
-      } else {
+      if (file.name.endsWith('.json')) {
+        // JSON import path
         const text = await file.text();
-        rows = parseCSV(text);
-      }
-
-      if (rows.length < 2) {
-        toast({
-          variant: "destructive",
-          title: "Import Failed",
-          description: "File must contain at least a header row and one data row.",
-        });
-        setImporting(false);
-        return;
-      }
-
-      // Skip header row
-      const dataRows = rows.slice(1);
-      const totalRows = dataRows.length;
-
-      for (let i = 0; i < dataRows.length; i++) {
-        const row = dataRows[i];
-        setProgress(Math.round(((i + 1) / totalRows) * 100));
-
-        // Detect format with ORIGINAL BOX CODE (8 columns) and support older formats as best-effort
-        let productId, deviceSerialId, deviceUid, deviceImei, iccid, timestamp, productCount, originalBoxCode;
-
-        if (row.length >= 8) {
-          // Format: PRODUCT COUNT, TIMESTAMP, PRODUCT ID, DEVICE SERIAL ID,
-          //         DEVICE UID, DEVICE IMEI, ICCID, ORIGINAL BOX CODE
-          [productCount, timestamp, productId, deviceSerialId, deviceUid, deviceImei, iccid, originalBoxCode] = row;
-        } else if (row.length >= 7) {
-          [productCount, timestamp, productId, deviceSerialId, deviceUid, deviceImei, iccid] = row;
-        } else if (row.length >= 5) {
-          // Format 2: PRODUCT ID, DEVICE SERIAL ID, DEVICE UID, DEVICE IMEI, ICCID
-          [productId, deviceSerialId, deviceUid, deviceImei, iccid] = row;
-          productCount = "";
-          timestamp = new Date().toISOString();
-        } else {
-          result.failed++;
-          result.errors.push(`Row ${i + 2}: Incomplete data (expected at least 5 columns, got ${row.length})`);
-          continue;
-        }
-
-        if (!deviceUid || !productId) {
-          result.failed++;
-          result.errors.push(`Row ${i + 2}: DEVICE UID and PRODUCT ID are required`);
-          continue;
-        }
-
-        if (!originalBoxCode) {
-          result.failed++;
-          result.errors.push(`Row ${i + 2}: ORIGINAL BOX CODE is required in the import file`);
-          continue;
-        }
-
+        let jsonData: Record<string, string>[];
         try {
-          await setDoc(doc(db, "devices", deviceUid), {
-            id: deviceUid,
-            productId: productId || "",
-            deviceSerialId: deviceSerialId || "",
-            deviceImei: deviceImei || "",
-            iccid: iccid || "",
-            timestamp: timestamp || "",
-            // Only store original box code at admin import time.
-            boxCode: originalBoxCode || "",
-            status: "pending",
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
+          jsonData = JSON.parse(text);
+        } catch {
+          toast({
+            variant: "destructive",
+            title: "Invalid JSON",
+            description: "The file could not be parsed as JSON. Please check the format.",
           });
-          result.success++;
-        } catch (error) {
-          result.failed++;
-          result.errors.push(`Row ${i + 2}: ${error instanceof Error ? error.message : "Unknown error"}`);
+          setImporting(false);
+          return;
+        }
+
+        if (!Array.isArray(jsonData) || jsonData.length === 0) {
+          toast({
+            variant: "destructive",
+            title: "Import Failed",
+            description: "JSON file must contain a non-empty array of device objects.",
+          });
+          setImporting(false);
+          return;
+        }
+
+        const totalRows = jsonData.length;
+        for (let i = 0; i < jsonData.length; i++) {
+          const entry = jsonData[i];
+          setProgress(Math.round(((i + 1) / totalRows) * 100));
+
+          const deviceUid = (entry["DEVICE UID"] || "").toString().trim();
+          const productId = (entry["PRODUCT ID"] || "").toString().trim();
+          const originalBoxCode = (entry["ORIGINAL BOX CODE"] || "").toString().trim();
+          const deviceSerialId = (entry["DEVICE SERIAL ID"] || "").toString().trim();
+          const deviceImei = (entry["DEVICE IMEI"] || "").toString().trim();
+          const iccid = (entry["ICCID"] || "").toString().trim();
+          const timestamp = (entry["TIMESTAMP"] || "").toString().trim();
+
+          if (!deviceUid || !productId) {
+            result.failed++;
+            result.errors.push(`Entry ${i + 1}: DEVICE UID and PRODUCT ID are required`);
+            continue;
+          }
+
+          if (!originalBoxCode) {
+            result.failed++;
+            result.errors.push(`Entry ${i + 1}: ORIGINAL BOX CODE is required`);
+            continue;
+          }
+
+          try {
+            await setDoc(doc(db, "devices", deviceUid), {
+              id: deviceUid,
+              productId,
+              deviceSerialId,
+              deviceImei,
+              iccid,
+              timestamp,
+              boxCode: originalBoxCode,
+              status: "pending",
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+            result.success++;
+          } catch (error) {
+            result.failed++;
+            result.errors.push(`Entry ${i + 1}: ${error instanceof Error ? error.message : "Unknown error"}`);
+          }
+        }
+      } else {
+        // CSV / Excel import path
+        let rows: string[][];
+
+        if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+          rows = await parseExcel(file);
+        } else {
+          const text = await file.text();
+          rows = parseCSV(text);
+        }
+
+        if (rows.length < 2) {
+          toast({
+            variant: "destructive",
+            title: "Import Failed",
+            description: "File must contain at least a header row and one data row.",
+          });
+          setImporting(false);
+          return;
+        }
+
+        // Skip header row
+        const dataRows = rows.slice(1);
+        const totalRows = dataRows.length;
+
+        for (let i = 0; i < dataRows.length; i++) {
+          const row = dataRows[i];
+          setProgress(Math.round(((i + 1) / totalRows) * 100));
+
+          // Detect format with ORIGINAL BOX CODE (8 columns) and support older formats as best-effort
+          let productId, deviceSerialId, deviceUid, deviceImei, iccid, timestamp, productCount, originalBoxCode;
+
+          if (row.length >= 8) {
+            // Format: PRODUCT COUNT, TIMESTAMP, PRODUCT ID, DEVICE SERIAL ID,
+            //         DEVICE UID, DEVICE IMEI, ICCID, ORIGINAL BOX CODE
+            [productCount, timestamp, productId, deviceSerialId, deviceUid, deviceImei, iccid, originalBoxCode] = row;
+          } else if (row.length >= 7) {
+            [productCount, timestamp, productId, deviceSerialId, deviceUid, deviceImei, iccid] = row;
+          } else if (row.length >= 5) {
+            // Format 2: PRODUCT ID, DEVICE SERIAL ID, DEVICE UID, DEVICE IMEI, ICCID
+            [productId, deviceSerialId, deviceUid, deviceImei, iccid] = row;
+            productCount = "";
+            timestamp = new Date().toISOString();
+          } else {
+            result.failed++;
+            result.errors.push(`Row ${i + 2}: Incomplete data (expected at least 5 columns, got ${row.length})`);
+            continue;
+          }
+
+          if (!deviceUid || !productId) {
+            result.failed++;
+            result.errors.push(`Row ${i + 2}: DEVICE UID and PRODUCT ID are required`);
+            continue;
+          }
+
+          if (!originalBoxCode) {
+            result.failed++;
+            result.errors.push(`Row ${i + 2}: ORIGINAL BOX CODE is required in the import file`);
+            continue;
+          }
+
+          try {
+            await setDoc(doc(db, "devices", deviceUid), {
+              id: deviceUid,
+              productId: productId || "",
+              deviceSerialId: deviceSerialId || "",
+              deviceImei: deviceImei || "",
+              iccid: iccid || "",
+              timestamp: timestamp || "",
+              boxCode: originalBoxCode || "",
+              status: "pending",
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+            result.success++;
+          } catch (error) {
+            result.failed++;
+            result.errors.push(`Row ${i + 2}: ${error instanceof Error ? error.message : "Unknown error"}`);
+          }
         }
       }
 
@@ -283,7 +404,7 @@ export default function DeviceImport() {
           Device Import
         </h1>
         <p className="text-muted-foreground mt-2">
-          Bulk import devices from a CSV/Excel file, including their <span className="font-semibold">ORIGINAL BOX CODE</span>.
+          Bulk import devices from a CSV, Excel, or JSON file, including their <span className="font-semibold">ORIGINAL BOX CODE</span>.
         </p>
       </div>
 
@@ -295,13 +416,13 @@ export default function DeviceImport() {
             Import Instructions
           </CardTitle>
           <CardDescription>
-            Supports both CSV and Excel (.xlsx) formats - Upload your file directly!
+            Supports CSV, Excel (.xlsx), and JSON formats — upload your file directly!
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <ol className="list-decimal list-inside space-y-2 text-sm">
-            <li>Download the CSV template using the button below</li>
-            <li>Fill in your device data with the required columns:
+            <li>Download a template (CSV or JSON) using the buttons below</li>
+            <li>Fill in your device data with the required fields:
               <ul className="list-disc list-inside ml-4 mt-1 text-xs text-muted-foreground">
                 <li>PRODUCT COUNT - Sequential number</li>
                 <li>TIMESTAMP - Import date/time</li>
@@ -311,18 +432,29 @@ export default function DeviceImport() {
                 <li>DEVICE IMEI - IMEI number</li>
                 <li>ICCID - SIM card identifier</li>
                 <li className="font-semibold text-amber-700 dark:text-amber-400">
-                  ORIGINAL BOX CODE - Original box code provided in the manufacturer/master list (required)
+                  ORIGINAL BOX CODE - Original box code from the manufacturer/master list (required)
                 </li>
               </ul>
             </li>
-            <li>Save the file as CSV or keep it as Excel (.xlsx) format</li>
+            <li>
+              <span className="font-medium">CSV/Excel:</span> keep the column order as shown in the template
+            </li>
+            <li>
+              <span className="font-medium">JSON:</span> save as an array of objects using the exact field names above
+            </li>
             <li>Upload the file and click "Import Devices"</li>
           </ol>
 
-          <Button onClick={downloadTemplate} variant="outline" className="w-full sm:w-auto">
-            <Download className="h-4 w-4 mr-2" />
-            Download CSV Template
-          </Button>
+          <div className="flex flex-wrap gap-3">
+            <Button onClick={downloadTemplate} variant="outline">
+              <Download className="h-4 w-4 mr-2" />
+              Download CSV Template
+            </Button>
+            <Button onClick={downloadJsonTemplate} variant="outline">
+              <FileJson className="h-4 w-4 mr-2" />
+              Download JSON Template
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
@@ -331,21 +463,25 @@ export default function DeviceImport() {
         <CardHeader>
           <CardTitle>Upload File</CardTitle>
           <CardDescription>
-            Upload a CSV or Excel (.xlsx) file containing device data, including ORIGINAL BOX CODE.
+            Upload a CSV, Excel (.xlsx), or JSON file containing device data, including ORIGINAL BOX CODE.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <Input
               type="file"
-              accept=".csv,.xlsx,.xls"
+              accept=".csv,.xlsx,.xls,.json"
               onChange={handleFileChange}
               disabled={importing}
               className="cursor-pointer"
             />
             {file && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <FileSpreadsheet className="h-4 w-4" />
+                {file.name.endsWith('.json') ? (
+                  <FileJson className="h-4 w-4" />
+                ) : (
+                  <FileSpreadsheet className="h-4 w-4" />
+                )}
                 <span>{file.name}</span>
                 <Badge variant="secondary">{(file.size / 1024).toFixed(2)} KB</Badge>
               </div>

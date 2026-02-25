@@ -523,7 +523,7 @@ export default function MinistryDevices() {
             (index + 1).toString(),
             locationId || "-",
             coordinates,
-            device.id,
+            `="${device.id}"`, // Format as text to prevent Excel scientific notation
             inst.installedByName || "-",
             amanahForExport,
             location?.municipalityName || "-",
@@ -636,7 +636,7 @@ export default function MinistryDevices() {
         return [
           (index + 1).toString(),
           locationId || "-",
-          device.id,
+          `="${device.id}"`, // Format as text to prevent Excel scientific notation
           inst.installedByName || "-",
           amanahForExport,
           location?.municipalityName || "-",
@@ -778,7 +778,7 @@ export default function MinistryDevices() {
         "", // Serial placeholder
         rawLocationId || "-",
         coordinates,
-        device.id,
+        `="${device.id}"`, // Format as text to prevent Excel scientific notation
         amanahForExport,
         municipalityName,
         sensorReadingValue,
@@ -907,7 +907,7 @@ export default function MinistryDevices() {
           "", // Serial placeholder
           rawLocationId || "-",
           coordinates,
-          device.id,
+          `="${device.id}"`, // Format as text to prevent Excel scientific notation
           amanahForExport,
           municipalityName,
           sensorReadingValue,

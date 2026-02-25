@@ -10,6 +10,29 @@ import { collection, doc, getDocs, updateDoc, serverTimestamp, onSnapshot, query
 import { db } from "@/lib/firebase";
 import type { Device, CustomTeamMember, Team } from "@/lib/types";
 
+/**
+ * Updates a device document by its Firestore document ID.
+ * Falls back to querying by the `id` field if the direct path doesn't exist.
+ */
+async function updateDeviceById(deviceId: string, data: Record<string, unknown>) {
+  const directRef = doc(db, "devices", deviceId);
+  try {
+    await updateDoc(directRef, data);
+  } catch (err: any) {
+    if (err?.code === "not-found") {
+      const snap = await getDocs(
+        query(collection(db, "devices"), where("id", "==", deviceId))
+      );
+      if (snap.empty) {
+        throw new Error(`Device with id "${deviceId}" not found in the devices collection.`);
+      }
+      await updateDoc(snap.docs[0].ref, data);
+    } else {
+      throw err;
+    }
+  }
+}
+
 export default function OpenBoxes() {
   const { userProfile } = useAuth();
   const { toast } = useToast();
@@ -268,7 +291,7 @@ export default function OpenBoxes() {
       }
 
       for (const docSnap of matching) {
-        await updateDoc(doc(db, "devices", docSnap.id), {
+        await updateDeviceById(docSnap.id, {
           boxOpened: true,
           updatedAt: serverTimestamp(),
         });
@@ -650,7 +673,7 @@ export default function OpenBoxes() {
                                 (i as any).userId === newInstallerId
                             ) || null;
                           updates.push(
-                            updateDoc(doc(db, "devices", d.id), {
+                            updateDeviceById(d.id, {
                               assignedInstallerId: normalizedNew || null,
                               assignedInstallerName: installer
                                 ? installer.name || installer.displayName || installer.email
@@ -779,7 +802,7 @@ export default function OpenBoxes() {
                                   setSavingBulkReassign(true);
                                   try {
                                     const updates = devicesToReassign.map((d) =>
-                                      updateDoc(doc(db, "devices", d.id), {
+                                      updateDeviceById(d.id, {
                                         assignedInstallerId: bulkReassignInstallerId,
                                         assignedInstallerName: installerName,
                                         updatedAt: serverTimestamp(),

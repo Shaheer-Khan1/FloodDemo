@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
-import { collection, onSnapshot, limit as firestoreLimit, query as firestoreQuery } from "firebase/firestore";
+import { collection, onSnapshot, limit as firestoreLimit, query as firestoreQuery, where } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -121,7 +121,7 @@ function InvalidateSize() {
 }
 
 export default function InstallationsMap() {
-  const { userProfile } = useAuth();
+  const { user, userProfile } = useAuth();
   const isDesktop = useIsDesktop();
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
@@ -160,9 +160,11 @@ export default function InstallationsMap() {
     return () => unsub();
   }, []);
 
-  // Fetch teams
+  // Fetch only teams owned by the current admin
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "teams"), (snap) => {
+    if (!user) return;
+    const teamsQuery = firestoreQuery(collection(db, "teams"), where("ownerId", "==", user.uid));
+    const unsub = onSnapshot(teamsQuery, (snap) => {
       const data = snap.docs.map((d) => ({
         id: d.id,
         ...(d.data() as any),
@@ -173,7 +175,7 @@ export default function InstallationsMap() {
       setTeams(data);
     });
     return () => unsub();
-  }, []);
+  }, [user]);
 
   // Create location map - memoized separately for better performance
   const locationMap = useMemo(() => {
@@ -184,9 +186,13 @@ export default function InstallationsMap() {
     return map;
   }, [locations]);
 
-  // Match installations to coordinates - optimized
+  // Set of teamIds owned by the current admin
+  const ownedTeamIds = useMemo(() => new Set(teams.map(t => t.id)), [teams]);
+
+  // Match installations to coordinates - only for teams owned by this admin
   const installationsWithCoords = useMemo(() => {
     return installations
+      .filter((inst) => inst.teamId && ownedTeamIds.has(inst.teamId))
       .map((inst) => {
         const locationId = inst.locationId ? String(inst.locationId).trim() : "";
         const isLocation9999 = locationId === "9999";

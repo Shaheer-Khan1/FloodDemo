@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { AlertCircle, Loader2, Package, Users } from "lucide-react";
-import { collection, doc, onSnapshot, updateDoc, serverTimestamp } from "firebase/firestore";
+import { collection, doc, onSnapshot, updateDoc, getDocs, query, where, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import type { Team, Device } from "@/lib/types";
@@ -15,6 +15,7 @@ import { Label } from "@/components/ui/label";
 import { translateTeamNameToArabic } from "@/lib/amanah-translations";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 
 interface BoxAssignment {
   key: string;
@@ -55,6 +56,7 @@ export default function BoxImport() {
   const [transferToTeamId, setTransferToTeamId] = useState<string>("");
   const [transferCount, setTransferCount] = useState<number | "">("");
   const [transferring, setTransferring] = useState(false);
+  const [selectedTransferDevices, setSelectedTransferDevices] = useState<Set<string>>(new Set());
   
   // Track devices in selected transfer box
   const transferBoxDevices = useMemo(() => {
@@ -79,6 +81,34 @@ export default function BoxImport() {
     
     return { all: allDevices, transferable, withInstallation };
   }, [devices, installations, transferBoxNumber]);
+
+  // Clear selected devices when box number changes
+  useEffect(() => {
+    setSelectedTransferDevices(new Set());
+  }, [transferBoxNumber]);
+
+  // Helper functions for checkbox selection
+  const toggleDeviceSelection = (deviceId: string) => {
+    setSelectedTransferDevices(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(deviceId)) {
+        newSet.delete(deviceId);
+      } else {
+        newSet.add(deviceId);
+      }
+      return newSet;
+    });
+  };
+
+  const toggleSelectAllTransferable = () => {
+    if (selectedTransferDevices.size === transferBoxDevices.transferable.length) {
+      // Deselect all
+      setSelectedTransferDevices(new Set());
+    } else {
+      // Select all transferable
+      setSelectedTransferDevices(new Set(transferBoxDevices.transferable.map(d => d.id)));
+    }
+  };
 
   // Only managers (and admins, if you want) can assign boxes
   const isManager =
@@ -208,6 +238,30 @@ export default function BoxImport() {
     );
   }, [devices, selectedTeamId, selectedAssignedBox]);
 
+  /**
+   * Updates a device document by its Firestore document ID.
+   * Falls back to querying by the `id` field if the direct path doesn't exist.
+   */
+  const updateDeviceById = async (deviceId: string, data: Record<string, unknown>) => {
+    const directRef = doc(db, "devices", deviceId);
+    try {
+      await updateDoc(directRef, data);
+    } catch (err: any) {
+      // Firestore throws "not-found" when the document doesn't exist at that path
+      if (err?.code === "not-found") {
+        const snap = await getDocs(
+          query(collection(db, "devices"), where("id", "==", deviceId))
+        );
+        if (snap.empty) {
+          throw new Error(`Device with id "${deviceId}" not found in the devices collection.`);
+        }
+        await updateDoc(snap.docs[0].ref, data);
+      } else {
+        throw err;
+      }
+    }
+  };
+
   const handleAssign = async () => {
     if (!userProfile || !isManager) return;
 
@@ -276,7 +330,7 @@ export default function BoxImport() {
       const finalBoxId = boxIdentifier.trim();
 
       const updates = toUpdate.map((d) =>
-        updateDoc(doc(db, "devices", d.id), {
+        updateDeviceById(d.id, {
           boxNumber: finalBoxId,
           teamId: selectedTeamId,
           boxOpened: false,
@@ -341,7 +395,7 @@ export default function BoxImport() {
     setDeleting(true);
     try {
       const updates = devicesInAssignment.map((d) =>
-        updateDoc(doc(db, "devices", d.id), {
+        updateDeviceById(d.id, {
           teamId: null,
           boxNumber: null,
           boxOpened: null,
@@ -400,10 +454,15 @@ export default function BoxImport() {
 
     // Determine which devices to transfer
     let devicesToTransfer: Device[];
-    if (typeof transferCount === "number" && transferCount > 0) {
+    if (selectedTransferDevices.size > 0) {
+      // Use selected devices
+      devicesToTransfer = transferableDevices.filter(d => selectedTransferDevices.has(d.id));
+    } else if (typeof transferCount === "number" && transferCount > 0) {
+      // Use count-based selection
       devicesToTransfer = transferableDevices.slice(0, Math.min(transferCount, transferableDevices.length));
     } else {
-      devicesToTransfer = transferableDevices; // Transfer all transferable devices
+      // Transfer all transferable devices
+      devicesToTransfer = transferableDevices;
     }
 
     const fromTeamId = transferableDevices[0].teamId;
@@ -421,9 +480,9 @@ export default function BoxImport() {
     setTransferring(true);
     try {
       const updates = devicesToTransfer.map((d) =>
-        updateDoc(doc(db, "devices", d.id), {
+        updateDeviceById(d.id, {
           teamId: transferToTeamId,
-          assignedInstallerId: null, // Clear installer assignment
+          assignedInstallerId: null,
           assignedInstallerName: null,
           updatedAt: serverTimestamp(),
         })
@@ -440,6 +499,7 @@ export default function BoxImport() {
       setTransferBoxNumber("");
       setTransferToTeamId("");
       setTransferCount("");
+      setSelectedTransferDevices(new Set());
     } catch (error) {
       console.error(error);
       toast({
@@ -898,11 +958,26 @@ export default function BoxImport() {
           {/* Device Status Table */}
           {transferBoxNumber && transferBoxDevices.all.length > 0 && (
             <div className="mt-6">
-              <h3 className="text-sm font-semibold mb-3">Devices in Box {transferBoxNumber}</h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold">Devices in Box {transferBoxNumber}</h3>
+                {transferBoxDevices.transferable.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="select-all-transferable"
+                      checked={selectedTransferDevices.size === transferBoxDevices.transferable.length && transferBoxDevices.transferable.length > 0}
+                      onCheckedChange={toggleSelectAllTransferable}
+                    />
+                    <label htmlFor="select-all-transferable" className="text-sm cursor-pointer">
+                      Select All Transferable ({transferBoxDevices.transferable.length})
+                    </label>
+                  </div>
+                )}
+              </div>
               <div className="border rounded-lg overflow-hidden">
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-12">Select</TableHead>
                       <TableHead>Device ID</TableHead>
                       <TableHead>IMEI</TableHead>
                       <TableHead>Installation</TableHead>
@@ -914,8 +989,16 @@ export default function BoxImport() {
                     {transferBoxDevices.all.map((device) => {
                       const hasInstallation = installations.some((inst: any) => inst.deviceId === device.id);
                       const isTransferable = !hasInstallation;
+                      const isSelected = selectedTransferDevices.has(device.id);
                       return (
                         <TableRow key={device.id}>
+                          <TableCell>
+                            <Checkbox
+                              checked={isSelected}
+                              disabled={!isTransferable}
+                              onCheckedChange={() => toggleDeviceSelection(device.id)}
+                            />
+                          </TableCell>
                           <TableCell className="font-mono text-xs">{device.id}</TableCell>
                           <TableCell className="font-mono text-xs">{device.deviceImei}</TableCell>
                           <TableCell>
@@ -959,6 +1042,11 @@ export default function BoxImport() {
                 <span className="text-red-700">
                   With Installation: <span className="font-semibold">{transferBoxDevices.withInstallation.length}</span>
                 </span>
+                {selectedTransferDevices.size > 0 && (
+                  <span className="text-blue-700">
+                    Selected: <span className="font-semibold">{selectedTransferDevices.size}</span>
+                  </span>
+                )}
               </div>
             </div>
           )}
@@ -974,7 +1062,13 @@ export default function BoxImport() {
                   Transferring...
                 </>
               ) : (
-                `Transfer Box (${transferBoxDevices.transferable.length} devices)`
+                `Transfer ${
+                  selectedTransferDevices.size > 0
+                    ? `Selected (${selectedTransferDevices.size})`
+                    : typeof transferCount === "number" && transferCount > 0
+                    ? `${Math.min(transferCount, transferBoxDevices.transferable.length)}`
+                    : `All (${transferBoxDevices.transferable.length})`
+                } device${(selectedTransferDevices.size > 0 ? selectedTransferDevices.size : typeof transferCount === "number" && transferCount > 0 ? Math.min(transferCount, transferBoxDevices.transferable.length) : transferBoxDevices.transferable.length) !== 1 ? 's' : ''}`
               )}
             </Button>
           </div>
