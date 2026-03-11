@@ -65,6 +65,28 @@ export default function Admin() {
   // Inactive Devices Export State (no server data or data older than 10 days)
   const [exportingInactive, setExportingInactive] = useState(false);
 
+  // Bulk Installation Upload State
+  const [bulkInstallTeamId, setBulkInstallTeamId] = useState("");
+  const [bulkInstallFile, setBulkInstallFile] = useState<File | null>(null);
+  const [uploadingBulkInstall, setUploadingBulkInstall] = useState(false);
+  const [bulkInstallProgress, setBulkInstallProgress] = useState(0);
+  const [bulkInstallResult, setBulkInstallResult] = useState<{ success: number; failed: number; skipped: number; errors: string[] } | null>(null);
+
+  // Delete Installations State
+  const [deleteInstallDeviceIds, setDeleteInstallDeviceIds] = useState("");
+  const [deleteInstallPreview, setDeleteInstallPreview] = useState<{ installId: string; deviceId: string; locationId: string; installedByName: string; status: string }[]>([]);
+  const [loadingDeletePreview, setLoadingDeletePreview] = useState(false);
+  const [deletingInstallations, setDeletingInstallations] = useState(false);
+  const [showDeleteInstallConfirm, setShowDeleteInstallConfirm] = useState(false);
+
+  // Reassign Amanah State
+  const [reassignTargetTeamId, setReassignTargetTeamId] = useState("");
+  const [reassignDeviceIdsInput, setReassignDeviceIdsInput] = useState("");
+  const [reassignPreview, setReassignPreview] = useState<{ installId: string; deviceId: string; currentTeamName: string }[]>([]);
+  const [loadingReassignPreview, setLoadingReassignPreview] = useState(false);
+  const [reassigning, setReassigning] = useState(false);
+  const [showReassignConfirm, setShowReassignConfirm] = useState(false);
+
   // Bulk Team Change State
   const [deviceIdsInput, setDeviceIdsInput] = useState("");
   const [bulkChangeSourceTeamId, setBulkChangeSourceTeamId] = useState("");
@@ -1399,6 +1421,323 @@ export default function Admin() {
     }
   };
 
+  const handleBulkInstallFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const isValid = file.name.endsWith(".csv") || file.name.endsWith(".xlsx") || file.name.endsWith(".xls");
+    if (!isValid) {
+      toast({ variant: "destructive", title: "Invalid File", description: "Please upload a CSV or Excel (.xlsx) file." });
+      return;
+    }
+    setBulkInstallFile(file);
+    setBulkInstallResult(null);
+  };
+
+  const handleBulkInstallUpload = async () => {
+    if (!bulkInstallFile || !bulkInstallTeamId) return;
+    if (!userProfile) return;
+
+    setUploadingBulkInstall(true);
+    setBulkInstallProgress(0);
+    const result = { success: 0, failed: 0, skipped: 0, errors: [] as string[] };
+
+    try {
+      // Parse file into rows
+      let rows: string[][];
+      if (bulkInstallFile.name.endsWith(".xlsx") || bulkInstallFile.name.endsWith(".xls")) {
+        rows = await parseLocationExcel(bulkInstallFile);
+      } else {
+        const text = await bulkInstallFile.text();
+        rows = parseLocationCSV(text);
+      }
+
+      if (rows.length < 2) {
+        toast({ variant: "destructive", title: "Empty File", description: "File must have a header row and at least one data row." });
+        setUploadingBulkInstall(false);
+        return;
+      }
+
+      const headerRow = rows[0].map(h => h.toString().toLowerCase().trim().replace(/\s+/g, ""));
+      const col = (names: string[]) => headerRow.findIndex(h => names.some(n => h.includes(n)));
+
+      const deviceIdIdx   = col(["deviceuid", "deviceid", "device_id", "uid"]);
+      const locationIdIdx = col(["locationid", "location_id", "location"]);
+      const sensorIdx     = col(["sensorreading", "sensor_reading", "reading", "sensorcm", "cm"]);
+      const latIdx        = col(["latitude", "lat"]);
+      const lngIdx        = col(["longitude", "lng", "lon"]);
+      const installerIdx  = col(["installername", "installer_name", "installer", "installedbyname"]);
+
+      if (deviceIdIdx === -1 || locationIdIdx === -1 || sensorIdx === -1) {
+        toast({
+          variant: "destructive",
+          title: "Missing Required Columns",
+          description: "File must include: Device UID, Location ID, Sensor Reading.",
+        });
+        setUploadingBulkInstall(false);
+        return;
+      }
+
+      // Fetch existing installations to detect duplicates (same deviceId + teamId)
+      const existingSnap = await getDocs(collection(db, "installations"));
+      const existingKeys = new Set(
+        existingSnap.docs.map(d => `${d.data().deviceId}__${d.data().teamId}`)
+      );
+
+      const dataRows = rows.slice(1);
+      const total = dataRows.length;
+      let batch = writeBatch(db);
+      let batchCount = 0;
+
+      for (let i = 0; i < dataRows.length; i++) {
+        const row = dataRows[i];
+        const deviceId    = row[deviceIdIdx]?.toString().trim().toUpperCase();
+        const locationId  = row[locationIdIdx]?.toString().trim();
+        const sensorRaw   = row[sensorIdx]?.toString().trim();
+        const sensorReading = parseFloat(sensorRaw);
+        const latitude    = latIdx !== -1 ? parseFloat(row[latIdx]?.toString().trim()) : NaN;
+        const longitude   = lngIdx !== -1 ? parseFloat(row[lngIdx]?.toString().trim()) : NaN;
+        const installerName = installerIdx !== -1 ? row[installerIdx]?.toString().trim() : "";
+
+        if (!deviceId) {
+          result.failed++;
+          result.errors.push(`Row ${i + 2}: Missing Device UID`);
+          continue;
+        }
+        if (!locationId) {
+          result.failed++;
+          result.errors.push(`Row ${i + 2} (${deviceId}): Missing Location ID`);
+          continue;
+        }
+        if (isNaN(sensorReading)) {
+          result.failed++;
+          result.errors.push(`Row ${i + 2} (${deviceId}): Invalid sensor reading "${sensorRaw}"`);
+          continue;
+        }
+
+        const key = `${deviceId}__${bulkInstallTeamId}`;
+        if (existingKeys.has(key)) {
+          result.skipped++;
+          continue;
+        }
+
+        try {
+          const newDocRef = doc(collection(db, "installations"));
+          const installData: any = {
+            deviceId,
+            locationId,
+            sensorReading,
+            imageUrls: [],
+            installedBy: userProfile.uid,
+            installedByName: installerName || userProfile.displayName,
+            teamId: bulkInstallTeamId,
+            status: "pending",
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          };
+          if (!isNaN(latitude))  installData.latitude  = latitude;
+          if (!isNaN(longitude)) installData.longitude = longitude;
+
+          batch.set(newDocRef, installData);
+
+          // Also update device status to "pending"
+          const deviceRef = doc(db, "devices", deviceId);
+          batch.update(deviceRef, { status: "pending", updatedAt: serverTimestamp() });
+
+          batchCount++;
+          result.success++;
+          existingKeys.add(key); // Prevent in-batch duplicates
+        } catch (err: any) {
+          result.failed++;
+          result.errors.push(`Row ${i + 2} (${deviceId}): ${err.message}`);
+        }
+
+        if (batchCount >= 400) {
+          await batch.commit();
+          batchCount = 0;
+          batch = writeBatch(db);
+        }
+
+        setBulkInstallProgress(Math.round(((i + 1) / total) * 100));
+      }
+
+      if (batchCount > 0) {
+        await batch.commit();
+      }
+
+      setBulkInstallResult(result);
+      toast({
+        title: "Bulk Upload Complete",
+        description: `Created ${result.success} installation(s). ${result.skipped > 0 ? `${result.skipped} skipped (already exist).` : ""} ${result.failed > 0 ? `${result.failed} failed.` : ""}`,
+      });
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "Upload Failed", description: error.message || "An error occurred." });
+    } finally {
+      setUploadingBulkInstall(false);
+      setBulkInstallProgress(0);
+    }
+  };
+
+  const findInstallationsToDelete = async () => {
+    const ids = deleteInstallDeviceIds
+      .split("\n")
+      .map(s => s.trim().toUpperCase())
+      .filter(Boolean);
+
+    if (ids.length === 0) return;
+
+    setLoadingDeletePreview(true);
+    setDeleteInstallPreview([]);
+
+    try {
+      const snap = await getDocs(collection(db, "installations"));
+      const matches = snap.docs
+        .filter(d => ids.includes((d.data().deviceId || "").toUpperCase()))
+        .map(d => ({
+          installId: d.id,
+          deviceId: d.data().deviceId || "",
+          locationId: d.data().locationId || "—",
+          installedByName: d.data().installedByName || "—",
+          status: d.data().status || "—",
+        }));
+
+      setDeleteInstallPreview(matches);
+
+      if (matches.length === 0) {
+        toast({ title: "No Installations Found", description: "None of those device IDs have installation records." });
+      }
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Search Failed", description: err.message });
+    } finally {
+      setLoadingDeletePreview(false);
+    }
+  };
+
+  const handleDeleteInstallations = async () => {
+    if (deleteInstallPreview.length === 0) return;
+
+    setDeletingInstallations(true);
+    try {
+      const deviceIds = Array.from(new Set(deleteInstallPreview.map(r => r.deviceId)));
+      let batch = writeBatch(db);
+      let count = 0;
+
+      // Delete each installation doc
+      for (const item of deleteInstallPreview) {
+        batch.delete(doc(db, "installations", item.installId));
+        count++;
+        if (count >= 400) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+
+      // Reset device status to "pending" (not installed)
+      for (const deviceId of deviceIds) {
+        batch.update(doc(db, "devices", deviceId), {
+          status: "pending",
+          updatedAt: serverTimestamp(),
+        });
+        count++;
+        if (count >= 400) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+
+      if (count > 0) await batch.commit();
+
+      toast({
+        title: "Installations Deleted",
+        description: `Deleted ${deleteInstallPreview.length} installation(s). ${deviceIds.length} device(s) reset to Not Installed.`,
+      });
+
+      setDeleteInstallPreview([]);
+      setDeleteInstallDeviceIds("");
+      setShowDeleteInstallConfirm(false);
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Deletion Failed", description: err.message });
+    } finally {
+      setDeletingInstallations(false);
+    }
+  };
+
+  const findReassignPreview = async () => {
+    const ids = reassignDeviceIdsInput
+      .split("\n")
+      .map(s => s.trim().toUpperCase())
+      .filter(Boolean);
+
+    if (ids.length === 0 || !reassignTargetTeamId) return;
+
+    setLoadingReassignPreview(true);
+    setReassignPreview([]);
+
+    try {
+      const snap = await getDocs(collection(db, "installations"));
+      const teamMap = new Map(teams.map(t => [t.id, t.name]));
+
+      const matches = snap.docs
+        .filter(d => ids.includes((d.data().deviceId || "").toUpperCase()))
+        .map(d => ({
+          installId: d.id,
+          deviceId: d.data().deviceId,
+          currentTeamName: teamMap.get(d.data().teamId) || d.data().teamId || "—",
+        }));
+
+      setReassignPreview(matches);
+
+      if (matches.length === 0) {
+        toast({ title: "No Matches", description: "No installations found for those device IDs." });
+      }
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Search Failed", description: err.message });
+    } finally {
+      setLoadingReassignPreview(false);
+    }
+  };
+
+  const handleReassignAmanah = async () => {
+    if (reassignPreview.length === 0 || !reassignTargetTeamId) return;
+
+    setReassigning(true);
+    try {
+      let batch = writeBatch(db);
+      let count = 0;
+
+      // Only update the teamId on installation docs so they show under the new Amanah
+      for (const item of reassignPreview) {
+        batch.update(doc(db, "installations", item.installId), {
+          teamId: reassignTargetTeamId,
+          updatedAt: serverTimestamp(),
+        });
+        count++;
+        if (count >= 400) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+
+      if (count > 0) await batch.commit();
+
+      const targetName = teams.find(t => t.id === reassignTargetTeamId)?.name || reassignTargetTeamId;
+      toast({
+        title: "Done",
+        description: `${reassignPreview.length} installation(s) now show under "${targetName}".`,
+      });
+
+      setReassignPreview([]);
+      setReassignDeviceIdsInput("");
+      setShowReassignConfirm(false);
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Update Failed", description: err.message });
+    } finally {
+      setReassigning(false);
+    }
+  };
+
   const findInstallationsForTeamChange = async () => {
     if (!deviceIdsInput.trim()) {
       toast({
@@ -2572,6 +2911,370 @@ export default function Admin() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Bulk Installation Upload */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Upload className="h-5 w-5 text-blue-600" />
+            Bulk Installation Upload
+          </CardTitle>
+          <CardDescription>
+            Upload a CSV or Excel file to create installation records in bulk for a specific Amanah (team), without images
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Team selector */}
+          <div className="space-y-2">
+            <Label>Select Amanah (Team) <span className="text-destructive">*</span></Label>
+            <Select value={bulkInstallTeamId} onValueChange={setBulkInstallTeamId} disabled={uploadingBulkInstall}>
+              <SelectTrigger className="w-full md:w-[320px]">
+                <SelectValue placeholder="Select a team..." />
+              </SelectTrigger>
+              <SelectContent>
+                {teams.map((team) => (
+                  <SelectItem key={team.id} value={team.id}>
+                    {team.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* File upload */}
+          <div className="space-y-2">
+            <Label>Upload CSV / Excel File <span className="text-destructive">*</span></Label>
+            <div className="flex items-center gap-3">
+              <Input
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                onChange={handleBulkInstallFileChange}
+                disabled={uploadingBulkInstall}
+                className="max-w-sm"
+              />
+              {bulkInstallFile && (
+                <Badge variant="secondary">{bulkInstallFile.name}</Badge>
+              )}
+            </div>
+            <div className="rounded-md border border-muted bg-muted/30 p-3 text-xs text-muted-foreground space-y-1">
+              <p className="font-semibold">Required columns:</p>
+              <p><code>Device UID</code>, <code>Location ID</code>, <code>Sensor Reading</code></p>
+              <p className="font-semibold mt-1">Optional columns:</p>
+              <p><code>Latitude</code>, <code>Longitude</code>, <code>Installer Name</code></p>
+              <p className="mt-1 text-amber-600 dark:text-amber-400">Installations already existing for the same Device UID + Team will be skipped.</p>
+            </div>
+          </div>
+
+          {/* Upload button */}
+          <div className="flex items-center gap-3">
+            <Button
+              onClick={handleBulkInstallUpload}
+              disabled={!bulkInstallFile || !bulkInstallTeamId || uploadingBulkInstall}
+            >
+              {uploadingBulkInstall ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Uploading... {bulkInstallProgress}%
+                </>
+              ) : (
+                <>
+                  <Upload className="h-4 w-4 mr-2" />
+                  Upload Installations
+                </>
+              )}
+            </Button>
+            {bulkInstallFile && !uploadingBulkInstall && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { setBulkInstallFile(null); setBulkInstallResult(null); }}
+              >
+                <X className="h-4 w-4 mr-1" />
+                Clear
+              </Button>
+            )}
+          </div>
+
+          {/* Progress bar */}
+          {uploadingBulkInstall && (
+            <Progress value={bulkInstallProgress} className="h-2" />
+          )}
+
+          {/* Results */}
+          {bulkInstallResult && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950/20 p-3 text-center">
+                  <p className="text-2xl font-bold text-green-600">{bulkInstallResult.success}</p>
+                  <p className="text-xs text-muted-foreground mt-1">Created</p>
+                </div>
+                <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950/20 p-3 text-center">
+                  <p className="text-2xl font-bold text-yellow-600">{bulkInstallResult.skipped}</p>
+                  <p className="text-xs text-muted-foreground mt-1">Skipped</p>
+                </div>
+                <div className="rounded-lg border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/20 p-3 text-center">
+                  <p className="text-2xl font-bold text-red-600">{bulkInstallResult.failed}</p>
+                  <p className="text-xs text-muted-foreground mt-1">Failed</p>
+                </div>
+              </div>
+              {bulkInstallResult.errors.length > 0 && (
+                <div className="rounded-md border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/20 p-3 max-h-48 overflow-y-auto">
+                  <p className="text-xs font-semibold text-red-700 dark:text-red-300 mb-2">Errors:</p>
+                  <ul className="text-xs text-red-600 dark:text-red-400 space-y-1">
+                    {bulkInstallResult.errors.map((e, i) => (
+                      <li key={i}>• {e}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Delete Installations */}
+      <Card className="border shadow-sm border-red-200 dark:border-red-900">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <XCircle className="h-5 w-5 text-red-600" />
+            Delete Installation Submissions
+          </CardTitle>
+          <CardDescription>
+            Enter device IDs to find and delete their installation records, resetting them back to Not Installed
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="space-y-2">
+            <Label>Device UIDs (one per line)</Label>
+            <Textarea
+              value={deleteInstallDeviceIds}
+              onChange={e => { setDeleteInstallDeviceIds(e.target.value); setDeleteInstallPreview([]); }}
+              placeholder={"E75832989D048709\n434F564A84ADB55F\n8E9F81B4EDF9910B"}
+              className="font-mono text-sm h-32 resize-none"
+              disabled={deletingInstallations}
+            />
+          </div>
+
+          <Button
+            variant="outline"
+            onClick={findInstallationsToDelete}
+            disabled={!deleteInstallDeviceIds.trim() || loadingDeletePreview || deletingInstallations}
+          >
+            {loadingDeletePreview ? (
+              <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Searching...</>
+            ) : (
+              <><Search className="h-4 w-4 mr-2" />Find Installations</>
+            )}
+          </Button>
+
+          {deleteInstallPreview.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-lg bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="h-5 w-5 text-red-600" />
+                  <span className="font-semibold text-red-700 dark:text-red-300">
+                    {deleteInstallPreview.length} installation{deleteInstallPreview.length !== 1 ? "s" : ""} will be permanently deleted
+                  </span>
+                </div>
+                <Button
+                  variant="destructive"
+                  onClick={() => setShowDeleteInstallConfirm(true)}
+                  disabled={deletingInstallations}
+                >
+                  {deletingInstallations
+                    ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Deleting...</>
+                    : <><XCircle className="h-4 w-4 mr-2" />Delete All</>
+                  }
+                </Button>
+              </div>
+
+              <div className="border rounded-lg overflow-hidden">
+                <div className="max-h-64 overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead className="bg-muted sticky top-0">
+                      <tr>
+                        <th className="text-left px-3 py-2 font-medium">Device UID</th>
+                        <th className="text-left px-3 py-2 font-medium">Location</th>
+                        <th className="text-left px-3 py-2 font-medium">Installed By</th>
+                        <th className="text-left px-3 py-2 font-medium">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {deleteInstallPreview.map(item => (
+                        <tr key={item.installId} className="border-t">
+                          <td className="px-3 py-2 font-mono">{item.deviceId}</td>
+                          <td className="px-3 py-2">{item.locationId}</td>
+                          <td className="px-3 py-2">{item.installedByName}</td>
+                          <td className="px-3 py-2">
+                            <Badge variant="outline" className="text-[10px]">{item.status}</Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Delete confirm dialog */}
+      <AlertDialog open={showDeleteInstallConfirm} onOpenChange={setShowDeleteInstallConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Installation Records?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete <strong>{deleteInstallPreview.length}</strong> installation record(s)
+              and reset <strong>{new Set(deleteInstallPreview.map(r => r.deviceId)).size}</strong> device(s)
+              back to <strong>Not Installed</strong>. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingInstallations}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteInstallations}
+              disabled={deletingInstallations}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingInstallations ? "Deleting..." : "Yes, Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Set Installation Amanah */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <MapPin className="h-5 w-5 text-purple-600" />
+            Set Amanah for Installed Devices
+          </CardTitle>
+          <CardDescription>
+            Make existing installations appear under a specific Amanah (team) in all views and reports
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Target team */}
+            <div className="space-y-2">
+              <Label>New Amanah (Target Team) <span className="text-destructive">*</span></Label>
+              <Select value={reassignTargetTeamId} onValueChange={v => { setReassignTargetTeamId(v); setReassignPreview([]); }} disabled={reassigning}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select target team..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {teams.map(t => (
+                    <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* Device IDs textarea */}
+          <div className="space-y-2">
+            <Label>Device UIDs (one per line) <span className="text-destructive">*</span></Label>
+            <Textarea
+              value={reassignDeviceIdsInput}
+              onChange={e => { setReassignDeviceIdsInput(e.target.value); setReassignPreview([]); }}
+              placeholder={"E75832989D048709\n434F564A84ADB55F\n8E9F81B4EDF9910B"}
+              className="font-mono text-sm h-32 resize-none"
+              disabled={reassigning}
+            />
+            <p className="text-xs text-muted-foreground">
+              Paste device UIDs, one per line. All installations for those devices will be reassigned to the selected team.
+            </p>
+          </div>
+
+          {/* Preview button */}
+          <div className="flex items-center gap-3">
+            <Button
+              variant="outline"
+              onClick={findReassignPreview}
+              disabled={!reassignTargetTeamId || !reassignDeviceIdsInput.trim() || loadingReassignPreview || reassigning}
+            >
+              {loadingReassignPreview ? (
+                <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Searching...</>
+              ) : (
+                <><Search className="h-4 w-4 mr-2" />Preview Changes</>
+              )}
+            </Button>
+          </div>
+
+          {/* Preview table */}
+          {reassignPreview.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-lg bg-purple-50 dark:bg-purple-950/20 border border-purple-200 dark:border-purple-800">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-purple-600" />
+                  <span className="font-semibold text-purple-700 dark:text-purple-300">
+                    {reassignPreview.length} installation{reassignPreview.length !== 1 ? "s" : ""} will show under{" "}
+                    <strong>{teams.find(t => t.id === reassignTargetTeamId)?.name || reassignTargetTeamId}</strong>
+                  </span>
+                </div>
+                <Button
+                  variant="default"
+                  onClick={() => setShowReassignConfirm(true)}
+                  disabled={reassigning}
+                >
+                  {reassigning ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Reassigning...</> : <><RefreshCw className="h-4 w-4 mr-2" />Apply</>}
+                </Button>
+              </div>
+
+              <div className="border rounded-lg overflow-hidden">
+                <div className="max-h-64 overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead className="bg-muted sticky top-0">
+                      <tr>
+                        <th className="text-left px-3 py-2 font-medium">Device UID</th>
+                        <th className="text-left px-3 py-2 font-medium">Current Amanah</th>
+                        <th className="text-left px-3 py-2 font-medium">New Amanah</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reassignPreview.slice(0, 50).map(item => (
+                        <tr key={item.installId} className="border-t">
+                          <td className="px-3 py-2 font-mono">{item.deviceId}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{item.currentTeamName}</td>
+                          <td className="px-3 py-2 font-medium text-purple-600">
+                            {teams.find(t => t.id === reassignTargetTeamId)?.name || reassignTargetTeamId}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {reassignPreview.length > 50 && (
+                    <p className="text-xs text-muted-foreground text-center py-2">
+                      + {reassignPreview.length - 50} more
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Reassign confirm dialog */}
+      <AlertDialog open={showReassignConfirm} onOpenChange={setShowReassignConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Amanah Update</AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>{reassignPreview.length}</strong> installation(s) will show under{" "}
+              <strong>{teams.find(t => t.id === reassignTargetTeamId)?.name || reassignTargetTeamId}</strong>{" "}
+              in all views and reports. Only the installation records are updated — device ownership is not changed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={reassigning}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleReassignAmanah} disabled={reassigning}>
+              {reassigning ? "Reassigning..." : "Yes, Reassign"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Bulk Team Change */}
       <Card className="border shadow-sm">

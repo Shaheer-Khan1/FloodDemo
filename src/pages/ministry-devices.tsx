@@ -119,12 +119,12 @@ export default function MinistryDevices() {
   const debouncedDateFilter = useDebounce(dateFilter, 300);
   const [isFiltering, setIsFiltering] = useState(false);
   
-  // Track loading state for initial data
+  // Track loading state for initial data — installations are the source of truth
   useEffect(() => {
-    if (devices.length > 0 && installations.length > 0) {
+    if (installations.length > 0) {
       setLoading(false);
     }
-  }, [devices.length, installations.length]);
+  }, [installations.length]);
   
   // Show filtering indicator while debouncing
   useEffect(() => {
@@ -231,13 +231,22 @@ export default function MinistryDevices() {
     return map;
   }, [installations]);
 
-  // Create rows with installation data and calculated metrics (much faster with map lookup)
+  // Build a device lookup map for O(1) access
+  const deviceMap = useMemo(() => {
+    const map = new Map<string, Device>();
+    devices.forEach(d => map.set(d.id, d));
+    return map;
+  }, [devices]);
+
+  // Create rows with installation data and calculated metrics.
+  // Iterates installations (not devices) so devices that have installations
+  // but are missing from the devices master list still appear.
   const allRows = useMemo(() => {
-    return devices
-      .map((d) => {
-        const inst = installationsByDevice.get(d.id);
-        if (!inst) return null;
-        
+    return Array.from(installationsByDevice.values())
+      .map((inst) => {
+        // Use device from master list if available, otherwise create a minimal stub
+        const d: Device = deviceMap.get(inst.deviceId) ?? ({ id: inst.deviceId } as Device);
+
         const amanah = inst.teamId ? teamIdToName[inst.teamId] || inst.teamId : "-";
         
         // Calculate variance if we have both sensor reading and server data
@@ -257,7 +266,7 @@ export default function MinistryDevices() {
         const locationId = inst?.locationId ? String(inst.locationId).trim() : null;
         let location: Location | null = null;
         if (locationId) {
-          location = locationMap.get(locationId);
+          location = locationMap.get(locationId) ?? null;
           // Only do fallback search if map lookup failed and it's needed
           if (!location && locations.length > 0 && locations.length < 5000) {
             location = locations.find(loc => 
@@ -288,10 +297,8 @@ export default function MinistryDevices() {
           isSwapped,
           hasCoordinates
         };
-      })
-      // Only show devices that have at least one installation (installed devices)
-      .filter((row): row is NonNullable<typeof row> => row !== null);
-  }, [devices, installationsByDevice, teamIdToName, locationMap, locations]);
+      });
+  }, [deviceMap, installationsByDevice, teamIdToName, locationMap, locations]);
 
   // Calculate all filter counts in a single pass for better performance
   const filterCounts = useMemo(() => {
