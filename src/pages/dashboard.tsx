@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { MapPin, Users, Shield, Filter, FileSpreadsheet } from "lucide-react";
+import { MapPin, Users, Shield, Filter, FileSpreadsheet, RefreshCw, Flag } from "lucide-react";
 import { useLocation } from "wouter";
 import { useState, useEffect } from "react";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
@@ -230,6 +230,32 @@ export default function Dashboard() {
                 <div className="text-left">
                   <div className="font-semibold text-lg">Bulk Device Lookup</div>
                   <div className="text-sm text-muted-foreground">Upload Excel, get locations</div>
+                </div>
+              </Button>
+              <Button
+                variant="outline"
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setLocation("/coordinate-flag")}
+              >
+                <div className="h-12 w-12 rounded-xl bg-red-100 dark:bg-red-950 flex items-center justify-center mr-4">
+                  <Flag className="h-6 w-6 text-red-600 dark:text-red-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Coordinate Bounds Check</div>
+                  <div className="text-sm text-muted-foreground">Flag devices outside their Amanah area</div>
+                </div>
+              </Button>
+              <Button 
+                variant="outline" 
+                className="h-auto py-6 justify-start hover:bg-accent transition-all group"
+                onClick={() => setLocation("/coordinate-update")}
+              >
+                <div className="h-12 w-12 rounded-xl bg-cyan-100 dark:bg-cyan-950 flex items-center justify-center mr-4">
+                  <RefreshCw className="h-6 w-6 text-cyan-600 dark:text-cyan-400" />
+                </div>
+                <div className="text-left">
+                  <div className="font-semibold text-lg">Update Coordinates</div>
+                  <div className="text-sm text-muted-foreground">Bulk update installation coordinates from sheet</div>
                 </div>
               </Button>
               <Button 

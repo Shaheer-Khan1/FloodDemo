@@ -38,6 +38,9 @@ import InstallationManagement from "@/pages/installation-management";
 import AdminManagement from "@/pages/admin-management";
 import AdminDeviceFilter from "@/pages/admin-device-filter";
 import BulkDeviceLookup from "@/pages/bulk-device-lookup";
+import CoordinateUpdate from "@/pages/coordinate-update";
+import CoordinateFlag from "@/pages/coordinate-flag";
+import MunicipalityImport from "@/pages/municipality-import";
 
 function Router() {
   return (
@@ -238,6 +241,30 @@ function Router() {
         <ProtectedRoute>
           <AppLayout>
             <BulkDeviceLookup />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/coordinate-update">
+        <ProtectedRoute>
+          <AppLayout>
+            <CoordinateUpdate />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/coordinate-flag">
+        <ProtectedRoute>
+          <AppLayout>
+            <CoordinateFlag />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/municipality-import">
+        <ProtectedRoute>
+          <AppLayout>
+            <MunicipalityImport />
           </AppLayout>
         </ProtectedRoute>
       </Route>

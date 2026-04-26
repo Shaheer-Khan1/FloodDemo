@@ -70,6 +70,35 @@ const parseCoordinate = (value: number | string | null | undefined): number | nu
   return Number.isNaN(num) ? null : num;
 };
 
+/** Returns true when the string contains any Arabic / Arabic-Extended characters. */
+const hasArabic = (text: string): boolean =>
+  /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/.test(text);
+
+/** Where a municipality value was resolved from for a given CSV row. */
+type MunicSource = "location_ref" | "amanah" | "none";
+
+/**
+ * Resolve the municipality to display for a CSV row.
+ *
+ * Priority:
+ *   1. `locations/{locationId}.municipalityName`  → source = "location_ref"
+ *   2. Arabic amanah / team name fallback          → source = "amanah"
+ *   3. Neither available                           → source = "none"
+ */
+function resolveMunicipality(
+  location: Location | null | undefined,
+  amanahFallback: string
+): { value: string; source: MunicSource } {
+  if (location?.municipalityName) {
+    return { value: location.municipalityName, source: "location_ref" };
+  }
+  const fallback = amanahFallback && amanahFallback !== "-" ? amanahFallback : "";
+  if (fallback) {
+    return { value: fallback, source: "amanah" };
+  }
+  return { value: "-", source: "none" };
+}
+
 const statusConfig = {
   pending: { 
     label: "Pending Verification", 
@@ -91,8 +120,8 @@ const statusConfig = {
 interface Location {
   id: string;
   locationId: string;
-  latitude: number;
-  longitude: number;
+  latitude: number | null;
+  longitude: number | null;
   municipalityName?: string;
 }
 
@@ -114,6 +143,7 @@ export default function MinistryDevices() {
   const [loading, setLoading] = useState(true);
   const [fromDateTime, setFromDateTime] = useState("");
   const [toDateTime, setToDateTime] = useState("");
+  const [lastXDevices, setLastXDevices] = useState<number | "">("");
   
   // Debounce filters for smooth performance
   const debouncedDateFilter = useDebounce(dateFilter, 300);
@@ -170,7 +200,12 @@ export default function MinistryDevices() {
           longitude: lon,
           municipalityName: docData.municipalityName || undefined,
         } as Location;
-      }).filter(loc => loc.latitude != null && loc.longitude != null && !isNaN(loc.latitude) && !isNaN(loc.longitude));
+      // Keep docs that have valid coordinates OR a municipality name so that
+      // municipality-import-only documents are still available for CSV lookup.
+      }).filter(loc =>
+        (loc.latitude != null && !isNaN(loc.latitude) && loc.longitude != null && !isNaN(loc.longitude)) ||
+        !!loc.municipalityName
+      );
       
       setLocations(data);
     });
@@ -369,8 +404,13 @@ export default function MinistryDevices() {
       return bTime - aTime; // newest first
     });
 
+    // Limit to last X devices by installation date (after all other filters + sort)
+    if (lastXDevices !== "" && lastXDevices > 0) {
+      filtered = filtered.slice(0, lastXDevices);
+    }
+
     return filtered;
-  }, [allRows, activeFilter, teamFilter, debouncedDateFilter]);
+  }, [allRows, activeFilter, teamFilter, debouncedDateFilter, lastXDevices]);
   
   // Paginate rows for performance
   const paginatedRows = useMemo(() => {
@@ -380,7 +420,7 @@ export default function MinistryDevices() {
   // Reset display limit when filters change
   useEffect(() => {
     setDisplayLimit(500);
-  }, [teamFilter, activeFilter, debouncedDateFilter]);
+  }, [teamFilter, activeFilter, debouncedDateFilter, lastXDevices]);
   
   // Handle "Show More" button
   const handleShowMore = useCallback(() => {
@@ -631,22 +671,34 @@ export default function MinistryDevices() {
         "Serial No", "Location ID", "Device ID", "Installer Name", "Amanah", "Municipality", "Sensor Height", "Installation Date"
       ];
 
+      let noLocMunicFromRef = 0;
+      let noLocMunicFromAmanah = 0;
+
       const csvRows = sortedRows.map((row, index) => {
         const { device, inst } = row;
         const locationId = inst?.locationId ? String(inst.locationId).trim() : "";
-        const location = locationMap.get(locationId);
+        let location = locationMap.get(locationId) ?? null;
+        if (!location && locationId && locations.length > 0) {
+          location = locations.find(
+            (loc) => String(loc.id).trim() === locationId || String(loc.locationId).trim() === locationId
+          ) ?? null;
+        }
         const englishAmanahName = row.amanah || "-";
         const amanahForExport = translateTeamNameToArabic(
           englishAmanahName === "-" ? null : englishAmanahName
         ) || englishAmanahName;
-        
+
+        const { value: municipalityName, source: municSource } = resolveMunicipality(location, amanahForExport);
+        if (municSource === "location_ref") noLocMunicFromRef++;
+        else if (municSource === "amanah") noLocMunicFromAmanah++;
+
         return [
           (index + 1).toString(),
           locationId || "-",
           `="${device.id}"`, // Format as text to prevent Excel scientific notation
           inst.installedByName || "-",
           amanahForExport,
-          location?.municipalityName || "-",
+          municipalityName,
           inst.sensorReading != null ? inst.sensorReading.toString() : "-",
           inst.createdAt ? format(inst.createdAt, "yyyy-MM-dd HH:mm") : "-"
         ];
@@ -678,7 +730,9 @@ export default function MinistryDevices() {
 
       toast({
         title: "Export Complete",
-        description: `Exported ${noLocationInstallations.length} device(s) without location data.`,
+        description:
+          `Exported ${noLocationInstallations.length} device(s) without location data. ` +
+          `Municipality: ${noLocMunicFromRef} from location reference, ${noLocMunicFromAmanah} from Amanah name.`,
       });
     } catch (error: any) {
       toast({
@@ -704,6 +758,8 @@ export default function MinistryDevices() {
 
     const rowsByAmanah: Record<string, string[][]> = {};
     let totalRows = 0;
+    let municFromRef = 0;
+    let municFromAmanah = 0;
 
     filteredRows.forEach((row) => {
       const { device, inst, amanah } = row;
@@ -736,41 +792,6 @@ export default function MinistryDevices() {
           coordinates = formatCoordinates(location.latitude, location.longitude);
         } else if (instLat != null && instLon != null) {
           coordinates = formatCoordinates(instLat, instLon);
-          
-          // COMMENTED OUT: Try to find location from user's most recent installation
-          // if (inst?.installedBy) {
-          //   const userInstallations = installations
-          //     .filter(i => i.installedBy === inst.installedBy && i.id !== inst.id && i.locationId && i.locationId !== rawLocationId)
-          //     .sort((a, b) => {
-          //       const dateA = a.createdAt ? a.createdAt.getTime() : 0;
-          //       const dateB = b.createdAt ? b.createdAt.getTime() : 0;
-          //       return dateB - dateA; // Most recent first
-          //     });
-          //   
-          //   // Find the most recent installation with a valid location
-          //   for (const userInst of userInstallations) {
-          //     const userLocId = String(userInst.locationId).trim();
-          //     const userLocation = locationMap.get(userLocId) ?? 
-          //       locations.find(
-          //         (loc) =>
-          //           String(loc.id).trim() === userLocId ||
-          //           String(loc.locationId).trim() === userLocId
-          //       ) ?? null;
-          //     
-          //     if (userLocation?.latitude != null && userLocation?.longitude != null) {
-          //       location = userLocation;
-          //       coordinates = formatCoordinates(userLocation.latitude, userLocation.longitude);
-          //       break;
-          //     }
-          //   }
-          //   
-          //   // If still no location found, use installation coordinates
-          //   if (coordinates === "-") {
-          //     coordinates = formatCoordinates(instLat, instLon);
-          //   }
-          // } else {
-          //   coordinates = formatCoordinates(instLat, instLon);
-          // }
         }
       }
 
@@ -779,7 +800,10 @@ export default function MinistryDevices() {
       const amanahForExport = translateTeamNameToArabic(
         englishAmanahName === "-" ? null : englishAmanahName
       ) || englishAmanahName;
-      const municipalityName = location?.municipalityName || "-";
+
+      const { value: municipalityName, source: municSource } = resolveMunicipality(location, amanahForExport);
+      if (municSource === "location_ref") municFromRef++;
+      else if (municSource === "amanah") municFromAmanah++;
 
       const csvRow = [
         "", // Serial placeholder
@@ -810,9 +834,9 @@ export default function MinistryDevices() {
 
     toast({
       title: "CSV downloaded",
-      description: `Exported ${totalRows} row${totalRows === 1 ? "" : "s"} across ${amanahCount} Amanah${
-        amanahCount === 1 ? "" : "s"
-      }.`,
+      description:
+        `Exported ${totalRows} row${totalRows === 1 ? "" : "s"} across ${amanahCount} Amanah${amanahCount === 1 ? "" : "s"}. ` +
+        `Municipality: ${municFromRef} from location reference, ${municFromAmanah} from Amanah name.`,
     });
   };
 
@@ -832,6 +856,8 @@ export default function MinistryDevices() {
     try {
       const rowsByAmanah: Record<string, string[][]> = {};
       let totalRows = 0;
+      let groupedMunicFromRef = 0;
+      let groupedMunicFromAmanah = 0;
 
       // Process filtered rows
       filteredRows.forEach((row) => {
@@ -865,41 +891,6 @@ export default function MinistryDevices() {
             coordinates = formatCoordinates(location.latitude, location.longitude);
           } else if (instLat != null && instLon != null) {
             coordinates = formatCoordinates(instLat, instLon);
-            
-            // COMMENTED OUT: Try to find location from user's most recent installation
-            // if (inst?.installedBy) {
-            //   const userInstallations = installations
-            //     .filter(i => i.installedBy === inst.installedBy && i.id !== inst.id && i.locationId && i.locationId !== rawLocationId)
-            //     .sort((a, b) => {
-            //       const dateA = a.createdAt ? a.createdAt.getTime() : 0;
-            //       const dateB = b.createdAt ? b.createdAt.getTime() : 0;
-            //       return dateB - dateA; // Most recent first
-            //     });
-            //   
-            //   // Find the most recent installation with a valid location
-            //   for (const userInst of userInstallations) {
-            //     const userLocId = String(userInst.locationId).trim();
-            //     const userLocation = locationMap.get(userLocId) ?? 
-            //       locations.find(
-            //         (loc) =>
-            //           String(loc.id).trim() === userLocId ||
-            //           String(loc.locationId).trim() === userLocId
-            //       ) ?? null;
-            //     
-            //     if (userLocation?.latitude != null && userLocation?.longitude != null) {
-            //       location = userLocation;
-            //       coordinates = formatCoordinates(userLocation.latitude, userLocation.longitude);
-            //       break;
-            //     }
-            //   }
-            //   
-            //   // If still no location found, use installation coordinates
-            //   if (coordinates === "-") {
-            //     coordinates = formatCoordinates(instLat, instLon);
-            //   }
-            // } else {
-            //   coordinates = formatCoordinates(instLat, instLon);
-            // }
           }
         }
 
@@ -908,7 +899,10 @@ export default function MinistryDevices() {
         const amanahForExport = translateTeamNameToArabic(
           englishAmanahName === "-" ? null : englishAmanahName
         ) || englishAmanahName;
-        const municipalityName = location?.municipalityName || "-";
+
+        const { value: municipalityName, source: municSource } = resolveMunicipality(location, amanahForExport);
+        if (municSource === "location_ref") groupedMunicFromRef++;
+        else if (municSource === "amanah") groupedMunicFromAmanah++;
 
         const csvRow = [
           "", // Serial placeholder
@@ -972,7 +966,9 @@ export default function MinistryDevices() {
 
       toast({
         title: "CSV downloaded",
-        description: `Exported ${totalRows} row${totalRows !== 1 ? "s" : ""} grouped by ${sortedAmanahs.length} Amanah${sortedAmanahs.length !== 1 ? "s" : ""} in a single CSV file.`,
+        description:
+          `Exported ${totalRows} row${totalRows !== 1 ? "s" : ""} grouped by ${sortedAmanahs.length} Amanah${sortedAmanahs.length !== 1 ? "s" : ""}. ` +
+          `Municipality: ${groupedMunicFromRef} from location reference, ${groupedMunicFromAmanah} from Amanah name.`,
       });
     } catch (error: any) {
       toast({
@@ -1048,6 +1044,53 @@ export default function MinistryDevices() {
       img.src = url;
     });
 
+  /**
+   * Draw text onto the jsPDF doc at (x, baselineY).
+   * For Arabic/RTL text the browser canvas is used so glyphs render correctly;
+   * Latin text falls through to the normal jsPDF text path.
+   */
+  const addPdfText = (
+    doc: jsPDF,
+    text: string,
+    x: number,
+    baselineY: number,
+    fontSizePt: number,
+    color: [number, number, number],
+    maxWidthMm: number
+  ) => {
+    if (!hasArabic(text)) {
+      doc.setFontSize(fontSizePt);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(...color);
+      const truncated = doc.splitTextToSize(text, maxWidthMm)[0] as string;
+      doc.text(truncated, x, baselineY);
+      return;
+    }
+    // Arabic: render via canvas so the browser handles shaping + RTL
+    const SCALE = 3;                   // supersample for crisp output
+    const MM_PX = 3.779528;            // mm → px at 96 dpi
+    const pxFont = fontSizePt * 1.3333 * SCALE;
+    const pxW = Math.ceil(maxWidthMm * MM_PX * SCALE);
+    const pxH = Math.ceil(pxFont * 2);
+    const canvas = document.createElement("canvas");
+    canvas.width = pxW;
+    canvas.height = pxH;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, pxW, pxH);
+    ctx.font = `${pxFont}px 'Segoe UI', Arial, sans-serif`;
+    ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+    ctx.direction = "rtl";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, pxW - 4, pxH / 2);
+    const mmW = maxWidthMm;
+    const mmH = pxH / (MM_PX * SCALE);
+    // Place image so its visual baseline aligns with baselineY
+    const imgTop = baselineY - mmH * 0.65;
+    doc.addImage(canvas.toDataURL("image/png"), "PNG", x, imgTop, mmW, mmH);
+  };
+
   // Generate PDF report for a specific Amanah
   const generateReportForAmanah = async (amanahName: string, amanahRows: typeof rows, locationMapRef: Map<string, Location>) => {
     const doc = new jsPDF();
@@ -1078,7 +1121,14 @@ export default function MinistryDevices() {
       const longitude = location?.longitude ?? (inst?.longitude ?? null);
       const sensorReading = inst?.sensorReading ?? null;
 
-      // Header matching the report layout
+      // Resolve amanah / municipality for PDF (same logic as CSV)
+      const englishAmanahName = row.amanah && row.amanah !== "-" ? row.amanah : null;
+      const amanahDisplay = translateTeamNameToArabic(englishAmanahName) || row.amanah || "N/A";
+      const { value: municipalityDisplay } = resolveMunicipality(location ?? null, amanahDisplay);
+      const installerName = inst?.installedByName || "N/A";
+      const installDate = inst?.createdAt ? format(inst.createdAt, "yyyy-MM-dd HH:mm") : "N/A";
+
+      // Header
       doc.setFontSize(18);
       doc.setFont("helvetica", "bold");
       doc.setTextColor(...TEXT_COLOR);
@@ -1089,65 +1139,56 @@ export default function MinistryDevices() {
       doc.line(margin, yPos, pageWidth - margin, yPos);
       yPos += 12;
 
-      // Left Panel - Top Box (Location Details)
+      // Left Panel – Details Box
+      // Rows: Location No, Latitude, Longitude, Sensor Reading, Amanah, Municipality, Installer, Install Date
+      const FIELD_H = 8;
+      const FIELDS = [
+        { label: "LOCATION NO.", value: locationId },
+        { label: "LATITUDE",     value: latitude !== null ? latitude.toFixed(6) : "N/A" },
+        { label: "LONGITUDE",    value: longitude !== null ? longitude.toFixed(6) : "N/A" },
+        { label: "SENSOR HEIGHT",value: sensorReading !== null ? `${sensorReading} cm` : "N/A" },
+        { label: "AMANAH",       value: amanahDisplay },
+        { label: "INSTALLER",    value: installerName },
+        { label: "INSTALL DATE", value: installDate },
+      ];
+      const boxPadTop = 7;
+      const boxPadBottom = 5;
       const boxY = yPos;
-      const boxHeight = 40;
-      
-      // Draw box border
+      const boxHeight = boxPadTop + FIELDS.length * FIELD_H + boxPadBottom;
+
       doc.setDrawColor(...PRIMARY_COLOR);
       doc.setLineWidth(0.8);
       doc.rect(leftPanelX, boxY, leftPanelWidth, boxHeight);
 
-      // Box content
-      let textY = boxY + 9;
-      doc.setFontSize(10);
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(...LABEL_COLOR);
-      doc.text("LOCATION NO.", leftPanelX + 6, textY);
-      doc.setFont("helvetica", "normal");
-      doc.setTextColor(...TEXT_COLOR);
-      doc.text(locationId, leftPanelX + 55, textY);
-      textY += 8;
+      let textY = boxY + boxPadTop + 2;
+      const labelX = leftPanelX + 4;
+      const valueX = leftPanelX + 46;
+      const maxValueWidth = leftPanelWidth - 46 - 4;
 
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(...LABEL_COLOR);
-      doc.text("LATITUDE", leftPanelX + 6, textY);
-      doc.setFont("helvetica", "normal");
-      doc.setTextColor(...TEXT_COLOR);
-      doc.text(latitude !== null ? latitude.toFixed(4) : "N/A", leftPanelX + 55, textY);
-      textY += 8;
+      for (const field of FIELDS) {
+        doc.setFontSize(7.5);
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(...LABEL_COLOR);
+        doc.text(field.label, labelX, textY);
+        // addPdfText handles Arabic via canvas and Latin via normal jsPDF path
+        addPdfText(doc, field.value, valueX, textY, 7.5, TEXT_COLOR, maxValueWidth);
+        textY += FIELD_H;
+      }
 
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(...LABEL_COLOR);
-      doc.text("LONGITUDE", leftPanelX + 6, textY);
-      doc.setFont("helvetica", "normal");
-      doc.setTextColor(...TEXT_COLOR);
-      doc.text(longitude !== null ? longitude.toFixed(4) : "N/A", leftPanelX + 55, textY);
-      textY += 8;
-
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(...LABEL_COLOR);
-      doc.text("SENSOR READING", leftPanelX + 6, textY);
-      doc.setFont("helvetica", "normal");
-      doc.setTextColor(...TEXT_COLOR);
-      doc.text(sensorReading !== null ? `${sensorReading} cm` : "N/A", leftPanelX + 55, textY);
-
-      // Left Panel - Bottom Box (Device Code)
-      const bottomBoxY = boxY + boxHeight + 12;
+      // Left Panel – Device Code Box
+      const bottomBoxY = boxY + boxHeight + 10;
       const bottomBoxHeight = 24;
-      
-      // Draw box border
+
       doc.setDrawColor(...PRIMARY_COLOR);
       doc.setLineWidth(0.8);
       doc.rect(leftPanelX, bottomBoxY, leftPanelWidth, bottomBoxHeight);
 
-      // Box content
-      doc.setFontSize(10);
+      doc.setFontSize(8.5);
       doc.setFont("helvetica", "bold");
       doc.setTextColor(...LABEL_COLOR);
-      doc.text("DEVICE CODE", leftPanelX + 6, bottomBoxY + 10);
+      doc.text("DEVICE CODE", leftPanelX + 6, bottomBoxY + 9);
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(11);
+      doc.setFontSize(10);
       doc.setTextColor(...PRIMARY_COLOR);
       doc.text(device.id, leftPanelX + 6, bottomBoxY + 18);
       doc.setTextColor(...TEXT_COLOR);
@@ -1220,16 +1261,16 @@ export default function MinistryDevices() {
           } catch (error) {
             console.error(`Error loading image for device ${device.id}:`, error);
             // Try jsPDF's direct URL loading as last resort
+            const fallbackSlotX = rightPanelX + framePadding;
+            const fallbackSlotY = multiple ? imageAreaY + index * (slotHeight + slotGap) : imageAreaY;
             try {
               const fallbackUrl = await getFreshDownloadURL(imageUrl);
               const format = fallbackUrl.toLowerCase().includes('.png') ? 'PNG' : 'JPEG';
-              const slotX = rightPanelX + framePadding;
-              const slotY = multiple ? imageAreaY + index * (slotHeight + slotGap) : imageAreaY;
               doc.addImage(
                 fallbackUrl,
                 format,
-                slotX,
-                slotY,
+                fallbackSlotX,
+                fallbackSlotY,
                 slotWidth,
                 slotHeight
               );
@@ -1240,7 +1281,7 @@ export default function MinistryDevices() {
               doc.text(
                 "Image not available",
                 rightPanelX + rightPanelWidth / 2,
-                slotY + slotHeight / 2,
+                fallbackSlotY + slotHeight / 2,
                 { align: "center" }
               );
               doc.setFont("helvetica", "normal");
@@ -1372,7 +1413,7 @@ export default function MinistryDevices() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
             {/* Team Filter */}
             <div className="space-y-2">
               <Label htmlFor="team-filter">Filter by Amanah</Label>
@@ -1419,10 +1460,26 @@ export default function MinistryDevices() {
                 placeholder="End date/time"
               />
             </div>
+
+            {/* Last X Devices Filter */}
+            <div className="space-y-2">
+              <Label htmlFor="last-x-devices">Last X Devices</Label>
+              <Input
+                id="last-x-devices"
+                type="number"
+                min={1}
+                value={lastXDevices}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setLastXDevices(val === "" ? "" : Math.max(1, parseInt(val, 10)));
+                }}
+                placeholder="e.g. 50"
+              />
+            </div>
           </div>
 
           {/* Clear Filters Button */}
-          {(teamFilter !== "all" || activeFilter !== 'all' || dateFilter || fromDateTime || toDateTime) && (
+          {(teamFilter !== "all" || activeFilter !== 'all' || dateFilter || fromDateTime || toDateTime || lastXDevices !== "") && (
             <div className="mt-4 flex items-center gap-2 flex-wrap">
               <Button
                 variant="outline"
@@ -1433,6 +1490,7 @@ export default function MinistryDevices() {
                   setDateFilter("");
                   setFromDateTime("");
                   setToDateTime("");
+                  setLastXDevices("");
                 }}
               >
                 <X className="h-4 w-4 mr-2" />
@@ -1462,6 +1520,11 @@ export default function MinistryDevices() {
                 {toDateTime && (
                   <Badge variant="secondary" className="text-xs bg-green-100 text-green-700 border-green-200">
                     CSV To: {format(new Date(toDateTime), "MMM d, yyyy HH:mm")}
+                  </Badge>
+                )}
+                {lastXDevices !== "" && (
+                  <Badge variant="secondary" className="text-xs bg-blue-100 text-blue-700 border-blue-200">
+                    Last {lastXDevices} devices
                   </Badge>
                 )}
               </div>
@@ -1596,7 +1659,7 @@ export default function MinistryDevices() {
                             <span className="text-xs md:text-sm">{locationId || "-"}</span>
                             {hasCoordinates && (
                               <Badge variant="outline" className="text-[10px] w-fit">
-                                {location!.latitude.toFixed(6)}, {location!.longitude.toFixed(6)}
+                                {location!.latitude!.toFixed(6)}, {location!.longitude!.toFixed(6)}
                               </Badge>
                             )}
                             {isSwapped && (

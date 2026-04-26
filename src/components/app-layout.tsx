@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, Plus, ChevronLeft, ChevronRight, Settings, Map, Filter, FileSpreadsheet } from "lucide-react";
+import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, Plus, ChevronLeft, ChevronRight, Settings, Map, Filter, FileSpreadsheet, MapPin, Flag, Building2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
@@ -55,6 +55,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       { title: "Device Management", icon: Package, url: "/device-management" },
       { title: "Device Filter", icon: Filter, url: "/admin-device-filter" },
       { title: "Bulk Device Lookup", icon: FileSpreadsheet, url: "/bulk-device-lookup" },
+      { title: "Coordinate Update", icon: MapPin, url: "/coordinate-update" },
+      { title: "Coordinate Flag", icon: Flag, url: "/coordinate-flag" },
+      { title: "Municipality Import", icon: Building2, url: "/municipality-import" },
       { title: "Installation Management", icon: Settings, url: "/installation-management" },
     ] : []),
     // Installer-specific menu items
