@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { 
   Clock, 
@@ -136,6 +137,14 @@ export default function MinistryDevices() {
   const [activeFilter, setActiveFilter] = useState<'all' | 'withServerData' | 'noServerData'>('all');
   const [dateFilter, setDateFilter] = useState<string>("");
   const [generatingReport, setGeneratingReport] = useState(false);
+  const [reportProgress, setReportProgress] = useState<{
+    phase: "fetching" | "building";
+    fetched: number;
+    totalImages: number;
+    amanahIndex: number;
+    amanahTotal: number;
+    amanahName: string;
+  } | null>(null);
   const [exporting9999, setExporting9999] = useState(false);
   const [exportingGroupedCsv, setExportingGroupedCsv] = useState(false);
   const [exportingNoLocation, setExportingNoLocation] = useState(false);
@@ -144,6 +153,7 @@ export default function MinistryDevices() {
   const [fromDateTime, setFromDateTime] = useState("");
   const [toDateTime, setToDateTime] = useState("");
   const [lastXDevices, setLastXDevices] = useState<number | "">("");
+  const [deviceUidsFilter, setDeviceUidsFilter] = useState<string>("");
   
   // Debounce filters for smooth performance
   const debouncedDateFilter = useDebounce(dateFilter, 300);
@@ -397,6 +407,20 @@ export default function MinistryDevices() {
       });
     }
 
+    // Apply device UIDs filter (line-by-line, supports partial matching)
+    if (deviceUidsFilter.trim()) {
+      const deviceUidsList = deviceUidsFilter
+        .split('\n')
+        .map(uid => uid.trim().toUpperCase())
+        .filter(uid => uid.length > 0);
+
+      if (deviceUidsList.length > 0) {
+        filtered = filtered.filter(row =>
+          deviceUidsList.some(uid => (row.device.id?.toUpperCase() || '').includes(uid))
+        );
+      }
+    }
+
     // Sort by installation time, latest on top
     filtered.sort((a, b) => {
       const aTime = a.inst.createdAt?.getTime() || 0;
@@ -410,7 +434,7 @@ export default function MinistryDevices() {
     }
 
     return filtered;
-  }, [allRows, activeFilter, teamFilter, debouncedDateFilter, lastXDevices]);
+  }, [allRows, activeFilter, teamFilter, debouncedDateFilter, lastXDevices, deviceUidsFilter]);
   
   // Paginate rows for performance
   const paginatedRows = useMemo(() => {
@@ -420,7 +444,7 @@ export default function MinistryDevices() {
   // Reset display limit when filters change
   useEffect(() => {
     setDisplayLimit(500);
-  }, [teamFilter, activeFilter, debouncedDateFilter, lastXDevices]);
+  }, [teamFilter, activeFilter, debouncedDateFilter, lastXDevices, deviceUidsFilter]);
   
   // Handle "Show More" button
   const handleShowMore = useCallback(() => {
@@ -1045,6 +1069,92 @@ export default function MinistryDevices() {
     });
 
   /**
+   * Converts a single image URL to a downsampled base64 data URL (fetch + canvas).
+   * Images are scaled so the longest side is at most MAX_IMG_PX pixels — this keeps
+   * the base64 string well within JavaScript's string-length limit while still
+   * producing crisp output at PDF print resolution.
+   * Returns null on failure so the caller can fall back gracefully.
+   */
+  const MAX_IMG_PX = 1600;
+  const fetchImageAsBase64 = async (
+    url: string
+  ): Promise<{ base64: string; format: "PNG" | "JPEG"; width: number; height: number } | null> => {
+    try {
+      const freshUrl = await getFreshDownloadURL(url);
+      const imgEl = await loadImageElement(freshUrl);
+
+      let w = imgEl.naturalWidth;
+      let h = imgEl.naturalHeight;
+
+      // Downsample if larger than the cap to avoid RangeError on very large photos
+      if (w > MAX_IMG_PX || h > MAX_IMG_PX) {
+        const scale = MAX_IMG_PX / Math.max(w, h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(imgEl, 0, 0, w, h);
+      const format: "PNG" | "JPEG" = freshUrl.toLowerCase().includes(".png") ? "PNG" : "JPEG";
+      // Use 0.85 JPEG quality — visually identical in a PDF, ~40% smaller base64
+      const base64 = canvas.toDataURL(format === "PNG" ? "image/png" : "image/jpeg", 0.85);
+      return { base64, format, width: w, height: h };
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Pre-fetches all images for the given rows in parallel batches.
+   * Returns a Map<originalUrl, {base64, format}> used as a cache during PDF generation
+   * so each image is only downloaded once regardless of how many reports reference it.
+   * Calls onProgress(fetched, total) after every individual image resolves.
+   */
+  const prefetchImagesInBatches = async (
+    targetRows: typeof rows,
+    batchSize = 100,
+    onProgress?: (fetched: number, total: number) => void
+  ): Promise<Map<string, { base64: string; format: "PNG" | "JPEG"; width: number; height: number }>> => {
+    const cache = new Map<string, { base64: string; format: "PNG" | "JPEG"; width: number; height: number }>();
+
+    // Collect unique URLs (at most 2 per device, same slice used later in PDF)
+    const allUrls = new Set<string>();
+    for (const row of targetRows) {
+      const imageUrls: string[] = row.inst?.imageUrls || [];
+      const toFetch = imageUrls.length > 1 ? imageUrls.slice(0, 2) : imageUrls.slice(0, 1);
+      toFetch.forEach((u) => allUrls.add(u));
+    }
+
+    const urlArray = Array.from(allUrls);
+    const total = urlArray.length;
+    let fetched = 0;
+
+    for (let i = 0; i < urlArray.length; i += batchSize) {
+      const batch = urlArray.slice(i, i + batchSize);
+      const results = await Promise.allSettled(
+        batch.map(async (url) => {
+          const result = await fetchImageAsBase64(url);
+          fetched++;
+          onProgress?.(fetched, total);
+          return { url, result };
+        })
+      );
+
+      for (const settled of results) {
+        if (settled.status === "fulfilled" && settled.value.result) {
+          cache.set(settled.value.url, settled.value.result);
+        }
+      }
+    }
+
+    return cache;
+  };
+
+  /**
    * Draw text onto the jsPDF doc at (x, baselineY).
    * For Arabic/RTL text the browser canvas is used so glyphs render correctly;
    * Latin text falls through to the normal jsPDF text path.
@@ -1092,7 +1202,12 @@ export default function MinistryDevices() {
   };
 
   // Generate PDF report for a specific Amanah
-  const generateReportForAmanah = async (amanahName: string, amanahRows: typeof rows, locationMapRef: Map<string, Location>) => {
+  const generateReportForAmanah = async (
+    amanahName: string,
+    amanahRows: typeof rows,
+    locationMapRef: Map<string, Location>,
+    imageCache: Map<string, { base64: string; format: "PNG" | "JPEG"; width: number; height: number }> = new Map()
+  ) => {
     const doc = new jsPDF();
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
@@ -1221,67 +1336,53 @@ export default function MinistryDevices() {
 
         for (let index = 0; index < imagesToInclude.length; index++) {
           const imageUrl = imagesToInclude[index];
+          const slotX = rightPanelX + framePadding;
+          const slotY = multiple ? imageAreaY + index * (slotHeight + slotGap) : imageAreaY;
+
           try {
-            const freshUrl = await getFreshDownloadURL(imageUrl);
-            const imgEl = await loadImageElement(freshUrl);
+            // Use pre-fetched cache first; fall back to live fetch if not cached
+            const cached = imageCache.get(imageUrl);
+            let base64: string;
+            let format: "PNG" | "JPEG";
+            let aspectRatio: number;
 
-            const canvas = document.createElement('canvas');
-            canvas.width = imgEl.naturalWidth;
-            canvas.height = imgEl.naturalHeight;
-            const ctx = canvas.getContext('2d');
-
-            if (!ctx) {
-              throw new Error('Could not get canvas context');
+            if (cached) {
+              base64 = cached.base64;
+              format = cached.format;
+              aspectRatio = cached.width / cached.height;
+            } else {
+              const fetched = await fetchImageAsBase64(imageUrl);
+              if (!fetched) throw new Error("Image fetch returned null");
+              base64 = fetched.base64;
+              format = fetched.format;
+              aspectRatio = fetched.width / fetched.height;
             }
-
-            ctx.drawImage(imgEl, 0, 0);
-
-            const format = freshUrl.toLowerCase().includes('.png') ? 'PNG' : 'JPEG';
-            const base64 = canvas.toDataURL(format === 'PNG' ? 'image/png' : 'image/jpeg', 0.95);
 
             let targetWidth = slotWidth;
             let targetHeight = slotHeight;
-            const aspectRatio = imgEl.naturalWidth / imgEl.naturalHeight;
-
             if (aspectRatio >= slotWidth / slotHeight) {
               targetHeight = slotWidth / aspectRatio;
             } else {
               targetWidth = slotHeight * aspectRatio;
             }
 
-            const slotX = rightPanelX + framePadding;
-            const slotY = multiple
-              ? imageAreaY + index * (slotHeight + slotGap)
-              : imageAreaY;
-
             const offsetX = slotX + (slotWidth - targetWidth) / 2;
             const offsetY = slotY + (slotHeight - targetHeight) / 2;
-
             doc.addImage(base64, format, offsetX, offsetY, targetWidth, targetHeight);
           } catch (error) {
             console.error(`Error loading image for device ${device.id}:`, error);
-            // Try jsPDF's direct URL loading as last resort
-            const fallbackSlotX = rightPanelX + framePadding;
-            const fallbackSlotY = multiple ? imageAreaY + index * (slotHeight + slotGap) : imageAreaY;
+            // Last-resort: ask jsPDF to load the URL directly
             try {
               const fallbackUrl = await getFreshDownloadURL(imageUrl);
-              const format = fallbackUrl.toLowerCase().includes('.png') ? 'PNG' : 'JPEG';
-              doc.addImage(
-                fallbackUrl,
-                format,
-                fallbackSlotX,
-                fallbackSlotY,
-                slotWidth,
-                slotHeight
-              );
-            } catch (pdfError) {
-              // Placeholder if all methods fail
+              const format = fallbackUrl.toLowerCase().includes(".png") ? "PNG" : "JPEG";
+              doc.addImage(fallbackUrl, format, slotX, slotY, slotWidth, slotHeight);
+            } catch {
               doc.setFontSize(8);
               doc.setFont("helvetica", "italic");
               doc.text(
                 "Image not available",
                 rightPanelX + rightPanelWidth / 2,
-                fallbackSlotY + slotHeight / 2,
+                slotY + slotHeight / 2,
                 { align: "center" }
               );
               doc.setFont("helvetica", "normal");
@@ -1309,7 +1410,7 @@ export default function MinistryDevices() {
     doc.save(fileName);
   };
 
-  // Generate reports for all filtered Amanahs
+  // Generate reports for all filtered Amanahs (or a single combined report when UIDs are selected)
   const generateReports = async () => {
     if (rows.length === 0) {
       toast({
@@ -1321,9 +1422,35 @@ export default function MinistryDevices() {
     }
 
     setGeneratingReport(true);
+    setReportProgress({ phase: "fetching", fetched: 0, totalImages: 0, amanahIndex: 0, amanahTotal: 0, amanahName: "" });
 
     try {
-      // Group rows by Amanah
+      // Count total images upfront so the progress bar has a denominator
+      const totalImages = rows.reduce((sum, row) => {
+        const urls: string[] = row.inst?.imageUrls || [];
+        return sum + (urls.length > 1 ? 2 : urls.length > 0 ? 1 : 0);
+      }, 0);
+
+      // When device UIDs are selected line-by-line, generate ONE combined report
+      if (deviceUidsFilter.trim()) {
+        setReportProgress({ phase: "fetching", fetched: 0, totalImages, amanahIndex: 0, amanahTotal: 1, amanahName: "" });
+
+        const imageCache = await prefetchImagesInBatches(rows, 100, (fetched) => {
+          setReportProgress((prev) => prev ? { ...prev, fetched } : null);
+        });
+
+        const reportLabel = `Selected_Devices_${format(new Date(), "yyyy-MM-dd")}`;
+        setReportProgress({ phase: "building", fetched: imageCache.size, totalImages, amanahIndex: 1, amanahTotal: 1, amanahName: reportLabel });
+        await generateReportForAmanah(reportLabel, rows, locationMap, imageCache);
+
+        toast({
+          title: "Report Generated",
+          description: `Generated 1 combined report for ${rows.length} selected device(s).`,
+        });
+        return;
+      }
+
+      // Default: group rows by Amanah and generate one PDF per Amanah
       const groupedByAmanah = rows.reduce((acc, row) => {
         const englishAmanahName = row.amanah || "Unknown";
         const amanah = translateTeamNameToArabic(
@@ -1337,11 +1464,20 @@ export default function MinistryDevices() {
         return acc;
       }, {} as Record<string, typeof rows>);
 
-      // Generate report for each Amanah
       const amanahNames = Object.keys(groupedByAmanah);
-      
-      for (const amanahName of amanahNames) {
-        await generateReportForAmanah(amanahName, groupedByAmanah[amanahName], locationMap);
+
+      setReportProgress({ phase: "fetching", fetched: 0, totalImages, amanahIndex: 0, amanahTotal: amanahNames.length, amanahName: "" });
+
+      // Pre-fetch all images in parallel batches of 100 before PDF generation
+      const imageCache = await prefetchImagesInBatches(rows, 100, (fetched) => {
+        setReportProgress((prev) => prev ? { ...prev, fetched } : null);
+      });
+
+      // Generate report for each Amanah (images already in cache — no per-device network wait)
+      for (let idx = 0; idx < amanahNames.length; idx++) {
+        const amanahName = amanahNames[idx];
+        setReportProgress({ phase: "building", fetched: imageCache.size, totalImages, amanahIndex: idx + 1, amanahTotal: amanahNames.length, amanahName });
+        await generateReportForAmanah(amanahName, groupedByAmanah[amanahName], locationMap, imageCache);
         // Small delay between reports to avoid browser blocking
         await new Promise(resolve => setTimeout(resolve, 500));
       }
@@ -1359,6 +1495,7 @@ export default function MinistryDevices() {
       });
     } finally {
       setGeneratingReport(false);
+      setReportProgress(null);
     }
   };
 
@@ -1478,8 +1615,34 @@ export default function MinistryDevices() {
             </div>
           </div>
 
+          {/* Device UIDs Filter */}
+          <div className="pt-4 border-t">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="device-uids-filter" className="text-sm font-semibold">
+                  Filter by Specific Device UIDs
+                </Label>
+                {deviceUidsFilter.trim() && (
+                  <Badge variant="secondary" className="text-xs">
+                    {deviceUidsFilter.split('\n').filter(uid => uid.trim()).length} UIDs entered
+                  </Badge>
+                )}
+              </div>
+              <Textarea
+                id="device-uids-filter"
+                placeholder="Enter device UIDs or partial IDs, one per line (e.g., E75832989D048709 or just E7583)"
+                value={deviceUidsFilter}
+                onChange={(e) => setDeviceUidsFilter(e.target.value)}
+                className="font-mono text-sm h-24 resize-none"
+              />
+              <p className="text-xs text-muted-foreground">
+                Enter device UIDs or partial matches (one per line) to show matching devices. Supports partial matching. Leave empty to show all devices.
+              </p>
+            </div>
+          </div>
+
           {/* Clear Filters Button */}
-          {(teamFilter !== "all" || activeFilter !== 'all' || dateFilter || fromDateTime || toDateTime || lastXDevices !== "") && (
+          {(teamFilter !== "all" || activeFilter !== 'all' || dateFilter || fromDateTime || toDateTime || lastXDevices !== "" || deviceUidsFilter.trim()) && (
             <div className="mt-4 flex items-center gap-2 flex-wrap">
               <Button
                 variant="outline"
@@ -1491,6 +1654,7 @@ export default function MinistryDevices() {
                   setFromDateTime("");
                   setToDateTime("");
                   setLastXDevices("");
+                  setDeviceUidsFilter("");
                 }}
               >
                 <X className="h-4 w-4 mr-2" />
@@ -1525,6 +1689,11 @@ export default function MinistryDevices() {
                 {lastXDevices !== "" && (
                   <Badge variant="secondary" className="text-xs bg-blue-100 text-blue-700 border-blue-200">
                     Last {lastXDevices} devices
+                  </Badge>
+                )}
+                {deviceUidsFilter.trim() && (
+                  <Badge variant="secondary" className="text-xs bg-purple-100 text-purple-700 border-purple-200">
+                    {deviceUidsFilter.split('\n').filter(uid => uid.trim()).length} Device UID{deviceUidsFilter.split('\n').filter(uid => uid.trim()).length !== 1 ? 's' : ''} filtered
                   </Badge>
                 )}
               </div>
@@ -1607,23 +1776,58 @@ export default function MinistryDevices() {
                   </>
                 )}
               </Button>
-              <Button
-                onClick={generateReports}
-                disabled={generatingReport || rows.length === 0}
-                className="flex items-center gap-2 w-full sm:w-auto"
-              >
-                {generatingReport ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <FileText className="h-4 w-4" />
-                    Generate Report(s)
-                  </>
+              <div className="flex flex-col items-stretch gap-1 w-full sm:w-auto">
+                <Button
+                  onClick={generateReports}
+                  disabled={generatingReport || rows.length === 0}
+                  className="flex items-center gap-2 w-full"
+                >
+                  {generatingReport && reportProgress ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                      {reportProgress.phase === "fetching" ? (
+                        <span className="truncate">
+                          Fetching images&nbsp;
+                          {reportProgress.fetched}&nbsp;/&nbsp;{reportProgress.totalImages}
+                        </span>
+                      ) : (
+                        <span className="truncate">
+                          Building PDF&nbsp;
+                          {reportProgress.amanahIndex}&nbsp;/&nbsp;{reportProgress.amanahTotal}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="h-4 w-4" />
+                      Generate Report(s)
+                    </>
+                  )}
+                </Button>
+                {generatingReport && reportProgress && (
+                  <div className="w-full space-y-0.5">
+                    <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-primary transition-all duration-200"
+                        style={{
+                          width: reportProgress.phase === "fetching"
+                            ? reportProgress.totalImages > 0
+                              ? `${Math.round((reportProgress.fetched / reportProgress.totalImages) * 100)}%`
+                              : "5%"
+                            : reportProgress.amanahTotal > 0
+                              ? `${Math.round((reportProgress.amanahIndex / reportProgress.amanahTotal) * 100)}%`
+                              : "5%",
+                        }}
+                      />
+                    </div>
+                    {reportProgress.phase === "building" && reportProgress.amanahName && (
+                      <p className="text-xs text-muted-foreground truncate text-center">
+                        {reportProgress.amanahName}
+                      </p>
+                    )}
+                  </div>
                 )}
-              </Button>
+              </div>
             </div>
           </div>
         </CardHeader>

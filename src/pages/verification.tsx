@@ -89,7 +89,7 @@ export default function Verification() {
   const [autoServerFetchEnabled, setAutoServerFetchEnabled] = useState(false);
   
   // Refresh options
-  const [refreshOption, setRefreshOption] = useState<'all' | 'days'>('days');
+  const [refreshOption, setRefreshOption] = useState<'all' | 'days' | 'verified'>('days');
   const [refreshDays, setRefreshDays] = useState<number>(5);
   
   // Edit mode states
@@ -1522,6 +1522,8 @@ export default function Verification() {
       // Get actual installer name
       const installer = installation.installedByName || "-";
 
+      const latestDisCmValue = installation.latestDisCm != null ? String(installation.latestDisCm) : "-";
+
       return [
         installation.deviceId,
         installer,
@@ -1529,6 +1531,7 @@ export default function Verification() {
         rawLocationId || "-",
         coordinates,
         sensorReadingValue,
+        latestDisCmValue,
         latestDisDate,
         installationDate,
         iccid,
@@ -1540,7 +1543,7 @@ export default function Verification() {
     const currentDate = format(new Date(), "yyyy-MM-dd");
     const filename = `verification-installations_${filterName}_${currentDate}.csv`;
 
-    downloadCsv(csvRows, filename, ["Device ID", "Installer", "Amanah", "Location ID", "Coordinates", "Sensor Reading", "Latest Distance Date", "Installation Date", "ICCID"]);
+    downloadCsv(csvRows, filename, ["Device ID", "Installer", "Amanah", "Location ID", "Coordinates", "Sensor Reading", "Server Reading (cm)", "Latest Distance Date", "Installation Date", "ICCID"]);
 
     toast({
       title: "CSV downloaded",
@@ -1849,6 +1852,73 @@ export default function Verification() {
     }
   };
 
+  // Refresh server data for a verified installation — updates readings only, never touches
+  // status / verifiedBy / verifiedAt so the verification record stays intact.
+  const refreshVerifiedServerData = async (installation: Installation) => {
+    if (!installation?.deviceId) return;
+
+    const fetchKey = `${installation.deviceId}_${installation.id}`;
+    if (fetchInProgressRef.current.has(fetchKey)) return;
+    fetchInProgressRef.current.add(fetchKey);
+    setFetchingMap(prev => ({ ...prev, [installation.id]: true }));
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+      const apiResponse = await fetch(
+        `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`,
+        {
+          method: 'GET',
+          headers: { 'X-API-KEY': import.meta.env.VITE_API_KEY || '' },
+          signal: controller.signal,
+        }
+      );
+      clearTimeout(timeoutId);
+
+      if (apiResponse.status === 404) {
+        await updateDoc(doc(db, "installations", installation.id), {
+          serverRefreshedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        toast({ title: "No server data yet for this device." });
+        return;
+      }
+
+      if (!apiResponse.ok) throw new Error(`API ${apiResponse.status}`);
+
+      const apiData = await apiResponse.json();
+      const latestRecord = apiData?.records?.[0];
+      const latestDistance = latestRecord?.dis_cm ?? null;
+      const hasServerData = latestDistance !== null && Number(latestDistance) > 0;
+
+      await updateDoc(doc(db, "installations", installation.id), {
+        ...(hasServerData ? {
+          latestDisCm: latestDistance,
+          latestDisTimestamp: latestRecord?.timestamp ?? null,
+        } : {}),
+        serverRefreshedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      toast({
+        title: hasServerData ? "Server Data Updated" : "No Server Data Yet",
+        description: hasServerData
+          ? `Latest dis_cm: ${latestDistance}`
+          : "Device hasn't reported data yet.",
+      });
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: "Refresh Failed",
+        description: e instanceof Error ? e.message : "Could not fetch server readings.",
+      });
+    } finally {
+      fetchInProgressRef.current.delete(fetchKey);
+      setFetchingMap(prev => ({ ...prev, [installation.id]: false }));
+    }
+  };
+
   const refreshAllServerData = async () => {
     if (refreshingAll) return;
     
@@ -1859,6 +1929,11 @@ export default function Verification() {
       // Always need a deviceId
       if (!installation.deviceId) return false;
       
+      // If "verified" option selected, only refresh verified installations
+      if (refreshOption === 'verified') {
+        return installation.status === 'verified';
+      }
+
       // If "all" option selected, refresh everything
       if (refreshOption === 'all') {
         return true;
@@ -1909,8 +1984,10 @@ export default function Verification() {
     });
     
     if (installationsToRefresh.length === 0) {
-      const message = refreshOption === 'all' 
+      const message = refreshOption === 'all'
         ? "No installations with device IDs found."
+        : refreshOption === 'verified'
+        ? "No verified installations found."
         : `All installations already have server data within ${refreshDays} days.`;
       toast({
         title: "No Installations to Refresh",
@@ -1922,6 +1999,8 @@ export default function Verification() {
     
     const refreshDesc = refreshOption === 'all'
       ? `Refreshing all ${installationsToRefresh.length} installation(s)...`
+      : refreshOption === 'verified'
+      ? `Refreshing ${installationsToRefresh.length} verified installation(s)...`
       : `Refreshing ${installationsToRefresh.length} installation(s) (missing or older than ${refreshDays} days)...`;
     
     toast({
@@ -2630,14 +2709,15 @@ export default function Verification() {
                   <Label className="text-sm whitespace-nowrap">Refresh:</Label>
                   <Select
                     value={refreshOption}
-                    onValueChange={(value: 'all' | 'days') => setRefreshOption(value)}
+                    onValueChange={(value: 'all' | 'days' | 'verified') => setRefreshOption(value)}
                   >
-                    <SelectTrigger className="w-[100px] h-8">
+                    <SelectTrigger className="w-[120px] h-8">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All</SelectItem>
                       <SelectItem value="days">By Days</SelectItem>
+                      <SelectItem value="verified">Verified Only</SelectItem>
                     </SelectContent>
                   </Select>
                   {refreshOption === 'days' && (
@@ -3127,13 +3207,29 @@ export default function Verification() {
                               : "-"}
                           </TableCell>
                           <TableCell>
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              onClick={() => handleDeleteClick(item)}
-                            >
-                              <Trash2 className="h-3 w-3" />
-                            </Button>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                className="rounded-full px-3"
+                                disabled={!!fetchingMap[installation.id]}
+                                onClick={() => refreshVerifiedServerData(installation)}
+                                title="Refresh server data"
+                              >
+                                {fetchingMap[installation.id] ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <RefreshCw className="h-3 w-3" />
+                                )}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                onClick={() => handleDeleteClick(item)}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       );

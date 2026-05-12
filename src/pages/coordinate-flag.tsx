@@ -76,6 +76,26 @@ const AMANAH_BOUNDS: Record<string, Bounds> = {
   Taif:            { latMin: 20.80, latMax: 22.30, lonMin: 40.50, lonMax: 42.00 },
 };
 
+/** Arabic names keyed by amanah key — used for CSV export */
+const AMANAH_ARABIC: Record<string, string> = {
+  Albaha:          "أمانة منطقة الباحة",
+  AlJouf:          "أمانة منطقة الجوف",
+  Aseer:           "أمانة منطقة عسير",
+  Dammam:          "أمانة المنطقة الشرقية",
+  HafarAlBatin:    "أمانة محافظة حفر الباطن",
+  Hail:            "أمانة منطقة حائل",
+  Hessa:           "أمانة محافظة الاحساء",
+  Jazan:           "أمانة منطقة جازان",
+  Jeddah:          "أمانة محافظة جدة",
+  Madina:          "أمانة منطقة المدينة المنورة",
+  Makkah:          "أمانة العاصمة المقدسة",
+  Najran:          "أمانة منطقة نجران",
+  NorthernBorders: "أمانة منطقة الحدود الشمالية",
+  Qassim:          "أمانة منطقة القصيم",
+  Tabuk:           "أمانة منطقة تبوك",
+  Taif:            "أمانة محافظة الطائف",
+};
+
 /** Human-readable display labels */
 const AMANAH_LABELS: Record<string, string> = {
   Albaha:          "Al Bahah",
@@ -209,6 +229,8 @@ interface FlaggedInstallation {
   bounds: Bounds | null;
   alreadyFlagged: boolean;
   tags: string[];
+  /** Firestore doc ID of the location document, if coords came from the locations collection */
+  locationDocId: string | null;
 }
 
 const COORD_FLAG_TAG = "coordinate out of amanah bounds";
@@ -226,6 +248,7 @@ export default function CoordinateFlag() {
   const [noCoords, setNoCoords] = useState<number>(0);
   const [totalChecked, setTotalChecked] = useState<number>(0);
   const [scanned, setScanned] = useState(false);
+  const [allScanned, setAllScanned] = useState<DuplicateDevice[]>([]);
 
   const [bulkFlagging, setBulkFlagging] = useState(false);
   const [bulkProgress, setBulkProgress] = useState(0);
@@ -236,6 +259,10 @@ export default function CoordinateFlag() {
   const [selectedNoCoordIds, setSelectedNoCoordIds] = useState<Set<string>>(new Set());
   const [assigningCoords, setAssigningCoords] = useState(false);
   const [assignProgress, setAssignProgress] = useState(0);
+
+  // reassign out-of-bounds violation coords
+  const [reassigning, setReassigning] = useState(false);
+  const [reassignProgress, setReassignProgress] = useState(0);
 
   // duplicate coordinate groups
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([]);
@@ -280,20 +307,100 @@ export default function CoordinateFlag() {
         teamMap[d.id] = data.name ?? d.id;
       });
 
+      // Load locations → locationId -> { lat, lon, docId } map
+      // Same resolution logic as ministry-devices: doc ID and locationId field both used as keys
+      const locSnap = await getDocs(collection(db, "locations"));
+      const locationCoordMap = new Map<string, { lat: number; lon: number; docId: string }>();
+      locSnap.forEach((d) => {
+        const ld = d.data();
+        const rawLat = ld.latitude;
+        const rawLon = ld.longitude;
+        const lat = rawLat != null ? parseFloat(String(rawLat)) : NaN;
+        const lon = rawLon != null ? parseFloat(String(rawLon)) : NaN;
+        if (isNaN(lat) || isNaN(lon)) return;
+        const coord = { lat, lon, docId: d.id };
+        // Map by document ID
+        locationCoordMap.set(String(d.id).trim(), coord);
+        // Also map without leading zeros for numeric IDs
+        if (/^\d+$/.test(d.id)) {
+          locationCoordMap.set(String(Number(d.id)), coord);
+        }
+        // Map by locationId field if present and different from doc ID
+        if (ld.locationId && String(ld.locationId).trim() !== String(d.id).trim()) {
+          const locIdKey = String(ld.locationId).trim();
+          locationCoordMap.set(locIdKey, coord);
+          if (/^\d+$/.test(locIdKey)) {
+            locationCoordMap.set(String(Number(locIdKey)), coord);
+          }
+        }
+      });
+
       // Load all installations
       const instSnap = await getDocs(collection(db, "installations"));
+      console.log("[CoordFlag] installations fetched:", instSnap.size);
+      console.log("[CoordFlag] locations map size:", locationCoordMap.size);
+      // Log a sample of location keys so we can see what format they're in
+      const sampleLocKeys = Array.from(locationCoordMap.keys()).slice(0, 5);
+      console.log("[CoordFlag] sample location keys:", sampleLocKeys);
+
       let checkedCount = 0;
       let noAmanahCount = 0;
       const flaggedList: FlaggedInstallation[] = [];
       const noCoordList: NoCoordDevice[] = [];
       const allWithCoords: DuplicateDevice[] = [];
+      let directCoordCount = 0;
+      let locationFallbackCount = 0;
+      let noCoordCount = 0;
+
+      // Mirrors the coordinate priority used by the ministry CSV export:
+      //   Special locationIds (9999, 999) → installation direct coords first
+      //   Normal locationIds             → location collection coords first
+      //   No locationId                  → installation direct coords
+      const SPECIAL_LOC_IDS = new Set(["9999", "999"]);
 
       instSnap.forEach((d) => {
         const data = d.data();
-        const lat: number | undefined = data.latitude;
-        const lon: number | undefined = data.longitude;
+        const rawLocationId = data.locationId ? String(data.locationId).trim() : null;
 
-        if (lat === undefined || lon === undefined || lat === null || lon === null) {
+        const instLat = data.latitude != null ? parseFloat(String(data.latitude)) : NaN;
+        const instLon = data.longitude != null ? parseFloat(String(data.longitude)) : NaN;
+
+        const locCoord = rawLocationId
+          ? (locationCoordMap.get(rawLocationId) ?? locationCoordMap.get(String(Number(rawLocationId))))
+          : undefined;
+
+        let lat: number;
+        let lon: number;
+        let coordSource = "direct";
+        let locationDocId: string | null = null;
+
+        if (rawLocationId && SPECIAL_LOC_IDS.has(rawLocationId)) {
+          // Special location: prefer installation direct coords
+          if (!isNaN(instLat) && !isNaN(instLon)) {
+            lat = instLat; lon = instLon; coordSource = "direct";
+          } else if (locCoord) {
+            lat = locCoord.lat; lon = locCoord.lon; coordSource = "location";
+            locationDocId = locCoord.docId;
+          } else {
+            lat = NaN; lon = NaN;
+          }
+        } else if (rawLocationId) {
+          // Normal location: prefer location collection coords (same as ministry CSV)
+          if (locCoord) {
+            lat = locCoord.lat; lon = locCoord.lon; coordSource = "location";
+            locationDocId = locCoord.docId;
+          } else if (!isNaN(instLat) && !isNaN(instLon)) {
+            lat = instLat; lon = instLon; coordSource = "direct";
+          } else {
+            lat = NaN; lon = NaN;
+          }
+        } else {
+          // No locationId: use direct coords
+          lat = instLat; lon = instLon; coordSource = "direct";
+        }
+
+        if (isNaN(lat) || isNaN(lon)) {
+          noCoordCount++;
           const teamId: string | null = data.teamId ?? null;
           const teamName: string = teamId ? (teamMap[teamId] ?? teamId) : "";
           const amanahKey = resolveAmanahKey(teamName);
@@ -308,6 +415,9 @@ export default function CoordinateFlag() {
           });
           return;
         }
+
+        if (coordSource === "direct") directCoordCount++;
+        else locationFallbackCount++;
 
         checkedCount++;
         const teamId: string | null = data.teamId ?? null;
@@ -346,9 +456,22 @@ export default function CoordinateFlag() {
             bounds,
             alreadyFlagged: tags.includes(COORD_FLAG_TAG),
             tags,
+            locationDocId,
           });
         }
       });
+
+      console.log("[CoordFlag] direct coords:", directCoordCount, "| from locations:", locationFallbackCount, "| no coords:", noCoordCount);
+      console.log("[CoordFlag] allWithCoords total:", allWithCoords.length);
+      // Log first few to inspect their lat/lon values
+      console.log("[CoordFlag] sample allWithCoords:", allWithCoords.slice(0, 5).map(d => ({ lat: d.lat, lon: d.lon, deviceId: d.deviceId })));
+
+      // Check sample installation doc fields to understand data structure
+      const sampleInst = instSnap.docs[0]?.data();
+      if (sampleInst) {
+        console.log("[CoordFlag] sample installation fields:", Object.keys(sampleInst));
+        console.log("[CoordFlag] sample latitude:", sampleInst.latitude, "| longitude:", sampleInst.longitude, "| locationId:", sampleInst.locationId);
+      }
 
       // Build duplicate groups — round to 6dp so floating-point noise doesn't split genuine dupes
       const coordMap = new Map<string, DuplicateDevice[]>();
@@ -366,6 +489,8 @@ export default function CoordinateFlag() {
       }
       // Sort largest group first
       dupGroups.sort((a, b) => b.devices.length - a.devices.length);
+      console.log("[CoordFlag] duplicate groups found:", dupGroups.length, "| total dup devices:", dupGroups.reduce((s, g) => s + g.devices.length, 0));
+      if (dupGroups.length > 0) console.log("[CoordFlag] top group:", dupGroups[0]);
 
       setTotalChecked(checkedCount);
       setNoAmanah(noAmanahCount);
@@ -373,6 +498,7 @@ export default function CoordinateFlag() {
       setNoCoordDevices(noCoordList);
       setFlagged(flaggedList);
       setDuplicateGroups(dupGroups);
+      setAllScanned(allWithCoords);
       // Pre-select all un-flagged items
       setSelectedIds(
         new Set(flaggedList.filter((f) => !f.alreadyFlagged).map((f) => f.installationId))
@@ -428,6 +554,65 @@ export default function CoordinateFlag() {
     });
     setBulkFlagging(false);
     // Re-scan to refresh state
+    await handleScan();
+  };
+
+  // ── reassign out-of-bounds violations to unique random coords within amanah ─
+
+  const reassignViolationCoords = async () => {
+    const toProcess = flagged.filter((f) => f.bounds !== null);
+    if (!toProcess.length) {
+      toast({ title: "Nothing to reassign", description: "No violations have a known Amanah to generate coordinates for." });
+      return;
+    }
+
+    setReassigning(true);
+    setReassignProgress(0);
+
+    // Track used keys so every assigned point is unique at 6 dp
+    const usedKeys = new Set<string>();
+    const uniqueCoord = (bounds: Bounds) => {
+      let lat: number, lon: number, key: string;
+      let attempts = 0;
+      do {
+        ({ lat, lon } = randomCoordInBounds(bounds));
+        key = `${lat.toFixed(6)},${lon.toFixed(6)}`;
+        attempts++;
+      } while (usedKeys.has(key) && attempts < 100);
+      usedKeys.add(key);
+      return { lat, lon };
+    };
+
+    // Strategy: set locationId = "9999" on every violation installation so the
+    // scan (and ministry CSV) reads direct coords from the installation doc.
+    // Then write unique in-bounds coords directly onto the installation doc.
+    // This leaves shared location docs untouched and doesn't affect other devices.
+    let successCount = 0;
+    for (let i = 0; i < toProcess.length; i++) {
+      const item = toProcess[i];
+      const { lat, lon } = uniqueCoord(item.bounds!);
+      try {
+        await updateDoc(doc(db, "installations", item.installationId), {
+          locationId: "9999",
+          latitude: lat,
+          longitude: lon,
+          updatedAt: serverTimestamp(),
+          status: "pending",
+          flaggedReason: null,
+          tags: arrayRemove(COORD_FLAG_TAG),
+        });
+        successCount++;
+      } catch {
+        // continue on individual failure
+      }
+      setReassignProgress(Math.round(((i + 1) / toProcess.length) * 100));
+    }
+
+    toast({
+      title: "Coordinates reassigned",
+      description: `${successCount} of ${toProcess.length} violation(s) detached from shared location and assigned unique in-bounds coords.`,
+    });
+    setReassigning(false);
     await handleScan();
   };
 
@@ -501,25 +686,36 @@ export default function CoordinateFlag() {
     setResolvingDupes(true);
     setDupProgress(0);
 
+    // Track used keys so every assigned point is unique at 6 dp
+    const usedKeys = new Set<string>();
+    const uniqueCoord = (base: { lat: number; lon: number }, bounds: Bounds | null) => {
+      let lat: number, lon: number, key: string;
+      let attempts = 0;
+      do {
+        if (bounds) {
+          ({ lat, lon } = randomCoordInBounds(bounds));
+        } else {
+          // Jitter around the shared point when no amanah bounds available
+          const jitter = () => (Math.random() * 0.008 + 0.002) * (Math.random() < 0.5 ? 1 : -1);
+          lat = Math.max(-90, Math.min(90, base.lat + jitter()));
+          lon = Math.max(-180, Math.min(180, base.lon + jitter()));
+        }
+        key = `${lat.toFixed(6)},${lon.toFixed(6)}`;
+        attempts++;
+      } while (usedKeys.has(key) && attempts < 100);
+      usedKeys.add(key);
+      return { lat, lon };
+    };
+
     for (let i = 0; i < allDevices.length; i++) {
       const device = allDevices[i];
-      let lat: number;
-      let lon: number;
-
-      if (device.bounds) {
-        ({ lat, lon } = randomCoordInBounds(device.bounds));
-      } else {
-        // Jitter around the existing shared point
-        const jitter = () => (Math.random() * 0.008 + 0.002) * (Math.random() < 0.5 ? 1 : -1);
-        lat = device.lat + jitter();
-        lon = device.lon + jitter();
-        // Clamp to valid ranges
-        lat = Math.max(-90, Math.min(90, lat));
-        lon = Math.max(-180, Math.min(180, lon));
-      }
+      const { lat, lon } = uniqueCoord({ lat: device.lat, lon: device.lon }, device.bounds);
 
       try {
+        // Set locationId = "9999" so the scan reads these direct coords instead of
+        // any shared location document coords, then write the new unique point.
         await updateDoc(doc(db, "installations", device.installationId), {
+          locationId: "9999",
           latitude: lat,
           longitude: lon,
           updatedAt: serverTimestamp(),
@@ -533,7 +729,7 @@ export default function CoordinateFlag() {
 
     toast({
       title: "Duplicates resolved",
-      description: `${allDevices.length} device(s) assigned unique random coordinates.`,
+      description: `${allDevices.length} device(s) detached from shared location and assigned unique random coordinates.`,
     });
     setResolvingDupes(false);
     await handleScan();
@@ -581,6 +777,42 @@ export default function CoordinateFlag() {
     const { lat, lon } = randomCoordInBounds(editTarget.bounds);
     setEditLat(lat.toFixed(6));
     setEditLon(lon.toFixed(6));
+  };
+
+  // ── full scan CSV export (device ID, amanah, coordinates) ───────────────
+
+  const exportAllCoordsCsv = () => {
+    if (!allScanned.length) {
+      toast({ title: "Nothing to export", description: "Run a scan first." });
+      return;
+    }
+    const escape = (v: string | number) => {
+      const s = String(v ?? "");
+      return s.includes(",") || s.includes('"') || s.includes("\n")
+        ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [
+      ["Device ID", "الأمانة", "Latitude", "Longitude", "Coordinates"].map(escape).join(","),
+      ...allScanned.map((d) => {
+        const arabicAmanah = d.amanahKey
+          ? (AMANAH_ARABIC[d.amanahKey] ?? d.amanahLabel ?? "غير معروف")
+          : "غير معروف";
+        return [
+          `="${d.deviceId}"`,          // force text in Excel — prevents scientific notation
+          arabicAmanah,
+          d.lat.toFixed(6),
+          d.lon.toFixed(6),
+          `${d.lat.toFixed(6)}, ${d.lon.toFixed(6)}`,
+        ].map(escape).join(",");
+      }),
+    ];
+    const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `all-device-coords-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   // ── CSV export ───────────────────────────────────────────────────────────
@@ -892,12 +1124,21 @@ export default function CoordinateFlag() {
             </div>
           )}
 
+          {reassigning && (
+            <div className="px-6 pb-2">
+              <Progress value={reassignProgress} className="h-2 [&>*]:bg-emerald-500" />
+              <p className="text-xs text-muted-foreground mt-1 text-right">
+                Reassigning coordinates… {reassignProgress}%
+              </p>
+            </div>
+          )}
+
           {/* Bulk action bar */}
           <div className="px-6 pb-4 flex flex-wrap gap-2">
             <Button
               size="sm"
               variant="destructive"
-              disabled={selectedCount === 0 || bulkFlagging}
+              disabled={selectedCount === 0 || bulkFlagging || reassigning}
               onClick={() => applyBulkFlag(true)}
             >
               <Flag className="h-4 w-4 mr-1" />
@@ -906,11 +1147,24 @@ export default function CoordinateFlag() {
             <Button
               size="sm"
               variant="outline"
-              disabled={selectedCount === 0 || bulkFlagging}
+              disabled={selectedCount === 0 || bulkFlagging || reassigning}
               onClick={() => applyBulkFlag(false)}
             >
               <X className="h-4 w-4 mr-1" />
               Remove Flag ({selectedCount})
+            </Button>
+            <Button
+              size="sm"
+              disabled={bulkFlagging || reassigning || flagged.filter(f => f.bounds !== null).length === 0}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white"
+              onClick={reassignViolationCoords}
+            >
+              {reassigning ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : (
+                <Shuffle className="h-4 w-4 mr-1" />
+              )}
+              Reassign All to Valid Coords ({flagged.filter(f => f.bounds !== null).length})
             </Button>
           </div>
 
@@ -1048,14 +1302,37 @@ export default function CoordinateFlag() {
       {scanned && flagged.length === 0 && (
         <Alert className="border-green-300 bg-green-50 dark:bg-green-950/30">
           <CheckCircle2 className="h-4 w-4 text-green-600" />
-          <AlertTitle className="text-green-700 dark:text-green-400">
-            All coordinates are within bounds
+          <AlertTitle className="text-green-700 dark:text-green-400 flex items-center justify-between flex-wrap gap-2">
+            <span>All coordinates are within bounds</span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-green-400 text-green-700 hover:bg-green-100 dark:text-green-400 dark:hover:bg-green-950/30 h-7 text-xs"
+              onClick={exportAllCoordsCsv}
+            >
+              <Download className="h-3 w-3 mr-1" />
+              Export Device Coords CSV
+            </Button>
           </AlertTitle>
           <AlertDescription className="text-green-700 dark:text-green-400">
             {totalChecked} installations were checked — none fall outside their Amanah's
             geographic area.
           </AlertDescription>
         </Alert>
+      )}
+
+      {scanned && flagged.length > 0 && (
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            variant="outline"
+            className="border-green-400 text-green-700 hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-950/30"
+            onClick={exportAllCoordsCsv}
+          >
+            <Download className="h-4 w-4 mr-1" />
+            Export All Device Coords CSV ({allScanned.length})
+          </Button>
+        </div>
       )}
 
       {/* Duplicate coordinates section */}

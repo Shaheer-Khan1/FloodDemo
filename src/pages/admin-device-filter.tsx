@@ -416,10 +416,19 @@ export default function AdminDeviceFilter() {
       }
 
       if (readings && readings.trim() !== '') {
-        const targetReadings = readings.split(',').map(r => r.trim().toLowerCase());
+        const targetReadings = readings
+          .split(',')
+          .map(r => r.trim())
+          .filter(r => r !== '')
+          .map(r => parseFloat(r))
+          .filter(r => !isNaN(r));
         console.log('Applying readings filter:', targetReadings);
-        // Filter by readings (this would require device data to have reading types)
-        // For now, skip this filter or implement based on your data structure
+        if (targetReadings.length > 0) {
+          filteredDevices = filteredDevices.filter(device =>
+            device.serverReading != null &&
+            targetReadings.some(target => device.serverReading === target)
+          );
+        }
       }
 
       console.log('Final filtered devices:', filteredDevices.length);
@@ -744,12 +753,12 @@ export default function AdminDeviceFilter() {
               <Input
                 id="readings"
                 type="text"
-                placeholder="e.g., z,y,m"
+                placeholder="e.g., 25, 30, 60"
                 value={readings}
                 onChange={(e) => setReadings(e.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                Comma-separated reading types
+                Comma-separated server reading values (exact match)
               </p>
             </div>
 
