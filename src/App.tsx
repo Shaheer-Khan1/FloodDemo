@@ -39,8 +39,10 @@ import AdminManagement from "@/pages/admin-management";
 import AdminDeviceFilter from "@/pages/admin-device-filter";
 import BulkDeviceLookup from "@/pages/bulk-device-lookup";
 import CoordinateUpdate from "@/pages/coordinate-update";
+import BulkUpdateRecent from "@/pages/bulk-update-recent";
 import CoordinateFlag from "@/pages/coordinate-flag";
 import MunicipalityImport from "@/pages/municipality-import";
+import InstallationTypeImport from "@/pages/installation-type-import";
 
 function Router() {
   return (
@@ -253,6 +255,14 @@ function Router() {
         </ProtectedRoute>
       </Route>
 
+      <Route path="/bulk-update-recent">
+        <ProtectedRoute>
+          <AppLayout>
+            <BulkUpdateRecent />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
       <Route path="/coordinate-flag">
         <ProtectedRoute>
           <AppLayout>
@@ -265,6 +275,14 @@ function Router() {
         <ProtectedRoute>
           <AppLayout>
             <MunicipalityImport />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/installation-type-import">
+        <ProtectedRoute>
+          <AppLayout>
+            <InstallationTypeImport />
           </AppLayout>
         </ProtectedRoute>
       </Route>

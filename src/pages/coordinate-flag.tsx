@@ -47,6 +47,7 @@ import {
   arrayRemove,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { applyFieldUpdates } from "@/lib/installation-field-history";
 
 // ─── Amanah geographic bounds ────────────────────────────────────────────────
 
@@ -198,6 +199,9 @@ interface DuplicateDevice {
   bounds: Bounds | null;
   lat: number;
   lon: number;
+  locationId: string | null;
+  instLatitude: number | null;
+  instLongitude: number | null;
 }
 
 interface DuplicateGroup {
@@ -231,6 +235,9 @@ interface FlaggedInstallation {
   tags: string[];
   /** Firestore doc ID of the location document, if coords came from the locations collection */
   locationDocId: string | null;
+  locationId: string | null;
+  instLatitude: number | null;
+  instLongitude: number | null;
 }
 
 const COORD_FLAG_TAG = "coordinate out of amanah bounds";
@@ -435,6 +442,9 @@ export default function CoordinateFlag() {
           bounds,
           lat,
           lon,
+          locationId: rawLocationId,
+          instLatitude: !isNaN(instLat) ? instLat : null,
+          instLongitude: !isNaN(instLon) ? instLon : null,
         });
 
         if (!amanahKey) {
@@ -457,6 +467,9 @@ export default function CoordinateFlag() {
             alreadyFlagged: tags.includes(COORD_FLAG_TAG),
             tags,
             locationDocId,
+            locationId: rawLocationId,
+            instLatitude: !isNaN(instLat) ? instLat : null,
+            instLongitude: !isNaN(instLon) ? instLon : null,
           });
         }
       });
@@ -592,15 +605,23 @@ export default function CoordinateFlag() {
       const item = toProcess[i];
       const { lat, lon } = uniqueCoord(item.bounds!);
       try {
-        await updateDoc(doc(db, "installations", item.installationId), {
-          locationId: "9999",
-          latitude: lat,
-          longitude: lon,
+        const archiveAt = new Date();
+        const payload: Record<string, unknown> = {
           updatedAt: serverTimestamp(),
           status: "pending",
           flaggedReason: null,
           tags: arrayRemove(COORD_FLAG_TAG),
-        });
+        };
+        applyFieldUpdates(
+          payload,
+          [
+            { field: "locationId", oldValue: item.locationId, newValue: "9999" },
+            { field: "latitude", oldValue: item.instLatitude, newValue: lat },
+            { field: "longitude", oldValue: item.instLongitude, newValue: lon },
+          ],
+          archiveAt
+        );
+        await updateDoc(doc(db, "installations", item.installationId), payload);
         successCount++;
       } catch {
         // continue on individual failure
@@ -634,12 +655,20 @@ export default function CoordinateFlag() {
       const item = toProcess[i];
       const { lat, lon } = randomCoordInBounds(item.bounds!);
       try {
-        await updateDoc(doc(db, "installations", item.installationId), {
-          latitude: lat,
-          longitude: lon,
+        const archiveAt = new Date();
+        const payload: Record<string, unknown> = {
           updatedAt: serverTimestamp(),
           tags: ["coordinates assigned randomly within amanah bounds"],
-        });
+        };
+        applyFieldUpdates(
+          payload,
+          [
+            { field: "latitude", oldValue: null, newValue: lat },
+            { field: "longitude", oldValue: null, newValue: lon },
+          ],
+          archiveAt
+        );
+        await updateDoc(doc(db, "installations", item.installationId), payload);
       } catch {
         // continue
       }
@@ -712,15 +741,21 @@ export default function CoordinateFlag() {
       const { lat, lon } = uniqueCoord({ lat: device.lat, lon: device.lon }, device.bounds);
 
       try {
-        // Set locationId = "9999" so the scan reads these direct coords instead of
-        // any shared location document coords, then write the new unique point.
-        await updateDoc(doc(db, "installations", device.installationId), {
-          locationId: "9999",
-          latitude: lat,
-          longitude: lon,
+        const archiveAt = new Date();
+        const payload: Record<string, unknown> = {
           updatedAt: serverTimestamp(),
           tags: ["coordinates randomised to resolve duplicate"],
-        });
+        };
+        applyFieldUpdates(
+          payload,
+          [
+            { field: "locationId", oldValue: device.locationId, newValue: "9999" },
+            { field: "latitude", oldValue: device.instLatitude, newValue: lat },
+            { field: "longitude", oldValue: device.instLongitude, newValue: lon },
+          ],
+          archiveAt
+        );
+        await updateDoc(doc(db, "installations", device.installationId), payload);
       } catch {
         // continue
       }
@@ -757,11 +792,17 @@ export default function CoordinateFlag() {
     }
     setEditSaving(true);
     try {
-      await updateDoc(doc(db, "installations", editTarget.installationId), {
-        latitude: lat,
-        longitude: lon,
-        updatedAt: serverTimestamp(),
-      });
+      const archiveAt = new Date();
+      const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      applyFieldUpdates(
+        payload,
+        [
+          { field: "latitude", oldValue: editTarget.lat, newValue: lat },
+          { field: "longitude", oldValue: editTarget.lon, newValue: lon },
+        ],
+        archiveAt
+      );
+      await updateDoc(doc(db, "installations", editTarget.installationId), payload);
       toast({ title: "Coordinates updated", description: `${editTarget.deviceId} → ${lat.toFixed(6)}, ${lon.toFixed(6)}` });
       setEditTarget(null);
       await handleScan();
@@ -1472,11 +1513,27 @@ export default function CoordinateFlag() {
                               onClick={async () => {
                                 const { lat, lon } = randomCoordInBounds(device.bounds!);
                                 try {
-                                  await updateDoc(doc(db, "installations", device.installationId), {
-                                    latitude: lat,
-                                    longitude: lon,
+                                  const archiveAt = new Date();
+                                  const payload: Record<string, unknown> = {
                                     updatedAt: serverTimestamp(),
-                                  });
+                                  };
+                                  applyFieldUpdates(
+                                    payload,
+                                    [
+                                      {
+                                        field: "latitude",
+                                        oldValue: device.instLatitude,
+                                        newValue: lat,
+                                      },
+                                      {
+                                        field: "longitude",
+                                        oldValue: device.instLongitude,
+                                        newValue: lon,
+                                      },
+                                    ],
+                                    archiveAt
+                                  );
+                                  await updateDoc(doc(db, "installations", device.installationId), payload);
                                   toast({ title: "Random coord assigned", description: `${device.deviceId} → ${lat.toFixed(6)}, ${lon.toFixed(6)}` });
                                   await handleScan();
                                 } catch (err: any) {

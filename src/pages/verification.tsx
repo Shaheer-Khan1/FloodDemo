@@ -49,11 +49,31 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { Installation, Device, ServerData, VerificationItem, Team } from "@/lib/types";
-import { format } from "date-fns";
+import {
+  applyFieldUpdates,
+  getArchivedSnapshotBySuffix,
+  getLatestArchivedSnapshot,
+  listArchivedSnapshots,
+  type ArchivedInstallationSnapshot,
+} from "@/lib/installation-field-history";
+import { format, parse } from "date-fns";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { translateTeamNameToArabic } from "@/lib/amanah-translations";
+import * as XLSX from "xlsx";
+
+function formatCoordPair(
+  lat: number | null | undefined,
+  lon: number | null | undefined
+): string | null {
+  if (lat == null || lon == null || Number.isNaN(lat) || Number.isNaN(lon)) {
+    return null;
+  }
+  return `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+}
+
+type ExportCoordinateMode = "location" | "installer-gps" | "prior-gps";
 
 export default function Verification() {
   const { userProfile } = useAuth();
@@ -83,9 +103,14 @@ export default function Verification() {
   const [teamIdFilter, setTeamIdFilter] = useState<string>("");
   const [dateFilter, setDateFilter] = useState<string>(() => format(new Date(), "yyyy-MM-dd"));
   const [deviceIdFilter, setDeviceIdFilter] = useState<string>("");
+  const [locationIdFilter, setLocationIdFilter] = useState<string>("");
   const [deviceUidsFilter, setDeviceUidsFilter] = useState<string>("");
   const [displayLimit, setDisplayLimit] = useState(500);
   const [exportDate, setExportDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
+  const [exportCoordinateMode, setExportCoordinateMode] = useState<ExportCoordinateMode>("location");
+  /** When prior-gps export: "" = latest per device; otherwise fixed archive suffix */
+  const [exportPriorArchiveSuffix, setExportPriorArchiveSuffix] = useState<string>("");
+  const [selectedArchiveSuffix, setSelectedArchiveSuffix] = useState<string>("");
   const [autoServerFetchEnabled, setAutoServerFetchEnabled] = useState(false);
   
   // Refresh options
@@ -450,6 +475,165 @@ export default function Verification() {
     return map;
   }, [locations]);
 
+  const formatArchiveSuffix = (suffix: string): string => {
+    try {
+      const archivedAt = parse(suffix.replace("_", " "), "yyyy-MM-dd HHmmss", new Date());
+      if (isNaN(archivedAt.getTime())) return suffix;
+      return format(archivedAt, "MMM d, yyyy HH:mm:ss");
+    } catch {
+      return suffix;
+    }
+  };
+
+  const lookupLocationCoords = (locationId: string): { latitude: number; longitude: number } | null => {
+    const raw = locationId.trim();
+    if (!raw) return null;
+
+    const fromMap = locationMap.get(raw);
+    if (fromMap) {
+      return { latitude: fromMap.latitude, longitude: fromMap.longitude };
+    }
+
+    const found = locations.find(
+      (loc) => String(loc.id).trim() === raw || String(loc.locationId).trim() === raw
+    );
+    if (found) {
+      return { latitude: found.latitude, longitude: found.longitude };
+    }
+
+    return null;
+  };
+
+  const formatExportCoordPair = (latitude: number | null, longitude: number | null): string => {
+    if (latitude == null || longitude == null || Number.isNaN(latitude) || Number.isNaN(longitude)) {
+      return "-";
+    }
+    return `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+  };
+
+  const getInstallationArchivedSnapshots = (
+    installation: Installation
+  ): ArchivedInstallationSnapshot[] =>
+    listArchivedSnapshots(installation as unknown as Record<string, unknown>);
+
+  const resolvePriorGpsSnapshot = (
+    data: Record<string, unknown>,
+    archiveSuffix: string
+  ): ArchivedInstallationSnapshot | null => {
+    if (archiveSuffix) {
+      return getArchivedSnapshotBySuffix(data, archiveSuffix);
+    }
+    return getLatestArchivedSnapshot(data);
+  };
+
+  const resolveArchivedGpsForCsv = (
+    installation: Installation,
+    priorArchiveSuffix = ""
+  ): {
+    priorLatitude: string;
+    priorLongitude: string;
+    priorCoordinates: string;
+    priorArchiveDate: string;
+  } => {
+    const data = installation as unknown as Record<string, unknown>;
+    const snapshot = resolvePriorGpsSnapshot(data, priorArchiveSuffix);
+    if (snapshot?.latitude != null && snapshot?.longitude != null) {
+      return {
+        priorLatitude: snapshot.latitude.toFixed(6),
+        priorLongitude: snapshot.longitude.toFixed(6),
+        priorCoordinates: formatExportCoordPair(snapshot.latitude, snapshot.longitude),
+        priorArchiveDate: formatArchiveSuffix(snapshot.suffix),
+      };
+    }
+    return {
+      priorLatitude: "-",
+      priorLongitude: "-",
+      priorCoordinates: "-",
+      priorArchiveDate: "-",
+    };
+  };
+
+  const resolveInstallationExportFields = (
+    installation: Installation,
+    coordinateMode: ExportCoordinateMode,
+    priorArchiveSuffix = ""
+  ): {
+    locationId: string;
+    coordinates: string;
+    archiveDate: string;
+    usedArchive: boolean;
+    usedInstallerGps: boolean;
+  } => {
+    const data = installation as unknown as Record<string, unknown>;
+    const currentLocationId = installation.locationId ? String(installation.locationId).trim() : "";
+    const exportLocationId = currentLocationId || "-";
+
+    const installerGpsCoordinates = formatExportCoordPair(
+      installation.latitude ?? null,
+      installation.longitude ?? null
+    );
+    const hasInstallerGps = installerGpsCoordinates !== "-";
+
+    const coordsForLocationId = (locationId: string): string => {
+      if (locationId === "9999") {
+        return installerGpsCoordinates;
+      }
+      const locationCoords = lookupLocationCoords(locationId);
+      if (locationCoords) {
+        return formatExportCoordPair(locationCoords.latitude, locationCoords.longitude);
+      }
+      return "-";
+    };
+
+    const locationReferenceCoordinates = coordsForLocationId(currentLocationId);
+
+    if (coordinateMode === "installer-gps") {
+      return {
+        locationId: exportLocationId,
+        coordinates: installerGpsCoordinates,
+        archiveDate: "-",
+        usedArchive: false,
+        usedInstallerGps: hasInstallerGps,
+      };
+    }
+
+    // Prior GPS only when latest location is assigned (not 9999).
+    if (coordinateMode === "prior-gps" && currentLocationId !== "9999") {
+      const snapshot = resolvePriorGpsSnapshot(data, priorArchiveSuffix);
+      if (snapshot?.latitude != null && snapshot?.longitude != null) {
+        return {
+          locationId: exportLocationId,
+          coordinates: formatExportCoordPair(snapshot.latitude, snapshot.longitude),
+          archiveDate: formatArchiveSuffix(snapshot.suffix),
+          usedArchive: true,
+          usedInstallerGps: false,
+        };
+      }
+    }
+
+    return {
+      locationId: exportLocationId,
+      coordinates: locationReferenceCoordinates,
+      archiveDate: "-",
+      usedArchive: false,
+      usedInstallerGps: false,
+    };
+  };
+
+  const exportCoordinateColumnLabel =
+    exportCoordinateMode === "prior-gps"
+      ? "Coordinates (prior)"
+      : exportCoordinateMode === "installer-gps"
+        ? "Coordinates (installer GPS)"
+        : "Coordinates";
+
+  const exportCoordinateFilenameTag =
+    exportCoordinateMode === "prior-gps"
+      ? "_prior-coords"
+      : exportCoordinateMode === "installer-gps"
+        ? "_installer-gps"
+        : "";
+
   // Helper function to safely format dates
   const formatDateSafe = (date: Date | null | undefined, formatStr: string): string | null => {
     if (!date) return null;
@@ -492,6 +676,13 @@ export default function Verification() {
       );
     }
 
+    if (locationIdFilter.trim()) {
+      const term = locationIdFilter.trim().toLowerCase();
+      filtered = filtered.filter((inst) =>
+        String(inst.locationId ?? "").toLowerCase().includes(term)
+      );
+    }
+
     // Apply device UIDs filter (supports partial matching)
     if (deviceUidsFilter.trim()) {
       const deviceUidsList = deviceUidsFilter
@@ -525,7 +716,7 @@ export default function Verification() {
     }
 
     return filtered;
-  }, [allInstallations, installerNameFilter, deviceIdFilter, deviceUidsFilter, teamIdFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
+  }, [allInstallations, installerNameFilter, deviceIdFilter, locationIdFilter, deviceUidsFilter, teamIdFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
 
   const dashboardStats = useMemo(() => {
     // For managers (non-admin), only count escalated items; for others, count all
@@ -571,6 +762,37 @@ export default function Verification() {
     };
   }, [filteredAllInstallations, userProfile?.role, userProfile?.isAdmin]);
 
+  const amanahDeviceCounts = useMemo(() => {
+    const isManager = userProfile?.role === "manager" && !userProfile?.isAdmin;
+    const statsBase = isManager
+      ? filteredAllInstallations.filter(i => i.tags?.includes("escalated to manager"))
+      : filteredAllInstallations;
+
+    const countsByAmanah = new Map<string, Set<string>>();
+    statsBase.forEach((inst) => {
+      const teamName = inst.teamId
+        ? teams.find((team) => team.id === inst.teamId)?.name || inst.teamId
+        : "Unassigned";
+      const amanahName = teamName || "Unassigned";
+      const deviceKey = inst.deviceId?.trim() || `installation:${inst.id}`;
+      if (!countsByAmanah.has(amanahName)) {
+        countsByAmanah.set(amanahName, new Set<string>());
+      }
+      countsByAmanah.get(amanahName)!.add(deviceKey);
+    });
+
+    return Array.from(countsByAmanah.entries())
+      .map(([amanahName, deviceIds]) => {
+        const arabicName = translateTeamNameToArabic(amanahName);
+        return {
+          amanahName,
+          label: arabicName ? `${amanahName} / ${arabicName}` : amanahName,
+          count: deviceIds.size,
+        };
+      })
+      .sort((a, b) => b.count - a.count || a.amanahName.localeCompare(b.amanahName));
+  }, [filteredAllInstallations, teams, userProfile?.role, userProfile?.isAdmin]);
+
   // Apply all filters to items shown in the table
   const displayedItems = useMemo(() => {
     let filtered = verificationItems;
@@ -606,6 +828,13 @@ export default function Verification() {
     if (deviceIdFilter) {
       filtered = filtered.filter(i => 
         i.installation.deviceId?.toUpperCase().includes(deviceIdFilter.toUpperCase())
+      );
+    }
+
+    if (locationIdFilter.trim()) {
+      const term = locationIdFilter.trim().toLowerCase();
+      filtered = filtered.filter(i =>
+        String(i.installation.locationId ?? "").toLowerCase().includes(term)
       );
     }
 
@@ -651,7 +880,7 @@ export default function Verification() {
     });
 
     return filtered;
-  }, [verificationItems, activeFilter, installerNameFilter, deviceIdFilter, deviceUidsFilter, teamIdFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
+  }, [verificationItems, activeFilter, installerNameFilter, deviceIdFilter, locationIdFilter, deviceUidsFilter, teamIdFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
 
   // Limit displayed items for performance
   const paginatedDisplayedItems = useMemo(() => {
@@ -705,6 +934,13 @@ export default function Verification() {
       );
     }
 
+    if (locationIdFilter.trim()) {
+      const term = locationIdFilter.trim().toLowerCase();
+      filtered = filtered.filter(i =>
+        String(i.installation.locationId ?? "").toLowerCase().includes(term)
+      );
+    }
+
     // Apply device UIDs filter (supports partial matching)
     if (deviceUidsFilter.trim()) {
       const deviceUidsList = deviceUidsFilter
@@ -752,7 +988,7 @@ export default function Verification() {
     });
 
     return filtered;
-  }, [verifiedInstallations, deviceMap, installerNameFilter, deviceIdFilter, deviceUidsFilter, teamIdFilter, activeFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
+  }, [verifiedInstallations, deviceMap, installerNameFilter, deviceIdFilter, locationIdFilter, deviceUidsFilter, teamIdFilter, activeFilter, dateFilter, userProfile?.isAdmin, userProfile?.role]);
 
   // Limit displayed verified items for performance
   const paginatedVerifiedItems = useMemo(() => {
@@ -762,13 +998,68 @@ export default function Verification() {
   // Reset display limit when filters change
   useEffect(() => {
     setDisplayLimit(500);
-  }, [activeFilter, installerNameFilter, deviceIdFilter, deviceUidsFilter, teamIdFilter, dateFilter]);
+  }, [activeFilter, installerNameFilter, deviceIdFilter, locationIdFilter, deviceUidsFilter, teamIdFilter, dateFilter]);
 
   const handleShowMore = () => {
     setDisplayLimit(prev => prev + 500);
   };
 
   // No auto-approval. We only mark system pre-verified for variance < 5% and keep status pending.
+
+  const selectedItemArchivedSnapshots = useMemo(() => {
+    if (!selectedItem) return [];
+    return getInstallationArchivedSnapshots(selectedItem.installation);
+  }, [selectedItem]);
+
+  const exportPriorArchiveOptions = useMemo(() => {
+    const suffixes = new Set<string>();
+    [...displayedItems, ...displayedVerifiedItems].forEach((item) => {
+      getInstallationArchivedSnapshots(item.installation).forEach((snap) => {
+        if (snap.latitude != null && snap.longitude != null) {
+          suffixes.add(snap.suffix);
+        }
+      });
+    });
+    return Array.from(suffixes).sort().reverse();
+  }, [displayedItems, displayedVerifiedItems]);
+
+  const startEditMode = () => {
+    if (!selectedItem) return;
+    const withGps = selectedItemArchivedSnapshots.find(
+      (s) => s.latitude != null && s.longitude != null
+    );
+    setSelectedArchiveSuffix(withGps?.suffix ?? selectedItemArchivedSnapshots[0]?.suffix ?? "");
+    setIsEditMode(true);
+  };
+
+  const handlePullArchivedGps = () => {
+    if (!selectedItem || !selectedArchiveSuffix) {
+      toast({
+        variant: "destructive",
+        title: "No archive selected",
+        description: "Choose an archived snapshot to pull GPS from.",
+      });
+      return;
+    }
+    const snap = getArchivedSnapshotBySuffix(
+      selectedItem.installation as unknown as Record<string, unknown>,
+      selectedArchiveSuffix
+    );
+    if (snap?.latitude == null || snap?.longitude == null) {
+      toast({
+        variant: "destructive",
+        title: "No archived GPS",
+        description: `Snapshot ${selectedArchiveSuffix} has no latitude/longitude values.`,
+      });
+      return;
+    }
+    setEditedLatitude(snap.latitude.toFixed(6));
+    setEditedLongitude(snap.longitude.toFixed(6));
+    toast({
+      title: "Archived GPS applied",
+      description: `Pulled coordinates from ${formatArchiveSuffix(selectedArchiveSuffix)}.`,
+    });
+  };
 
   const viewDetails = (item: VerificationItem) => {
     setSelectedItem(item);
@@ -777,6 +1068,7 @@ export default function Verification() {
     setFieldCheckStates(item.installation.fieldCheckStates || {});
     setRejectReason("");
     setIsEditMode(false);
+    setSelectedArchiveSuffix("");
     // Initialize edit values with current values
     setEditedDeviceId(item.installation.deviceId || "");
     setEditedSensorReading(item.installation.sensorReading.toString());
@@ -1126,61 +1418,31 @@ export default function Verification() {
         tagsToUpdate.push("edited by verifier");
       }
 
-      // Helper function to find the next version number for a field
-      const getNextVersion = (fieldName: string, installationData: any): number => {
-        let maxVersion = 0;
-        const prefix = `original_${fieldName}_`;
-        
-        // Check all keys in the installation document for existing versions
-        Object.keys(installationData).forEach(key => {
-          if (key.startsWith(prefix)) {
-            const versionStr = key.substring(prefix.length);
-            const version = parseInt(versionStr, 10);
-            if (!isNaN(version) && version > maxVersion) {
-              maxVersion = version;
-            }
-          }
-        });
-        
-        return maxVersion + 1;
-      };
-
-      // Prepare update object with versioned original values
-      const updateData: any = {
+      const archiveAt = new Date();
+      const updateData: Record<string, unknown> = {
         tags: tagsToUpdate,
         updatedAt: serverTimestamp(),
       };
 
-      // Store original values with version numbers before updating
-      if (editedDeviceId.trim() !== originalInstallation.deviceId) {
-        const version = getNextVersion('deviceId', originalInstallation);
-        updateData[`original_deviceId_${version}`] = originalInstallation.deviceId;
-        updateData.deviceId = editedDeviceId.trim();
-      }
-
-      if (sensorReading !== originalInstallation.sensorReading) {
-        const version = getNextVersion('sensorReading', originalInstallation);
-        updateData[`original_sensorReading_${version}`] = originalInstallation.sensorReading;
-        updateData.sensorReading = sensorReading;
-      }
-
-      if (editedLocationId.trim() !== originalInstallation.locationId) {
-        const version = getNextVersion('locationId', originalInstallation);
-        updateData[`original_locationId_${version}`] = originalInstallation.locationId;
-        updateData.locationId = editedLocationId.trim();
-      }
-
-      if (latitude !== originalLat) {
-        const version = getNextVersion('latitude', originalInstallation);
-        updateData[`original_latitude_${version}`] = originalLat;
-        updateData.latitude = latitude;
-      }
-
-      if (longitude !== originalLon) {
-        const version = getNextVersion('longitude', originalInstallation);
-        updateData[`original_longitude_${version}`] = originalLon;
-        updateData.longitude = longitude;
-      }
+      applyFieldUpdates(updateData, [
+        {
+          field: "deviceId",
+          oldValue: originalInstallation.deviceId,
+          newValue: editedDeviceId.trim(),
+        },
+        {
+          field: "sensorReading",
+          oldValue: originalInstallation.sensorReading,
+          newValue: sensorReading,
+        },
+        {
+          field: "locationId",
+          oldValue: originalInstallation.locationId,
+          newValue: editedLocationId.trim(),
+        },
+        { field: "latitude", oldValue: originalLat, newValue: latitude },
+        { field: "longitude", oldValue: originalLon, newValue: longitude },
+      ], archiveAt);
 
       // Handle image deletions and additions
       const currentImageUrls = originalInstallation.imageUrls || [];
@@ -1463,37 +1725,20 @@ export default function Verification() {
       return;
     }
 
+    let archivedRowCount = 0;
+    let priorGpsColumnCount = 0;
+    let installerGpsRowCount = 0;
     const csvRows = itemsToExport.map((item) => {
       const { installation } = item;
-      const rawLocationId = installation?.locationId ? String(installation.locationId).trim() : "";
-
-      let location: { id: string; locationId: string; latitude: number; longitude: number } | null = null;
-      if (rawLocationId) {
-        location = locationMap.get(rawLocationId) ?? null;
-        if (!location && locations.length > 0) {
-          location =
-            locations.find(
-              (loc) =>
-                String(loc.id).trim() === rawLocationId ||
-                String(loc.locationId).trim() === rawLocationId
-            ) ?? null;
-        }
-      }
-
-      // Coordinates: if locationId is 9999, use installer-entered coords; otherwise use Firestore location coords
-      let latitude: number | null = null;
-      let longitude: number | null = null;
-      if (rawLocationId === "9999") {
-        latitude = installation?.latitude ?? null;
-        longitude = installation?.longitude ?? null;
-      } else {
-        latitude = location?.latitude ?? null;
-        longitude = location?.longitude ?? null;
-      }
-      const coordinates =
-        latitude != null && longitude != null
-          ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
-          : "-";
+      const exportFields = resolveInstallationExportFields(
+        installation,
+        exportCoordinateMode,
+        exportPriorArchiveSuffix
+      );
+      const archivedGps = resolveArchivedGpsForCsv(installation, exportPriorArchiveSuffix);
+      if (exportFields.usedArchive) archivedRowCount += 1;
+      if (archivedGps.priorLatitude !== "-") priorGpsColumnCount += 1;
+      if (exportFields.usedInstallerGps) installerGpsRowCount += 1;
 
       // Get manually entered sensor reading from installation
       const sensorReadingValue = installation?.sensorReading != null ? String(installation.sensorReading) : "-";
@@ -1528,26 +1773,53 @@ export default function Verification() {
         installation.deviceId,
         installer,
         amanah,
-        rawLocationId || "-",
-        coordinates,
+        exportFields.locationId,
+        exportFields.coordinates,
         sensorReadingValue,
         latestDisCmValue,
         latestDisDate,
         installationDate,
         iccid,
+        item.device?.boxNumber || "-",
+        item.device?.boxCode || "-",
       ];
     });
 
     // Generate filename with filter and date
     const filterName = activeFilter === 'all' ? 'all' : activeFilter === 'verified' ? 'verified' : activeFilter;
     const currentDate = format(new Date(), "yyyy-MM-dd");
-    const filename = `verification-installations_${filterName}_${currentDate}.csv`;
+    const filename = `verification-installations_${filterName}_${currentDate}${exportCoordinateFilenameTag}.csv`;
 
-    downloadCsv(csvRows, filename, ["Device ID", "Installer", "Amanah", "Location ID", "Coordinates", "Sensor Reading", "Server Reading (cm)", "Latest Distance Date", "Installation Date", "ICCID"]);
+    const headers = [
+      "Device ID",
+      "Installer",
+      "Amanah",
+      "Location ID",
+      exportCoordinateColumnLabel,
+      "Sensor Reading",
+      "Server Reading (cm)",
+      "Latest Distance Date",
+      "Installation Date",
+      "ICCID",
+      "Box Number",
+      "Box Code",
+    ];
+
+    downloadCsv(csvRows, filename, headers);
+
+    let exportDetail = `Exported ${itemsToExport.length} installation${itemsToExport.length === 1 ? "" : "s"}.`;
+    if (priorGpsColumnCount > 0) {
+      exportDetail += ` ${priorGpsColumnCount} with prior GPS columns.`;
+    }
+    if (exportCoordinateMode === "prior-gps" && archivedRowCount > 0) {
+      exportDetail += ` ${archivedRowCount} used prior GPS as main coordinates.`;
+    } else if (exportCoordinateMode === "installer-gps" && installerGpsRowCount > 0) {
+      exportDetail += ` ${installerGpsRowCount} with installer GPS as main coordinates.`;
+    }
 
     toast({
       title: "CSV downloaded",
-      description: `Exported ${itemsToExport.length} installation${itemsToExport.length === 1 ? "" : "s"}.`,
+      description: exportDetail,
     });
   };
 
@@ -1597,26 +1869,24 @@ export default function Verification() {
       return;
     }
 
+    let archivedRowCount = 0;
+    let priorGpsColumnCount = 0;
+    let installerGpsRowCount = 0;
     const rows = installationsForDate.map((inst) => {
-      const locationId = inst.locationId ? String(inst.locationId).trim() : "";
-      const isLocation9999 = locationId === "9999";
-      const location = locationId ? locationMap.get(locationId) : undefined;
+      const exportFields = resolveInstallationExportFields(
+        inst,
+        exportCoordinateMode,
+        exportPriorArchiveSuffix
+      );
+      const archivedGps = resolveArchivedGpsForCsv(inst, exportPriorArchiveSuffix);
+      if (exportFields.usedArchive) archivedRowCount += 1;
+      if (archivedGps.priorLatitude !== "-") priorGpsColumnCount += 1;
+      if (exportFields.usedInstallerGps) installerGpsRowCount += 1;
 
-      let latitude: number | null = null;
-      let longitude: number | null = null;
-      if (isLocation9999) {
-        latitude = inst.latitude ?? null;
-        longitude = inst.longitude ?? null;
-      } else if (location) {
-        latitude = location.latitude;
-        longitude = location.longitude;
-      }
-
-      const coordinates =
-        latitude != null && longitude != null ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}` : "-";
+      const coordParts = exportFields.coordinates.split(", ").map((v) => parseFloat(v));
       const googleMapsUrl =
-        latitude != null && longitude != null
-          ? `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`
+        coordParts.length === 2 && !coordParts.some((n) => Number.isNaN(n))
+          ? `https://www.google.com/maps/search/?api=1&query=${coordParts[0]},${coordParts[1]}`
           : "-";
 
       const installerReading = inst.sensorReading != null ? inst.sensorReading.toString() : "-";
@@ -1647,8 +1917,8 @@ export default function Verification() {
         inst.installedByName || "-",
         amanahArabic ?? teamName ?? "-",
         teamName ?? "-",
-        locationId || "-",
-        coordinates,
+        exportFields.locationId,
+        exportFields.coordinates,
         googleMapsUrl,
         inst.deviceInputMethod ? inst.deviceInputMethod.toUpperCase() : "-",
         installerReading,
@@ -1658,30 +1928,234 @@ export default function Verification() {
         inst.createdAt ? format(inst.createdAt, "MMM d, yyyy HH:mm") : "-",
         serverDataTime,
         iccid,
+        device?.boxNumber || "-",
+        device?.boxCode || "-",
       ];
     });
 
-    downloadCsv(rows, `verification-installations_daily_${targetDate}.csv`, [
+    const dailyHeaders = [
       "Device ID",
       "Installer",
       "Amanah (Arabic / English)",
       "Team Name",
       "Location ID",
-      "Coordinates",
+      exportCoordinateColumnLabel,
       "Google Maps URL",
       "Input Method",
       "Installer Reading",
       "Server Reading",
       "Variance %",
       "Status",
-      "Submitted At",
+      "Installation Date",
       "Server Data Time",
       "ICCID",
-    ]);
+      "Box Number",
+      "Box Code",
+    ];
+
+    const dailyFilename = `verification-installations_daily_${targetDate}${exportCoordinateFilenameTag}.csv`;
+
+    downloadCsv(rows, dailyFilename, dailyHeaders);
+
+    let dailyExportDetail = `Exported ${installationsForDate.length} installation${installationsForDate.length === 1 ? "" : "s"} for ${format(start, "MMM d, yyyy")}.`;
+    if (priorGpsColumnCount > 0) {
+      dailyExportDetail += ` ${priorGpsColumnCount} with prior GPS columns.`;
+    }
+    if (exportCoordinateMode === "prior-gps" && archivedRowCount > 0) {
+      dailyExportDetail += ` ${archivedRowCount} used prior GPS as main coordinates.`;
+    } else if (exportCoordinateMode === "installer-gps" && installerGpsRowCount > 0) {
+      dailyExportDetail += ` ${installerGpsRowCount} with installer GPS as main coordinates.`;
+    }
 
     toast({
       title: "Daily CSV downloaded",
-      description: `Exported ${installationsForDate.length} installation${installationsForDate.length === 1 ? "" : "s"} for ${format(start, "MMM d, yyyy")}.`,
+      description: dailyExportDetail,
+    });
+  };
+
+  const handleArchivedCoordsXlsx = () => {
+    const allItems = [...displayedItems, ...displayedVerifiedItems];
+
+    const headers = [
+      "Device ID",
+      "Installer",
+      "Amanah",
+      "Current Location ID",
+      "Snapshot Date/Time",
+      "Archived Location ID",
+      "Location Ref Latitude",
+      "Location Ref Longitude",
+      "Location Ref Coordinates",
+      "Archived GPS Latitude",
+      "Archived GPS Longitude",
+      "Archived GPS Coordinates",
+    ];
+
+    const rows: string[][] = [];
+
+    const formatSuffix = (suffix: string) => {
+      try {
+        const [datePart, timePart] = suffix.split("_");
+        const h = timePart.slice(0, 2);
+        const m = timePart.slice(2, 4);
+        const s = timePart.slice(4, 6);
+        return `${datePart} ${h}:${m}:${s}`;
+      } catch {
+        return suffix;
+      }
+    };
+
+    allItems.forEach(({ installation, device: dev }) => {
+      const snapshots = getInstallationArchivedSnapshots(installation);
+      // Include any snapshot that has at least a location ID or GPS coords
+      const relevant = snapshots.filter(
+        (s) => s.locationId != null || (s.latitude != null && s.longitude != null)
+      );
+      if (relevant.length === 0) return;
+
+      const teamName = installation.teamId ? getTeamName(installation.teamId) : null;
+      const amanah = translateTeamNameToArabic(teamName) ?? teamName ?? "-";
+      const currentLocationId = installation.locationId
+        ? String(installation.locationId).trim()
+        : "-";
+      const installer = installation.installedByName || "-";
+      const deviceId = dev?.id || installation.deviceId || "-";
+
+      relevant.forEach((snap) => {
+        const dateLabel = formatSuffix(snap.suffix);
+
+        // Archived location ID and its reference coordinates
+        const archivedLocId = snap.locationId ?? "-";
+        let locRefLat = "-";
+        let locRefLon = "-";
+        let locRefCoords = "-";
+        if (snap.locationId && snap.locationId !== "9999") {
+          const locCoords = lookupLocationCoords(snap.locationId);
+          if (locCoords) {
+            locRefLat = locCoords.latitude.toFixed(6);
+            locRefLon = locCoords.longitude.toFixed(6);
+            locRefCoords = `${locRefLat}, ${locRefLon}`;
+          }
+        }
+
+        // Archived GPS coords
+        const hasGps = snap.latitude != null && snap.longitude != null;
+        const gpsLat = hasGps ? snap.latitude!.toFixed(6) : "-";
+        const gpsLon = hasGps ? snap.longitude!.toFixed(6) : "-";
+        const gpsCoords = hasGps
+          ? `${snap.latitude!.toFixed(6)}, ${snap.longitude!.toFixed(6)}`
+          : "-";
+
+        rows.push([
+          `="${deviceId}"`,
+          installer,
+          amanah,
+          currentLocationId,
+          dateLabel,
+          archivedLocId,
+          locRefLat,
+          locRefLon,
+          locRefCoords,
+          gpsLat,
+          gpsLon,
+          gpsCoords,
+        ]);
+      });
+    });
+
+    if (rows.length === 0) {
+      toast({
+        title: "No archived data",
+        description: "None of the currently displayed installations have archived GPS or Location ID entries.",
+      });
+      return;
+    }
+
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Archived Coords");
+    const dateStr = format(new Date(), "yyyy-MM-dd");
+    XLSX.writeFile(workbook, `archived_coordinates_${dateStr}.xlsx`);
+
+    toast({
+      title: "XLSX downloaded",
+      description: `Exported ${rows.length} archived snapshot${rows.length === 1 ? "" : "s"} from ${allItems.length} installation${allItems.length === 1 ? "" : "s"}.`,
+    });
+  };
+
+  const handleArchivedGpsOnlyXlsx = () => {
+    const allItems = [...displayedItems, ...displayedVerifiedItems];
+
+    const headers = [
+      "Device ID",
+      "Installer",
+      "Amanah",
+      "Current Location ID",
+      "Snapshot Date/Time",
+      "Archived Latitude",
+      "Archived Longitude",
+      "Archived Coordinates",
+    ];
+
+    const rows: string[][] = [];
+
+    allItems.forEach(({ installation, device: dev }) => {
+      const snapshots = getInstallationArchivedSnapshots(installation);
+      const gpsSnapshots = snapshots.filter(
+        (s) => s.latitude != null && s.longitude != null
+      );
+      if (gpsSnapshots.length === 0) return;
+
+      const teamName = installation.teamId ? getTeamName(installation.teamId) : null;
+      const amanah = translateTeamNameToArabic(teamName) ?? teamName ?? "-";
+      const currentLocationId = installation.locationId
+        ? String(installation.locationId).trim()
+        : "-";
+      const installer = installation.installedByName || "-";
+      const deviceId = dev?.id || installation.deviceId || "-";
+
+      gpsSnapshots.forEach((snap) => {
+        const lat = snap.latitude!;
+        const lon = snap.longitude!;
+        const dateLabel = (() => {
+          try {
+            const [datePart, timePart] = snap.suffix.split("_");
+            return `${datePart} ${timePart.slice(0, 2)}:${timePart.slice(2, 4)}:${timePart.slice(4, 6)}`;
+          } catch {
+            return snap.suffix;
+          }
+        })();
+
+        rows.push([
+          `="${deviceId}"`,
+          installer,
+          amanah,
+          currentLocationId,
+          dateLabel,
+          lat.toFixed(6),
+          lon.toFixed(6),
+          `${lat.toFixed(6)}, ${lon.toFixed(6)}`,
+        ]);
+      });
+    });
+
+    if (rows.length === 0) {
+      toast({
+        title: "No archived GPS found",
+        description: "None of the currently displayed installations have archived GPS entries.",
+      });
+      return;
+    }
+
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Archived GPS");
+    const dateStr = format(new Date(), "yyyy-MM-dd");
+    XLSX.writeFile(workbook, `archived_gps_${dateStr}.xlsx`);
+
+    toast({
+      title: "XLSX downloaded",
+      description: `Exported ${rows.length} archived GPS snapshot${rows.length === 1 ? "" : "s"} from ${allItems.length} installation${allItems.length === 1 ? "" : "s"}.`,
     });
   };
 
@@ -2408,15 +2882,73 @@ export default function Verification() {
             <Filter className="h-5 w-5" />
             Filters
           </CardTitle>
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Auto server fetch</span>
-            <Switch
-              checked={autoServerFetchEnabled}
-              onCheckedChange={setAutoServerFetchEnabled}
-            />
+          <div className="flex flex-col sm:items-end gap-2 text-sm">
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground">Auto server fetch</span>
+              <Switch
+                checked={autoServerFetchEnabled}
+                onCheckedChange={setAutoServerFetchEnabled}
+              />
+            </div>
+            <div className="flex flex-col gap-1 min-w-[200px]">
+              <Label htmlFor="export-coordinate-mode" className="text-muted-foreground font-normal">
+                CSV coordinates
+              </Label>
+              <Select
+                value={exportCoordinateMode}
+                onValueChange={(value) =>
+                  setExportCoordinateMode(value as ExportCoordinateMode)
+                }
+              >
+                <SelectTrigger id="export-coordinate-mode" className="h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="location">Location reference</SelectItem>
+                  <SelectItem value="installer-gps">Installer GPS (current)</SelectItem>
+                  <SelectItem value="prior-gps">Prior GPS (non-9999 only)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {exportCoordinateMode === "prior-gps" && (
+              <div className="flex flex-col gap-1 min-w-[220px]">
+                <Label htmlFor="export-prior-archive" className="text-muted-foreground font-normal">
+                  Prior GPS archive
+                </Label>
+                <Select
+                  value={exportPriorArchiveSuffix || "__latest__"}
+                  onValueChange={(value) =>
+                    setExportPriorArchiveSuffix(value === "__latest__" ? "" : value)
+                  }
+                >
+                  <SelectTrigger id="export-prior-archive" className="h-8">
+                    <SelectValue placeholder="Latest per device" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__latest__">Latest per device</SelectItem>
+                    {exportPriorArchiveOptions.map((suffix) => (
+                      <SelectItem key={suffix} value={suffix}>
+                        {formatArchiveSuffix(suffix)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
         </CardHeader>
         <CardContent>
+          <p className="text-xs text-muted-foreground mb-4 -mt-2">
+            CSV always includes Prior Latitude, Prior Longitude, Prior Coordinates, and Prior GPS Date from archived
+            fields (e.g. <span className="font-mono">latitude_2026-05-17_150106</span>).
+            {exportCoordinateMode === "installer-gps"
+              ? " Main Coordinates column uses current installer GPS."
+              : exportCoordinateMode === "prior-gps"
+                ? exportPriorArchiveSuffix
+                  ? ` Main Coordinates uses archive ${exportPriorArchiveSuffix} (non-9999 Location ID only).`
+                  : " Main Coordinates uses latest archived GPS (non-9999 Location ID only)."
+                : " Main Coordinates column uses location reference."}
+          </p>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {/* Installer Name Filter */}
             <div className="space-y-2">
@@ -2437,6 +2969,18 @@ export default function Verification() {
                 placeholder="Search device ID..."
                 value={deviceIdFilter}
                 onChange={(e) => setDeviceIdFilter(e.target.value)}
+                className="font-mono"
+              />
+            </div>
+
+            {/* Location ID Filter */}
+            <div className="space-y-2">
+              <Label htmlFor="location-id-filter">Location ID</Label>
+              <Input
+                id="location-id-filter"
+                placeholder="Search location ID..."
+                value={locationIdFilter}
+                onChange={(e) => setLocationIdFilter(e.target.value)}
                 className="font-mono"
               />
             </div>
@@ -2505,7 +3049,7 @@ export default function Verification() {
           </div>
 
           {/* Clear Filters Button */}
-          {(installerNameFilter || deviceIdFilter || deviceUidsFilter || teamIdFilter || dateFilter || (activeFilter !== 'all' && !(userProfile?.role === "manager" && !userProfile?.isAdmin))) && (
+          {(installerNameFilter || deviceIdFilter || locationIdFilter || deviceUidsFilter || teamIdFilter || dateFilter || (activeFilter !== 'all' && !(userProfile?.role === "manager" && !userProfile?.isAdmin))) && (
             <div className="mt-4 flex items-center gap-2 flex-wrap">
               <Button
                 variant="outline"
@@ -2513,6 +3057,7 @@ export default function Verification() {
                 onClick={() => {
                   setInstallerNameFilter("");
                   setDeviceIdFilter("");
+                  setLocationIdFilter("");
                   setDeviceUidsFilter("");
                   setTeamIdFilter("");
                   setDateFilter("");
@@ -2536,6 +3081,11 @@ export default function Verification() {
                 {deviceIdFilter && (
                   <Badge variant="secondary" className="text-xs font-mono">
                     Device: {deviceIdFilter}
+                  </Badge>
+                )}
+                {locationIdFilter && (
+                  <Badge variant="secondary" className="text-xs font-mono">
+                    Location: {locationIdFilter}
                   </Badge>
                 )}
                 {deviceUidsFilter && (
@@ -2693,6 +3243,23 @@ export default function Verification() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="border shadow-sm">
+        <CardContent className="p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">Devices by Amanah:</span>
+            {amanahDeviceCounts.length === 0 ? (
+              <span className="text-xs text-muted-foreground">No data</span>
+            ) : (
+              amanahDeviceCounts.map((item) => (
+                <Badge key={item.amanahName} variant="secondary" className="text-[11px] font-normal px-2 py-0.5">
+                  {item.label}: {item.count}
+                </Badge>
+              ))
+            )}
+          </div>
+        </CardContent>
+      </Card>
       {/* Verification Table - Hide if verified filter is active */}
       {activeFilter !== 'verified' && (
         <Card className="border shadow-sm">
@@ -2776,6 +3343,22 @@ export default function Verification() {
                   type="button"
                 >
                   CSV by Date
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  onClick={handleArchivedGpsOnlyXlsx}
+                >
+                  <FileDown className="h-4 w-4" />
+                  Archived GPS XLSX
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  onClick={handleArchivedCoordsXlsx}
+                >
+                  <FileDown className="h-4 w-4" />
+                  Archived + Location ID XLSX
                 </Button>
               </div>
             </div>
@@ -3052,6 +3635,22 @@ export default function Verification() {
                 >
                   CSV by Date
                 </Button>
+                <Button
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  onClick={handleArchivedGpsOnlyXlsx}
+                >
+                  <FileDown className="h-4 w-4" />
+                  Archived GPS XLSX
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  onClick={handleArchivedCoordsXlsx}
+                >
+                  <FileDown className="h-4 w-4" />
+                  Archived + Location ID XLSX
+                </Button>
               </div>
             </div>
           </CardHeader>
@@ -3210,6 +3809,15 @@ export default function Verification() {
                             <div className="flex items-center gap-1">
                               <Button
                                 size="sm"
+                                variant="outline"
+                                className="rounded-full px-3"
+                                onClick={() => viewDetails(item)}
+                                title="View / Edit"
+                              >
+                                <Edit className="h-3 w-3" />
+                              </Button>
+                              <Button
+                                size="sm"
                                 variant="secondary"
                                 className="rounded-full px-3"
                                 disabled={!!fetchingMap[installation.id]}
@@ -3274,7 +3882,7 @@ export default function Verification() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setIsEditMode(true)}
+                  onClick={startEditMode}
                   disabled={processing}
                 >
                   <Edit className="h-4 w-4 mr-2" />
@@ -3440,66 +4048,140 @@ export default function Verification() {
                       const locationId = selectedItem.installation.locationId ? String(selectedItem.installation.locationId).trim() : "";
                       const isLocation9999 = locationId === "9999";
                       const location = locationMap.get(locationId);
-                      
-                      // If location is 9999, use user-entered coordinates; otherwise use location coordinates
-                      let displayLat: number | null = null;
-                      let displayLon: number | null = null;
-                      let coordinateSource = "";
-                      
-                      if (isLocation9999) {
-                        // For location 9999, use user-entered coordinates from installation
-                        displayLat = selectedItem.installation.latitude ?? null;
-                        displayLon = selectedItem.installation.longitude ?? null;
-                        coordinateSource = displayLat != null && displayLon != null ? "User Entered" : "";
-                      } else {
-                        // For other locations, use coordinates from location relation
-                        displayLat = location?.latitude ?? null;
-                        displayLon = location?.longitude ?? null;
-                        coordinateSource = displayLat != null && displayLon != null ? "From Location ID" : "";
-                      }
-                      
-                      return (displayLat !== null || displayLon !== null || isEditMode) ? (
+                      const userCoords = formatCoordPair(
+                        selectedItem.installation.latitude,
+                        selectedItem.installation.longitude
+                      );
+                      const locationCoords =
+                        !isLocation9999 && location
+                          ? formatCoordPair(location.latitude, location.longitude)
+                          : null;
+
+                      return (isEditMode || userCoords || locationCoords) ? (
                         <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <p className="text-sm text-muted-foreground">
-                              Coordinates
-                              {coordinateSource && !isEditMode && (
-                                <span className="ml-2 text-xs bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">
-                                  {coordinateSource}
-                                </span>
-                              )}
-                            </p>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm text-muted-foreground">Coordinates</p>
                             {isEditMode ? (
-                              <div className="grid grid-cols-2 gap-2 mt-1">
-                                <div>
-                                  <Label htmlFor="latitude" className="text-xs">Latitude</Label>
-                                  <Input
-                                    id="latitude"
-                                    type="number"
-                                    step="0.000001"
-                                    value={editedLatitude}
-                                    onChange={(e) => setEditedLatitude(e.target.value)}
-                                    placeholder="Latitude"
-                                  />
+                              <div className="space-y-3 mt-1">
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div>
+                                    <Label htmlFor="latitude" className="text-xs">Latitude (user GPS)</Label>
+                                    <Input
+                                      id="latitude"
+                                      type="number"
+                                      step="0.000001"
+                                      value={editedLatitude}
+                                      onChange={(e) => setEditedLatitude(e.target.value)}
+                                      placeholder="Latitude"
+                                    />
+                                  </div>
+                                  <div>
+                                    <Label htmlFor="longitude" className="text-xs">Longitude (user GPS)</Label>
+                                    <Input
+                                      id="longitude"
+                                      type="number"
+                                      step="0.000001"
+                                      value={editedLongitude}
+                                      onChange={(e) => setEditedLongitude(e.target.value)}
+                                      placeholder="Longitude"
+                                    />
+                                  </div>
                                 </div>
-                                <div>
-                                  <Label htmlFor="longitude" className="text-xs">Longitude</Label>
-                                  <Input
-                                    id="longitude"
-                                    type="number"
-                                    step="0.000001"
-                                    value={editedLongitude}
-                                    onChange={(e) => setEditedLongitude(e.target.value)}
-                                    placeholder="Longitude"
-                                  />
-                                </div>
+                                {selectedItemArchivedSnapshots.some(
+                                  (s) => s.latitude != null && s.longitude != null
+                                ) && (
+                                  <div className="rounded-md border bg-muted/40 p-3 space-y-2">
+                                    <p className="text-xs text-muted-foreground">
+                                      Pull prior installer GPS from archived fields (e.g.{" "}
+                                      <span className="font-mono">latitude_2026-05-17_150106</span>)
+                                    </p>
+                                    <div className="flex flex-col sm:flex-row gap-2">
+                                      <Select
+                                        value={selectedArchiveSuffix || "__none__"}
+                                        onValueChange={(value) =>
+                                          setSelectedArchiveSuffix(value === "__none__" ? "" : value)
+                                        }
+                                      >
+                                        <SelectTrigger className="h-8 text-xs">
+                                          <SelectValue placeholder="Select archive…" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          {selectedItemArchivedSnapshots
+                                            .filter((s) => s.latitude != null && s.longitude != null)
+                                            .map((snap) => (
+                                              <SelectItem key={snap.suffix} value={snap.suffix}>
+                                                {formatArchiveSuffix(snap.suffix)} —{" "}
+                                                {snap.latitude!.toFixed(6)}, {snap.longitude!.toFixed(6)}
+                                              </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                      </Select>
+                                      <Button
+                                        type="button"
+                                        variant="secondary"
+                                        size="sm"
+                                        className="shrink-0"
+                                        onClick={handlePullArchivedGps}
+                                        disabled={!selectedArchiveSuffix || processing}
+                                      >
+                                        <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                                        Pull archived GPS
+                                      </Button>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             ) : (
-                              <p className="text-base font-medium">
-                                {displayLat != null && displayLon != null
-                                  ? `${displayLat.toFixed(6)}, ${displayLon.toFixed(6)}`
-                                  : "-"}
-                              </p>
+                              <div className="space-y-2 mt-1">
+                                {locationCoords && (
+                                  <div>
+                                    <p className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
+                                      Location ID reference
+                                      <span className="bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded">
+                                        From Location ID
+                                      </span>
+                                    </p>
+                                    <p className="text-base font-medium font-mono">{locationCoords}</p>
+                                  </div>
+                                )}
+                                {userCoords && (
+                                  <div>
+                                    <p className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
+                                      {locationCoords ? "Installer GPS" : "Coordinates"}
+                                      <span className="bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 px-2 py-0.5 rounded">
+                                        User Entered
+                                      </span>
+                                    </p>
+                                    <p className="text-base font-medium font-mono">{userCoords}</p>
+                                  </div>
+                                )}
+                                {!locationCoords && !userCoords && (
+                                  <p className="text-base font-medium">-</p>
+                                )}
+                                {selectedItemArchivedSnapshots.some(
+                                  (s) => s.latitude != null && s.longitude != null
+                                ) && (
+                                  <div className="pt-1 border-t border-dashed">
+                                    <p className="text-xs text-muted-foreground mb-1.5">
+                                      Archived installer GPS
+                                    </p>
+                                    <div className="space-y-1.5">
+                                      {selectedItemArchivedSnapshots
+                                        .filter((s) => s.latitude != null && s.longitude != null)
+                                        .map((snap) => (
+                                          <div key={snap.suffix} className="text-xs font-mono">
+                                            <span className="text-muted-foreground">
+                                              {formatArchiveSuffix(snap.suffix)}
+                                            </span>
+                                            <span className="ml-2">
+                                              {snap.latitude!.toFixed(6)}, {snap.longitude!.toFixed(6)}
+                                            </span>
+                                          </div>
+                                        ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
                             )}
                           </div>
                           {!isEditMode && (

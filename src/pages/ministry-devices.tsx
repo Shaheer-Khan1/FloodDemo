@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 
 // Custom debounce hook
 function useDebounce<T>(value: T, delay: number): T {
@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { 
   Clock, 
@@ -47,6 +48,7 @@ import { getStorage, ref, getDownloadURL } from "firebase/storage";
 import type { Device, Installation } from "@/lib/types";
 import { format } from "date-fns";
 import { translateTeamNameToArabic } from "@/lib/amanah-translations";
+import * as XLSX from "xlsx";
 
 const storage = getStorage();
 const PRIMARY_COLOR: [number, number, number] = [12, 91, 211];
@@ -56,6 +58,146 @@ const LABEL_COLOR: [number, number, number] = [100, 106, 125];
 const SPECIAL_LOCATION_IDS = new Set(["9999", "999"]);
 const formatCoordinates = (latitude: number, longitude: number): string =>
   `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+
+// ─── Amanah geographic bounds (used to validate coordinates) ─────────────────
+
+interface AmanahBounds {
+  latMin: number; latMax: number;
+  lonMin: number; lonMax: number;
+}
+
+const AMANAH_BOUNDS_MINISTRY: Record<string, AmanahBounds> = {
+  Albaha:          { latMin: 19.80, latMax: 20.30, lonMin: 41.30, lonMax: 42.20 },
+  AlJouf:          { latMin: 29.50, latMax: 31.00, lonMin: 37.00, lonMax: 40.00 },
+  Aseer:           { latMin: 17.00, latMax: 20.00, lonMin: 41.00, lonMax: 44.00 },
+  Dammam:          { latMin: 25.90, latMax: 27.00, lonMin: 49.50, lonMax: 51.00 },
+  HafarAlBatin:    { latMin: 27.30, latMax: 28.20, lonMin: 44.50, lonMax: 46.00 },
+  Hail:            { latMin: 26.50, latMax: 28.00, lonMin: 39.50, lonMax: 42.00 },
+  Hessa:           { latMin: 24.00, latMax: 26.00, lonMin: 48.00, lonMax: 50.00 },
+  Jazan:           { latMin: 16.30, latMax: 17.50, lonMin: 41.20, lonMax: 43.00 },
+  Jeddah:          { latMin: 21.00, latMax: 22.00, lonMin: 38.50, lonMax: 40.00 },
+  Madina:          { latMin: 23.50, latMax: 25.50, lonMin: 37.00, lonMax: 40.00 },
+  Makkah:          { latMin: 20.50, latMax: 22.50, lonMin: 39.00, lonMax: 41.50 },
+  Najran:          { latMin: 16.50, latMax: 18.50, lonMin: 44.00, lonMax: 47.00 },
+  NorthernBorders: { latMin: 29.00, latMax: 32.00, lonMin: 37.00, lonMax: 42.00 },
+  Qassim:          { latMin: 25.50, latMax: 27.50, lonMin: 42.50, lonMax: 45.50 },
+  Tabuk:           { latMin: 27.00, latMax: 30.50, lonMin: 34.50, lonMax: 38.50 },
+  Taif:            { latMin: 20.80, latMax: 22.30, lonMin: 40.50, lonMax: 42.00 },
+};
+
+const AMANAH_KEY_MAP: Record<string, string> = {
+  "albaha": "Albaha", "al baha": "Albaha", "baha": "Albaha",
+  "aljouf": "AlJouf", "al jouf": "AlJouf", "jouf": "AlJouf",
+  "asir": "Aseer",   "aseer": "Aseer",
+  "eastern province": "Dammam", "dammam": "Dammam",
+  "hafr albatin": "HafarAlBatin", "hafar al batin": "HafarAlBatin",
+  "hafaralbatin": "HafarAlBatin", "hafralbatin": "HafarAlBatin",
+  "hail": "Hail",    "hael": "Hail",
+  "al ahsa": "Hessa", "hessa": "Hessa", "alahsa": "Hessa",
+  "jazan": "Jazan",  "jizan": "Jazan",
+  "jeddah": "Jeddah","jiddah": "Jeddah",
+  "madina": "Madina","madinah": "Madina", "medina": "Madina", "al madinah": "Madina",
+  "makkah": "Makkah",
+  "najran": "Najran",
+  "northern borders": "NorthernBorders", "northern boarders": "NorthernBorders",
+  "northernborders": "NorthernBorders",
+  "qassim": "Qassim","al qassim": "Qassim","alqassim": "Qassim",
+  "tabuk": "Tabuk",  "tabouk": "Tabuk",
+  "taif": "Taif",    "altaif": "Taif", "al taif": "Taif",
+};
+
+/** 0.5° tolerance on each side of the bounding box */
+const COORD_BOUNDS_TOLERANCE = 0.5;
+
+function resolveAmanahKeyForMinistry(teamName: string | null | undefined): string | null {
+  if (!teamName) return null;
+  const cleaned = teamName
+    .toLowerCase()
+    .replace(/\s*(team|amanah|region|province|municipality|أمانة|منطقة|محافظة)\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return AMANAH_KEY_MAP[cleaned] ?? AMANAH_KEY_MAP[teamName.toLowerCase().trim()] ?? null;
+}
+
+function isWithinAmanahBounds(lat: number, lon: number, b: AmanahBounds): boolean {
+  return (
+    lat >= b.latMin - COORD_BOUNDS_TOLERANCE &&
+    lat <= b.latMax + COORD_BOUNDS_TOLERANCE &&
+    lon >= b.lonMin - COORD_BOUNDS_TOLERANCE &&
+    lon <= b.lonMax + COORD_BOUNDS_TOLERANCE
+  );
+}
+
+/**
+ * Resolve the best available coordinates for a device, validating against the
+ * amanah's geographic bounding box when possible.
+ *
+ * Priority rules:
+ *  - Special location IDs (9999/999): prefer installation coords, fall back to location
+ *  - Regular locations             : prefer location coords,    fall back to installation
+ *
+ * After picking the primary candidate, if a valid amanah key exists the
+ * coordinates are checked against its bounding box. If they fall outside, the
+ * secondary source is tried instead. If neither source is within bounds, the
+ * primary source is returned so data is never silently dropped.
+ *
+ * When `userCapturedOnly` is true, only installation GPS (captured at install)
+ * is used — location-reference coordinates are ignored.
+ */
+function resolveCoords(
+  rawLocationId: string,
+  location: { latitude?: number | null; longitude?: number | null } | null | undefined,
+  inst: { latitude?: number | string | null; longitude?: number | string | null } | null | undefined,
+  amanahEnglishName: string | null | undefined,
+  userCapturedOnly = false
+): { lat: number; lon: number; outOfBounds: boolean } | null {
+  const locLat = location?.latitude != null ? parseCoordinate(location.latitude) : null;
+  const locLon = location?.longitude != null ? parseCoordinate(location.longitude) : null;
+  const instLat = parseCoordinate(inst?.latitude);
+  const instLon = parseCoordinate(inst?.longitude);
+
+  if (userCapturedOnly) {
+    if (instLat == null || instLon == null) return null;
+    const amanahKey = resolveAmanahKeyForMinistry(amanahEnglishName);
+    const bounds = amanahKey ? AMANAH_BOUNDS_MINISTRY[amanahKey] : null;
+    const outOfBounds = bounds ? !isWithinAmanahBounds(instLat, instLon, bounds) : false;
+    return { lat: instLat, lon: instLon, outOfBounds };
+  }
+
+  // Determine primary and secondary source based on location ID type
+  let primary: { lat: number; lon: number } | null = null;
+  let secondary: { lat: number; lon: number } | null = null;
+
+  if (SPECIAL_LOCATION_IDS.has(rawLocationId)) {
+    if (instLat != null && instLon != null) primary = { lat: instLat, lon: instLon };
+    if (locLat != null && locLon != null) secondary = { lat: locLat, lon: locLon };
+  } else {
+    if (locLat != null && locLon != null) primary = { lat: locLat, lon: locLon };
+    if (instLat != null && instLon != null) secondary = { lat: instLat, lon: instLon };
+  }
+
+  const amanahKey = resolveAmanahKeyForMinistry(amanahEnglishName);
+  const bounds = amanahKey ? AMANAH_BOUNDS_MINISTRY[amanahKey] : null;
+
+  if (!primary) {
+    // Only secondary available — use it; check bounds if known
+    if (!secondary) return null;
+    const outOfBounds = bounds ? !isWithinAmanahBounds(secondary.lat, secondary.lon, bounds) : false;
+    return { ...secondary, outOfBounds };
+  }
+
+  // Validate primary against amanah bounds
+  if (bounds && !isWithinAmanahBounds(primary.lat, primary.lon, bounds)) {
+    // Primary is outside bounds — try secondary
+    if (secondary && isWithinAmanahBounds(secondary.lat, secondary.lon, bounds)) {
+      return { ...secondary, outOfBounds: false };
+    }
+    // Neither is within bounds; return primary but flag it
+    return { ...primary, outOfBounds: true };
+  }
+
+  return { ...primary, outOfBounds: false };
+}
 const buildReportFileName = (value: string): string => {
   const safeName = value
     .trim()
@@ -63,7 +205,7 @@ const buildReportFileName = (value: string): string => {
     .replace(/[^\w\u0600-\u06FF_-]/g, "")
     .replace(/_+/g, "_");
   const normalizedName = safeName || "Unknown";
-  return `${normalizedName}_List_${format(new Date(), "yyyy-MM-dd")}.csv`;
+  return `${normalizedName}_List_${format(new Date(), "yyyy-MM-dd")}.xlsx`;
 };
 const parseCoordinate = (value: number | string | null | undefined): number | null => {
   if (value == null) return null;
@@ -75,11 +217,11 @@ const parseCoordinate = (value: number | string | null | undefined): number | nu
 const hasArabic = (text: string): boolean =>
   /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/.test(text);
 
-/** Where a municipality value was resolved from for a given CSV row. */
+  /** Where a municipality value was resolved from for an export row. */
 type MunicSource = "location_ref" | "amanah" | "none";
 
 /**
- * Resolve the municipality to display for a CSV row.
+ * Resolve the municipality to display for an export row.
  *
  * Priority:
  *   1. `locations/{locationId}.municipalityName`  → source = "location_ref"
@@ -153,8 +295,23 @@ export default function MinistryDevices() {
   const [fromDateTime, setFromDateTime] = useState("");
   const [toDateTime, setToDateTime] = useState("");
   const [lastXDevices, setLastXDevices] = useState<number | "">("");
+  const [locationIdFilter, setLocationIdFilter] = useState<string>("");
   const [deviceUidsFilter, setDeviceUidsFilter] = useState<string>("");
-  
+  /** When filtering by device UIDs, use only installation GPS (not location DB). */
+  const [useUserCapturedCoordsOnly, setUseUserCapturedCoordsOnly] = useState(false);
+
+  const preferUserCapturedCoords =
+    deviceUidsFilter.trim().length > 0 && useUserCapturedCoordsOnly;
+
+  const deviceUidsWereEmpty = useRef(true);
+  useEffect(() => {
+    const hasUids = deviceUidsFilter.trim().length > 0;
+    if (hasUids && deviceUidsWereEmpty.current) {
+      setUseUserCapturedCoordsOnly(true);
+    }
+    deviceUidsWereEmpty.current = !hasUids;
+  }, [deviceUidsFilter]);
+
   // Debounce filters for smooth performance
   const debouncedDateFilter = useDebounce(dateFilter, 300);
   const [isFiltering, setIsFiltering] = useState(false);
@@ -407,6 +564,14 @@ export default function MinistryDevices() {
       });
     }
 
+    // Apply location ID filter (partial match)
+    if (locationIdFilter.trim()) {
+      const term = locationIdFilter.trim().toLowerCase();
+      filtered = filtered.filter((row) =>
+        String(row.locationId ?? row.inst?.locationId ?? "").toLowerCase().includes(term)
+      );
+    }
+
     // Apply device UIDs filter (line-by-line, supports partial matching)
     if (deviceUidsFilter.trim()) {
       const deviceUidsList = deviceUidsFilter
@@ -434,7 +599,7 @@ export default function MinistryDevices() {
     }
 
     return filtered;
-  }, [allRows, activeFilter, teamFilter, debouncedDateFilter, lastXDevices, deviceUidsFilter]);
+  }, [allRows, activeFilter, teamFilter, debouncedDateFilter, lastXDevices, locationIdFilter, deviceUidsFilter]);
   
   // Paginate rows for performance
   const paginatedRows = useMemo(() => {
@@ -444,39 +609,21 @@ export default function MinistryDevices() {
   // Reset display limit when filters change
   useEffect(() => {
     setDisplayLimit(500);
-  }, [teamFilter, activeFilter, debouncedDateFilter, lastXDevices, deviceUidsFilter]);
+  }, [teamFilter, activeFilter, debouncedDateFilter, lastXDevices, locationIdFilter, deviceUidsFilter]);
   
   // Handle "Show More" button
   const handleShowMore = useCallback(() => {
     setDisplayLimit(prev => prev + 500);
   }, []);
 
-  const downloadCsv = (rowsData: string[][], filename: string) => {
-    const headers = ["Serial No", "Location ID", "Coordinates", "Device ID", "Amanah", "Municipality", "Sensor Height"];
-    const csvRows = [headers, ...rowsData];
-    const csvContent = csvRows
-      .map((row) =>
-        row
-          .map((value) => {
-            const safeValue = value ?? "";
-            return `"${safeValue.replace(/"/g, '""')}"`;
-          })
-          .join(",")
-      )
-      .join("\r\n");
-
-    const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", filename);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+  const downloadXlsx = (rowsData: string[][], filename: string, headers: string[], sheetName = "Export") => {
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rowsData]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName.substring(0, 31) || "Export");
+    XLSX.writeFile(workbook, filename);
   };
 
-  // Helper function to apply date/time range filter for CSV exports
+  // Helper function to apply date/time range filter for XLSX exports
   const getDateFilteredRows = (rowsToFilter: typeof rows) => {
     // If no date filters are set, return all rows
     if (!fromDateTime && !toDateTime) {
@@ -556,7 +703,7 @@ export default function MinistryDevices() {
         groupedByAmanah[amanahName].push(row);
       });
 
-      // Generate CSV for each Amanah
+      // Generate XLSX for each Amanah
       Object.entries(groupedByAmanah).forEach(([amanahName, amanahRows]) => {
         // Sort by installer name and device ID
         const sortedRows = [...amanahRows].sort((a, b) => {
@@ -567,10 +714,10 @@ export default function MinistryDevices() {
         });
 
         const headers = [
-          "Serial No", "Location ID", "Coordinates", "Device ID", "Installer Name", "Amanah", "Municipality", "Sensor Height"
+          "Serial No", "Location ID", "Coordinates", "Device ID", "Installer Name", "Amanah", "Municipality", "Sensor Height", "Type"
         ];
 
-        const csvRows = sortedRows.map((row, index) => {
+        const exportRows = sortedRows.map((row, index) => {
           const { device, inst } = row;
           const locationId = inst?.locationId ? String(inst.locationId).trim() : "";
           const location = locationMap.get(locationId);
@@ -598,33 +745,14 @@ export default function MinistryDevices() {
             inst.installedByName || "-",
             amanahForExport,
             location?.municipalityName || "-",
-            inst.sensorReading != null ? inst.sensorReading.toString() : "-"
+            inst.sensorReading != null ? inst.sensorReading.toString() : "-",
+            inst?.type || ""
           ];
         });
 
-        const allCsvRows = [headers, ...csvRows];
-        const csvContent = allCsvRows
-          .map((row) =>
-            row
-              .map((value) => {
-                const safeValue = value ?? "";
-                return `"${safeValue.replace(/"/g, '""')}"`;
-              })
-              .join(",")
-          )
-          .join("\r\n");
-
-        const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
         const dateStr = format(new Date(), "yyyy-MM-dd");
-        const fileName = `Location_9999_${amanahName.replace(/[^a-z0-9]/gi, "_")}_${dateStr}.csv`;
-        link.setAttribute("download", fileName);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
+        const fileName = `Location_9999_${amanahName.replace(/[^a-z0-9]/gi, "_")}_${dateStr}.xlsx`;
+        downloadXlsx(exportRows, fileName, headers, amanahName);
       });
 
       const amanahCount = Object.keys(groupedByAmanah).length;
@@ -692,13 +820,13 @@ export default function MinistryDevices() {
       });
 
       const headers = [
-        "Serial No", "Location ID", "Device ID", "Installer Name", "Amanah", "Municipality", "Sensor Height", "Installation Date"
+        "Serial No", "Location ID", "Device ID", "Installer Name", "Amanah", "Municipality", "Sensor Height", "Installation Date", "Type"
       ];
 
       let noLocMunicFromRef = 0;
       let noLocMunicFromAmanah = 0;
 
-      const csvRows = sortedRows.map((row, index) => {
+      const exportRows = sortedRows.map((row, index) => {
         const { device, inst } = row;
         const locationId = inst?.locationId ? String(inst.locationId).trim() : "";
         let location = locationMap.get(locationId) ?? null;
@@ -724,33 +852,14 @@ export default function MinistryDevices() {
           amanahForExport,
           municipalityName,
           inst.sensorReading != null ? inst.sensorReading.toString() : "-",
-          inst.createdAt ? format(inst.createdAt, "yyyy-MM-dd HH:mm") : "-"
+          inst.createdAt ? format(inst.createdAt, "yyyy-MM-dd HH:mm") : "-",
+          inst?.type || ""
         ];
       });
 
-      const allCsvRows = [headers, ...csvRows];
-      const csvContent = allCsvRows
-        .map((row) =>
-          row
-            .map((value) => {
-              const safeValue = value ?? "";
-              return `"${safeValue.replace(/"/g, '""')}"`;
-            })
-            .join(",")
-        )
-        .join("\r\n");
-
-      const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
       const dateStr = format(new Date(), "yyyy-MM-dd");
-      const fileName = `Devices_No_Location_${dateStr}.csv`;
-      link.setAttribute("download", fileName);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      const fileName = `Devices_No_Location_${dateStr}.xlsx`;
+      downloadXlsx(exportRows, fileName, headers, "No Location");
 
       toast({
         title: "Export Complete",
@@ -784,6 +893,7 @@ export default function MinistryDevices() {
     let totalRows = 0;
     let municFromRef = 0;
     let municFromAmanah = 0;
+    let outOfBoundsCount = 0;
 
     filteredRows.forEach((row) => {
       const { device, inst, amanah } = row;
@@ -801,65 +911,56 @@ export default function MinistryDevices() {
         }
       }
 
-      const instLat = parseCoordinate(inst?.latitude);
-      const instLon = parseCoordinate(inst?.longitude);
-
-      let coordinates = "-";
-      if (SPECIAL_LOCATION_IDS.has(rawLocationId)) {
-        if (instLat != null && instLon != null) {
-          coordinates = formatCoordinates(instLat, instLon);
-        } else if (location?.latitude != null && location?.longitude != null) {
-          coordinates = formatCoordinates(location.latitude, location.longitude);
-        }
-      } else {
-        if (location?.latitude != null && location?.longitude != null) {
-          coordinates = formatCoordinates(location.latitude, location.longitude);
-        } else if (instLat != null && instLon != null) {
-          coordinates = formatCoordinates(instLat, instLon);
-        }
-      }
-
-      const sensorReadingValue = inst?.sensorReading != null ? String(inst.sensorReading) : "-";
       const englishAmanahName = amanah || "-";
       const amanahForExport = translateTeamNameToArabic(
         englishAmanahName === "-" ? null : englishAmanahName
       ) || englishAmanahName;
 
+      const resolved = resolveCoords(rawLocationId, location, inst, amanah, preferUserCapturedCoords);
+      const coordinates = resolved ? formatCoordinates(resolved.lat, resolved.lon) : "-";
+      if (resolved?.outOfBounds) outOfBoundsCount++;
+
+      const sensorReadingValue = inst?.sensorReading != null ? String(inst.sensorReading) : "-";
+
       const { value: municipalityName, source: municSource } = resolveMunicipality(location, amanahForExport);
       if (municSource === "location_ref") municFromRef++;
       else if (municSource === "amanah") municFromAmanah++;
 
-      const csvRow = [
-        "", // Serial placeholder
-        rawLocationId || "-",
-        coordinates,
-        `="${device.id}"`, // Format as text to prevent Excel scientific notation
-        amanahForExport,
-        municipalityName,
-        sensorReadingValue,
-      ];
+      const exportRow = [
+          "", // Serial placeholder
+          rawLocationId || "-",
+          coordinates,
+          `="${device.id}"`, // Format as text to prevent Excel scientific notation
+          amanahForExport,
+          municipalityName,
+          sensorReadingValue,
+          inst?.type || "",
+        ];
 
-      const groupKey = amanahForExport || "Unknown";
-      if (!rowsByAmanah[groupKey]) {
-        rowsByAmanah[groupKey] = [];
-      }
-      rowsByAmanah[groupKey].push(csvRow);
-      totalRows++;
-    });
+        const groupKey = amanahForExport || "Unknown";
+        if (!rowsByAmanah[groupKey]) {
+          rowsByAmanah[groupKey] = [];
+        }
+        rowsByAmanah[groupKey].push(exportRow);
+        totalRows++;
+      });
 
-    const amanahCount = Object.keys(rowsByAmanah).length;
-    Object.entries(rowsByAmanah).forEach(([amanahName, csvRows]) => {
-      csvRows.forEach((row, index) => {
+      const amanahCount = Object.keys(rowsByAmanah).length;
+      const headers = ["Serial No", "Location ID", "Coordinates", "Device ID", "Amanah", "Municipality", "Sensor Height", "Type"];
+    Object.entries(rowsByAmanah).forEach(([amanahName, exportRows]) => {
+      exportRows.forEach((row, index) => {
         row[0] = (index + 1).toString();
       });
       const filename = buildReportFileName(amanahName);
-      downloadCsv(csvRows, filename);
+      downloadXlsx(exportRows, filename, headers, amanahName);
     });
 
     toast({
-      title: "CSV downloaded",
+      title: "Excel downloaded",
       description:
         `Exported ${totalRows} row${totalRows === 1 ? "" : "s"} across ${amanahCount} Amanah${amanahCount === 1 ? "" : "s"}. ` +
+        `${preferUserCapturedCoords ? "Coordinates: installation GPS only. " : ""}` +
+        `${outOfBoundsCount > 0 ? `⚠️ ${outOfBoundsCount} device${outOfBoundsCount === 1 ? "" : "s"} with out-of-bounds coordinates. ` : ""}` +
         `Municipality: ${municFromRef} from location reference, ${municFromAmanah} from Amanah name.`,
     });
   };
@@ -882,6 +983,7 @@ export default function MinistryDevices() {
       let totalRows = 0;
       let groupedMunicFromRef = 0;
       let groupedMunicFromAmanah = 0;
+      let groupedOutOfBoundsCount = 0;
 
       // Process filtered rows
       filteredRows.forEach((row) => {
@@ -900,35 +1002,22 @@ export default function MinistryDevices() {
           }
         }
 
-        const instLat = parseCoordinate(inst?.latitude);
-        const instLon = parseCoordinate(inst?.longitude);
-
-        let coordinates = "-";
-        if (SPECIAL_LOCATION_IDS.has(rawLocationId)) {
-          if (instLat != null && instLon != null) {
-            coordinates = formatCoordinates(instLat, instLon);
-          } else if (location?.latitude != null && location?.longitude != null) {
-            coordinates = formatCoordinates(location.latitude, location.longitude);
-          }
-        } else {
-          if (location?.latitude != null && location?.longitude != null) {
-            coordinates = formatCoordinates(location.latitude, location.longitude);
-          } else if (instLat != null && instLon != null) {
-            coordinates = formatCoordinates(instLat, instLon);
-          }
-        }
-
-        const sensorReadingValue = inst?.sensorReading != null ? String(inst.sensorReading) : "-";
         const englishAmanahName = amanah || "-";
         const amanahForExport = translateTeamNameToArabic(
           englishAmanahName === "-" ? null : englishAmanahName
         ) || englishAmanahName;
 
+        const resolved = resolveCoords(rawLocationId, location, inst, amanah, preferUserCapturedCoords);
+        const coordinates = resolved ? formatCoordinates(resolved.lat, resolved.lon) : "-";
+        if (resolved?.outOfBounds) groupedOutOfBoundsCount++;
+
+        const sensorReadingValue = inst?.sensorReading != null ? String(inst.sensorReading) : "-";
+
         const { value: municipalityName, source: municSource } = resolveMunicipality(location, amanahForExport);
         if (municSource === "location_ref") groupedMunicFromRef++;
         else if (municSource === "amanah") groupedMunicFromAmanah++;
 
-        const csvRow = [
+        const exportRow = [
           "", // Serial placeholder
           rawLocationId || "-",
           coordinates,
@@ -936,22 +1025,23 @@ export default function MinistryDevices() {
           amanahForExport,
           municipalityName,
           sensorReadingValue,
+          inst?.type || "",
         ];
 
         const groupKey = amanahForExport || "Unknown";
         if (!rowsByAmanah[groupKey]) {
           rowsByAmanah[groupKey] = [];
         }
-        rowsByAmanah[groupKey].push(csvRow);
+        rowsByAmanah[groupKey].push(exportRow);
         totalRows++;
       });
 
       // Sort Amanahs alphabetically
       const sortedAmanahs = Object.keys(rowsByAmanah).sort();
 
-      // Build single CSV with grouped data
-      const headers = ["Serial No", "Location ID", "Coordinates", "Device ID", "Amanah", "Municipality", "Sensor Height"];
-      const allCsvRows: string[][] = [headers];
+      // Build single XLSX with grouped data
+      const headers = ["Serial No", "Location ID", "Coordinates", "Device ID", "Amanah", "Municipality", "Sensor Height", "Type"];
+      const allExportRows: string[][] = [];
 
       // Add each Amanah group
       sortedAmanahs.forEach((amanahName) => {
@@ -961,37 +1051,19 @@ export default function MinistryDevices() {
         amanahRows.forEach((row, index) => {
           const numberedRow = [...row];
           numberedRow[0] = (index + 1).toString(); // Set serial number
-          allCsvRows.push(numberedRow);
+          allExportRows.push(numberedRow);
         });
       });
 
-      // Generate CSV content
-      const csvContent = allCsvRows
-        .map((row) =>
-          row
-            .map((value) => {
-              const safeValue = value ?? "";
-              return `"${safeValue.replace(/"/g, '""')}"`;
-            })
-            .join(",")
-        )
-        .join("\r\n");
-
-      const blob = new Blob(["\ufeff", csvContent], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
       const dateStr = format(new Date(), "yyyy-MM-dd");
-      link.setAttribute("download", `All_Installations_Grouped_by_Amanah_${dateStr}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      downloadXlsx(allExportRows, `All_Installations_Grouped_by_Amanah_${dateStr}.xlsx`, headers, "Grouped Amanah");
 
       toast({
-        title: "CSV downloaded",
+        title: "Excel downloaded",
         description:
           `Exported ${totalRows} row${totalRows !== 1 ? "s" : ""} grouped by ${sortedAmanahs.length} Amanah${sortedAmanahs.length !== 1 ? "s" : ""}. ` +
+          `${preferUserCapturedCoords ? "Coordinates: installation GPS only. " : ""}` +
+          `${groupedOutOfBoundsCount > 0 ? `⚠️ ${groupedOutOfBoundsCount} device${groupedOutOfBoundsCount === 1 ? "" : "s"} with out-of-bounds coordinates. ` : ""}` +
           `Municipality: ${groupedMunicFromRef} from location reference, ${groupedMunicFromAmanah} from Amanah name.`,
       });
     } catch (error: any) {
@@ -1232,11 +1304,12 @@ export default function MinistryDevices() {
       // Get location data
       const locationId = inst?.locationId ? String(inst.locationId).trim() : "N/A";
       const location = locationMapRef.get(locationId);
-      const latitude = location?.latitude ?? (inst?.latitude ?? null);
-      const longitude = location?.longitude ?? (inst?.longitude ?? null);
+      const resolved = resolveCoords(locationId, location, inst, row.amanah, preferUserCapturedCoords);
+      const latitude = resolved?.lat ?? null;
+      const longitude = resolved?.lon ?? null;
       const sensorReading = inst?.sensorReading ?? null;
 
-      // Resolve amanah / municipality for PDF (same logic as CSV)
+      // Resolve amanah / municipality for PDF (same logic as XLSX exports)
       const englishAmanahName = row.amanah && row.amanah !== "-" ? row.amanah : null;
       const amanahDisplay = translateTeamNameToArabic(englishAmanahName) || row.amanah || "N/A";
       const { value: municipalityDisplay } = resolveMunicipality(location ?? null, amanahDisplay);
@@ -1257,7 +1330,7 @@ export default function MinistryDevices() {
       // Left Panel – Details Box
       // Rows: Location No, Latitude, Longitude, Sensor Reading, Amanah, Municipality, Installer, Install Date
       const FIELD_H = 8;
-      const FIELDS = [
+      const FIELDS: { label: string; value: string; warn?: boolean }[] = [
         { label: "LOCATION NO.", value: locationId },
         { label: "LATITUDE",     value: latitude !== null ? latitude.toFixed(6) : "N/A" },
         { label: "LONGITUDE",    value: longitude !== null ? longitude.toFixed(6) : "N/A" },
@@ -1286,9 +1359,12 @@ export default function MinistryDevices() {
         doc.setTextColor(...LABEL_COLOR);
         doc.text(field.label, labelX, textY);
         // addPdfText handles Arabic via canvas and Latin via normal jsPDF path
-        addPdfText(doc, field.value, valueX, textY, 7.5, TEXT_COLOR, maxValueWidth);
+        const valueColor: [number, number, number] = field.warn ? [200, 30, 30] : TEXT_COLOR;
+        addPdfText(doc, field.value, valueX, textY, 7.5, valueColor, maxValueWidth);
         textY += FIELD_H;
       }
+      // Reset text color after field loop
+      doc.setTextColor(...TEXT_COLOR);
 
       // Left Panel – Device Code Box
       const bottomBoxY = boxY + boxHeight + 10;
@@ -1574,9 +1650,21 @@ export default function MinistryDevices() {
               />
             </div>
 
-            {/* From Date/Time Filter for CSV Export */}
+            {/* Location ID Filter */}
             <div className="space-y-2">
-              <Label htmlFor="from-datetime">From Date/Time (CSV)</Label>
+              <Label htmlFor="location-id-filter">Location ID</Label>
+              <Input
+                id="location-id-filter"
+                placeholder="Search location ID..."
+                value={locationIdFilter}
+                onChange={(e) => setLocationIdFilter(e.target.value)}
+                className="font-mono"
+              />
+            </div>
+
+            {/* From Date/Time Filter for Excel Export */}
+            <div className="space-y-2">
+              <Label htmlFor="from-datetime">From Date/Time (Excel)</Label>
               <Input
                 id="from-datetime"
                 type="datetime-local"
@@ -1586,9 +1674,9 @@ export default function MinistryDevices() {
               />
             </div>
 
-            {/* To Date/Time Filter for CSV Export */}
+            {/* To Date/Time Filter for Excel Export */}
             <div className="space-y-2">
-              <Label htmlFor="to-datetime">To Date/Time (CSV)</Label>
+              <Label htmlFor="to-datetime">To Date/Time (Excel)</Label>
               <Input
                 id="to-datetime"
                 type="datetime-local"
@@ -1638,11 +1726,34 @@ export default function MinistryDevices() {
               <p className="text-xs text-muted-foreground">
                 Enter device UIDs or partial matches (one per line) to show matching devices. Supports partial matching. Leave empty to show all devices.
               </p>
+              {deviceUidsFilter.trim() && (
+                <div className="flex items-start gap-3 rounded-md border bg-muted/40 p-3">
+                  <Checkbox
+                    id="user-captured-coords-only"
+                    checked={useUserCapturedCoordsOnly}
+                    onCheckedChange={(checked) =>
+                      setUseUserCapturedCoordsOnly(checked === true)
+                    }
+                  />
+                  <div className="space-y-1 leading-none">
+                    <Label
+                      htmlFor="user-captured-coords-only"
+                      className="text-sm font-medium cursor-pointer"
+                    >
+                      Use installation GPS only
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      Excel and PDF exports use coordinates captured on the device at install time,
+                      not the location reference database.
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
           {/* Clear Filters Button */}
-          {(teamFilter !== "all" || activeFilter !== 'all' || dateFilter || fromDateTime || toDateTime || lastXDevices !== "" || deviceUidsFilter.trim()) && (
+          {(teamFilter !== "all" || activeFilter !== 'all' || dateFilter || locationIdFilter.trim() || fromDateTime || toDateTime || lastXDevices !== "" || deviceUidsFilter.trim()) && (
             <div className="mt-4 flex items-center gap-2 flex-wrap">
               <Button
                 variant="outline"
@@ -1654,7 +1765,9 @@ export default function MinistryDevices() {
                   setFromDateTime("");
                   setToDateTime("");
                   setLastXDevices("");
+                  setLocationIdFilter("");
                   setDeviceUidsFilter("");
+                  setUseUserCapturedCoordsOnly(false);
                 }}
               >
                 <X className="h-4 w-4 mr-2" />
@@ -1671,6 +1784,11 @@ export default function MinistryDevices() {
                     Date: {format(new Date(dateFilter), "MMM d, yyyy")}
                   </Badge>
                 )}
+                {locationIdFilter.trim() && (
+                  <Badge variant="secondary" className="text-xs bg-teal-100 text-teal-800 border-teal-200">
+                    Location ID: {locationIdFilter.trim()}
+                  </Badge>
+                )}
                 {activeFilter !== 'all' && (
                   <Badge variant="secondary" className="text-xs">
                     {activeFilter === 'withServerData' ? 'With Server Data' : 'No Server Data'}
@@ -1678,12 +1796,12 @@ export default function MinistryDevices() {
                 )}
                 {fromDateTime && (
                   <Badge variant="secondary" className="text-xs bg-green-100 text-green-700 border-green-200">
-                    CSV From: {format(new Date(fromDateTime), "MMM d, yyyy HH:mm")}
+                    Excel From: {format(new Date(fromDateTime), "MMM d, yyyy HH:mm")}
                   </Badge>
                 )}
                 {toDateTime && (
                   <Badge variant="secondary" className="text-xs bg-green-100 text-green-700 border-green-200">
-                    CSV To: {format(new Date(toDateTime), "MMM d, yyyy HH:mm")}
+                    Excel To: {format(new Date(toDateTime), "MMM d, yyyy HH:mm")}
                   </Badge>
                 )}
                 {lastXDevices !== "" && (
@@ -1694,6 +1812,11 @@ export default function MinistryDevices() {
                 {deviceUidsFilter.trim() && (
                   <Badge variant="secondary" className="text-xs bg-purple-100 text-purple-700 border-purple-200">
                     {deviceUidsFilter.split('\n').filter(uid => uid.trim()).length} Device UID{deviceUidsFilter.split('\n').filter(uid => uid.trim()).length !== 1 ? 's' : ''} filtered
+                  </Badge>
+                )}
+                {preferUserCapturedCoords && (
+                  <Badge variant="secondary" className="text-xs bg-amber-100 text-amber-800 border-amber-200">
+                    Installation GPS only
                   </Badge>
                 )}
               </div>
@@ -1720,7 +1843,7 @@ export default function MinistryDevices() {
                 onClick={handleCsvExport}
               >
                 <FileDown className="h-4 w-4" />
-                Download CSV
+                Download Excel
               </Button>
               <Button
                 variant="outline"
@@ -1736,7 +1859,7 @@ export default function MinistryDevices() {
                 ) : (
                   <>
                     <FileDown className="h-4 w-4" />
-                    Grouped CSV by Amanah
+                    Grouped Excel by Amanah
                   </>
                 )}
               </Button>
@@ -1754,7 +1877,7 @@ export default function MinistryDevices() {
                 ) : (
                   <>
                     <FileDown className="h-4 w-4" />
-                    Location 9999 CSV
+                    Location 9999 Excel
                   </>
                 )}
               </Button>
@@ -1772,7 +1895,7 @@ export default function MinistryDevices() {
                 ) : (
                   <>
                     <FileDown className="h-4 w-4" />
-                    No Location CSV
+                    No Location Excel
                   </>
                 )}
               </Button>

@@ -15,9 +15,24 @@ import { Search, Loader2, Shield, MapPin, Smartphone, Ruler, Users, Filter, X, U
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { UserProfile, Team, TeamMember, Installation } from "@/lib/types";
+import {
+  getPriorLocationId,
+  hasPriorLocationId,
+  setArchivedFieldChange,
+} from "@/lib/installation-field-history";
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
+
+interface LocTablePreviewRow {
+  locationId: string;
+  amana: string;
+  municipalityName: string;
+  latitude: number;
+  longitude: number;
+  rowNum: number;
+}
 
 export default function Admin() {
   const { userProfile } = useAuth();
@@ -40,6 +55,16 @@ export default function Admin() {
   const [uploadingMunicipalities, setUploadingMunicipalities] = useState(false);
   const [municipalityProgress, setMunicipalityProgress] = useState(0);
   const [municipalityResult, setMunicipalityResult] = useState<{ success: number; failed: number; errors: string[] } | null>(null);
+
+  // Location Table (full) Update State
+  const [locTableFile, setLocTableFile] = useState<File | null>(null);
+  const [locTableParsing, setLocTableParsing] = useState(false);
+  const [locTablePreview, setLocTablePreview] = useState<LocTablePreviewRow[] | null>(null);
+  const [locTableParseErrors, setLocTableParseErrors] = useState<string[]>([]);
+  const [locTableUploading, setLocTableUploading] = useState(false);
+  const [locTableProgress, setLocTableProgress] = useState(0);
+  const [locTableResult, setLocTableResult] = useState<{ success: number; failed: number; errors: string[] } | null>(null);
+  const [showLocTableConfirm, setShowLocTableConfirm] = useState(false);
   
   // Location ID Bulk Update State
   const [targetTeamId, setTargetTeamId] = useState("ttaMvVwJTIpXIJ5NTmee");
@@ -389,16 +414,17 @@ export default function Admin() {
       for (const installation of matchingInstallations) {
         const installationRef = doc(db, "installations", installation.id);
         
-        // Store the original locationId if it doesn't already exist
-        const updateData: any = {
-          locationId: newLocationId,
+        const archiveAt = new Date();
+        const updateData: Record<string, unknown> = {
           updatedAt: serverTimestamp(),
         };
-
-        // Only set originalLocationId if it doesn't exist yet
-        if (!installation.originalLocationId) {
-          updateData.originalLocationId = installation.locationId;
-        }
+        setArchivedFieldChange(
+          updateData,
+          "locationId",
+          installation.locationId,
+          newLocationId,
+          archiveAt
+        );
 
         batch.update(installationRef, updateData);
         batchCount++;
@@ -504,15 +530,17 @@ export default function Admin() {
       for (const installation of found999Installations) {
         const installationRef = doc(db, "installations", installation.id);
         
-        const updateData: any = {
-          locationId: "9999",
+        const archiveAt = new Date();
+        const updateData: Record<string, unknown> = {
           updatedAt: serverTimestamp(),
         };
-
-        // Store original locationId if not already stored
-        if (!installation.originalLocationId) {
-          updateData.originalLocationId = installation.locationId;
-        }
+        setArchivedFieldChange(
+          updateData,
+          "locationId",
+          installation.locationId,
+          "9999",
+          archiveAt
+        );
 
         batch.update(installationRef, updateData);
         batchCount++;
@@ -560,11 +588,9 @@ export default function Admin() {
       
       const snapshot = await getDocs(q);
       
-      // Filter to only include installations with originalLocationId
-      const installationsWithOriginal = snapshot.docs.filter(doc => {
-        const data = doc.data();
-        return data.originalLocationId != null && data.originalLocationId !== "";
-      });
+      const installationsWithOriginal = snapshot.docs.filter((docSnap) =>
+        hasPriorLocationId(docSnap.data() as Record<string, unknown>)
+      );
 
       if (installationsWithOriginal.length === 0) {
         toast({
@@ -600,7 +626,8 @@ export default function Admin() {
         const sensorHeight = data.sensorReading != null ? String(data.sensorReading) : "-";
         
         // Original location ID
-        const originalLocationId = data.originalLocationId || "-";
+        const originalLocationId =
+          getPriorLocationId(data as Record<string, unknown>) || "-";
 
         // Installer name
         const installerName = data.installedByName || "-";
@@ -1057,7 +1084,7 @@ export default function Admin() {
           installation.id, // Installation ID
           installation.deviceId, // Device UID
           installation.locationId, // Location ID
-          installation.originalLocationId || "-", // Original Location ID
+          getPriorLocationId(installation as Record<string, unknown>) || "-", // Original Location ID
           coordinates, // GPS Coordinates
           String(installation.sensorReading), // Sensor Reading (cm)
           String(installation.latestDisCm ?? "-"), // Latest Sensor Reading from Server
@@ -2055,7 +2082,7 @@ export default function Admin() {
         inst.id,
         inst.deviceId,
         inst.locationId,
-        inst.originalLocationId || "-",
+        getPriorLocationId(inst as Record<string, unknown>) || "-",
         inst.latitude != null ? inst.latitude.toFixed(6) : "-",
         inst.longitude != null ? inst.longitude.toFixed(6) : "-",
         inst.sensorReading != null ? inst.sensorReading.toString() : "-",
@@ -2121,6 +2148,179 @@ export default function Admin() {
       setExportingSelectedInstallations(false);
     }
   };
+
+  // ---------- Location Table Full Update ----------
+
+  const handleLocTableFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const isValid = file.name.endsWith(".csv") || file.name.endsWith(".xlsx") || file.name.endsWith(".xls");
+    if (!isValid) {
+      toast({ variant: "destructive", title: "Invalid File", description: "Please upload a CSV or Excel (.xlsx/.xls) file." });
+      return;
+    }
+    setLocTableFile(file);
+    setLocTablePreview(null);
+    setLocTableParseErrors([]);
+    setLocTableResult(null);
+  };
+
+  const handleLocTableParse = async () => {
+    if (!locTableFile) return;
+    setLocTableParsing(true);
+    setLocTablePreview(null);
+    setLocTableParseErrors([]);
+    setLocTableResult(null);
+
+    try {
+      let rows: string[][];
+      if (locTableFile.name.endsWith(".xlsx") || locTableFile.name.endsWith(".xls")) {
+        rows = await parseLocationExcel(locTableFile);
+      } else {
+        const text = await locTableFile.text();
+        rows = parseLocationCSV(text);
+      }
+
+      if (rows.length < 2) {
+        setLocTableParseErrors(["File must contain at least a header row and one data row."]);
+        setLocTableParsing(false);
+        return;
+      }
+
+      // Support one or two header rows (Arabic + English).
+      // Merge the first two rows as combined headers so we detect both languages.
+      const row0 = rows[0].map(h => h?.toString().trim() ?? "");
+      const row1 = rows[1].map(h => h?.toString().trim() ?? "");
+      // If row1 looks like a second header (non-numeric first cell), combine both rows.
+      const firstDataRowIndex = !isNaN(Number(row1[0])) ? 1 : 2;
+      const combined = row0.map((h, i) =>
+        `${h} ${(firstDataRowIndex === 2 ? row1[i] : "")}`.trim().toLowerCase()
+      );
+
+      const findCol = (patterns: string[]) =>
+        combined.findIndex(h => patterns.some(p => h.includes(p.toLowerCase())));
+
+      const serialIdx = findCol(["serial", "objectid", "location id", "locationid"]);
+      const amanaIdx  = findCol(["amana", "الأمانة", "أمانة"]);
+      const munIdx    = findCol(["municipality", "البلدية"]);
+      const lonIdx    = findCol(["longitude", "long", " lon", "شرقي"]);
+      const latIdx    = findCol(["latitude", "lat", "شمالي"]);
+
+      const errors: string[] = [];
+      if (serialIdx === -1) errors.push("Could not find Serial / Location ID column.");
+      if (latIdx === -1)    errors.push("Could not find Latitude column.");
+      if (lonIdx === -1)    errors.push("Could not find Longitude column.");
+
+      if (errors.length > 0) {
+        setLocTableParseErrors(errors);
+        setLocTableParsing(false);
+        return;
+      }
+
+      const dataRows = rows.slice(firstDataRowIndex);
+      const preview: LocTablePreviewRow[] = [];
+      const parseErrors: string[] = [];
+
+      dataRows.forEach((row, i) => {
+        const rowNum = firstDataRowIndex + i + 1;
+        const locationId = row[serialIdx]?.toString().trim();
+        if (!locationId || locationId === "") {
+          parseErrors.push(`Row ${rowNum}: Missing Location ID — skipped.`);
+          return;
+        }
+
+        const latStr = row[latIdx]?.toString().trim();
+        const lonStr = row[lonIdx]?.toString().trim();
+        const lat = parseFloat(latStr);
+        const lon = parseFloat(lonStr);
+
+        if (isNaN(lat) || isNaN(lon)) {
+          parseErrors.push(`Row ${rowNum} (${locationId}): Invalid coordinates — skipped.`);
+          return;
+        }
+        if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+          parseErrors.push(`Row ${rowNum} (${locationId}): Coordinates out of range — skipped.`);
+          return;
+        }
+
+        preview.push({
+          locationId,
+          amana:            amanaIdx !== -1 ? row[amanaIdx]?.toString().trim() ?? "" : "",
+          municipalityName: munIdx   !== -1 ? row[munIdx]?.toString().trim()   ?? "" : "",
+          latitude:  lat,
+          longitude: lon,
+          rowNum,
+        });
+      });
+
+      setLocTablePreview(preview);
+      setLocTableParseErrors(parseErrors);
+    } catch (err: any) {
+      setLocTableParseErrors([err.message || "Failed to parse file."]);
+    } finally {
+      setLocTableParsing(false);
+    }
+  };
+
+  const handleLocTableUpload = async () => {
+    if (!locTablePreview || locTablePreview.length === 0) return;
+    setLocTableUploading(true);
+    setLocTableProgress(0);
+    setShowLocTableConfirm(false);
+    const result = { success: 0, failed: 0, errors: [] as string[] };
+
+    try {
+      const total = locTablePreview.length;
+      let batch = writeBatch(db);
+      let batchCount = 0;
+
+      for (let i = 0; i < total; i++) {
+        const row = locTablePreview[i];
+        try {
+          const ref = doc(db, "locations", row.locationId);
+          const data: Record<string, unknown> = {
+            locationId: row.locationId,
+            latitude:   row.latitude,
+            longitude:  row.longitude,
+            updatedAt:  serverTimestamp(),
+          };
+          if (row.amana)            data.amana            = row.amana;
+          if (row.municipalityName) data.municipalityName = row.municipalityName;
+
+          batch.set(ref, data, { merge: true });
+          batchCount++;
+          result.success++;
+        } catch (err: any) {
+          result.failed++;
+          result.errors.push(`Row ${row.rowNum} (${row.locationId}): ${err.message || "Failed"}`);
+        }
+
+        if (batchCount === 500) {
+          await batch.commit();
+          batchCount = 0;
+          batch = writeBatch(db);
+        }
+        setLocTableProgress(Math.round(((i + 1) / total) * 100));
+      }
+
+      if (batchCount > 0) await batch.commit();
+
+      setLocTableResult(result);
+      setLocTablePreview(null);
+      setLocTableFile(null);
+      toast({
+        title: "Location Table Updated",
+        description: `Updated ${result.success} location${result.success !== 1 ? "s" : ""}${result.failed > 0 ? `, ${result.failed} failed` : ""}.`,
+      });
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Upload Failed", description: err.message || "An error occurred." });
+    } finally {
+      setLocTableUploading(false);
+      setLocTableProgress(0);
+    }
+  };
+
+  // ---------- end Location Table Full Update ----------
 
   const handleLocationUpload = async () => {
     if (!locationFile || !userProfile) return;
@@ -2318,6 +2518,139 @@ export default function Admin() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Location Table Full Update */}
+      <Card className="border shadow-sm">
+        <CardHeader>
+          <CardTitle>Update Location Table</CardTitle>
+          <CardDescription>
+            Upload a sheet with Serial (Location ID), Amana, Municipality, Longitude, and Latitude.
+            Preview all rows before confirming.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-col sm:flex-row gap-4 items-start">
+            <div className="flex-1 space-y-1">
+              <Input
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                onChange={handleLocTableFileChange}
+                disabled={locTableParsing || locTableUploading}
+                className="cursor-pointer"
+              />
+              <p className="text-xs text-muted-foreground">
+                Expected columns: Serial · الأمانة · البلدية · Longitude · Latitude (Arabic and/or English headers)
+              </p>
+            </div>
+            <Button
+              onClick={handleLocTableParse}
+              disabled={!locTableFile || locTableParsing || locTableUploading}
+            >
+              {locTableParsing ? (
+                <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Parsing...</>
+              ) : (
+                <><Upload className="h-4 w-4 mr-2" />Preview</>
+              )}
+            </Button>
+          </div>
+
+          {locTableParseErrors.length > 0 && (
+            <div className="p-3 rounded-lg border border-yellow-200 bg-yellow-50 dark:bg-yellow-950/20 space-y-1">
+              <p className="text-xs font-semibold text-yellow-700 dark:text-yellow-400">
+                {locTableParseErrors.length} parse issue{locTableParseErrors.length !== 1 ? "s" : ""}
+              </p>
+              <ul className="text-xs text-yellow-700 dark:text-yellow-400 space-y-0.5 max-h-32 overflow-y-auto">
+                {locTableParseErrors.slice(0, 20).map((e, i) => <li key={i}>{e}</li>)}
+                {locTableParseErrors.length > 20 && (
+                  <li className="text-muted-foreground">…and {locTableParseErrors.length - 20} more</li>
+                )}
+              </ul>
+            </div>
+          )}
+
+          {locTablePreview && locTablePreview.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <p className="text-sm font-semibold">
+                  <span className="text-green-600">{locTablePreview.length}</span> location{locTablePreview.length !== 1 ? "s" : ""} ready to update
+                </p>
+                <Button
+                  onClick={() => setShowLocTableConfirm(true)}
+                  disabled={locTableUploading}
+                >
+                  <CheckCircle2 className="h-4 w-4 mr-2" />
+                  Confirm Update
+                </Button>
+              </div>
+
+              <div className="rounded-md border overflow-auto max-h-96">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="whitespace-nowrap">Location ID</TableHead>
+                      <TableHead className="whitespace-nowrap">Amana</TableHead>
+                      <TableHead className="whitespace-nowrap">Municipality</TableHead>
+                      <TableHead className="whitespace-nowrap">Latitude</TableHead>
+                      <TableHead className="whitespace-nowrap">Longitude</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {locTablePreview.map((row) => (
+                      <TableRow key={row.locationId}>
+                        <TableCell className="font-mono font-medium">{row.locationId}</TableCell>
+                        <TableCell className="text-sm">{row.amana || "-"}</TableCell>
+                        <TableCell className="text-sm">{row.municipalityName || "-"}</TableCell>
+                        <TableCell className="font-mono text-sm">{row.latitude.toFixed(6)}</TableCell>
+                        <TableCell className="font-mono text-sm">{row.longitude.toFixed(6)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          )}
+
+          {locTableUploading && (
+            <div className="space-y-2">
+              <Progress value={locTableProgress} />
+              <p className="text-sm text-muted-foreground text-center">{locTableProgress}% complete</p>
+            </div>
+          )}
+
+          {locTableResult && (
+            <div className="flex items-center gap-4 p-4 rounded-lg border">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="h-5 w-5 text-green-600" />
+                <span className="font-semibold text-green-600">{locTableResult.success} updated</span>
+              </div>
+              {locTableResult.failed > 0 && (
+                <div className="flex items-center gap-2">
+                  <XCircle className="h-5 w-5 text-red-600" />
+                  <span className="font-semibold text-red-600">{locTableResult.failed} failed</span>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Confirm Location Table Update Dialog */}
+      <AlertDialog open={showLocTableConfirm} onOpenChange={setShowLocTableConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Location Table Update</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will update <strong>{locTablePreview?.length ?? 0}</strong> location record{(locTablePreview?.length ?? 0) !== 1 ? "s" : ""} in Firestore (coordinates, amana, municipality). Existing fields not present in the sheet are preserved.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleLocTableUpload}>
+              Update Locations
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Location Coordinates Upload */}
       <Card className="border shadow-sm">
@@ -2597,8 +2930,8 @@ export default function Admin() {
                         </div>
                         <div className="text-xs text-muted-foreground flex gap-3">
                           <span>Current Location ID: <span className="font-mono font-medium">{installation.locationId}</span></span>
-                          {installation.originalLocationId && (
-                            <span>Original: <span className="font-mono">{installation.originalLocationId}</span></span>
+                          {getPriorLocationId(installation as Record<string, unknown>) && (
+                            <span>Original: <span className="font-mono">{getPriorLocationId(installation as Record<string, unknown>)}</span></span>
                           )}
                         </div>
                       </div>
@@ -2637,7 +2970,7 @@ export default function Admin() {
               <p className="font-semibold">Changes:</p>
               <ul className="list-disc list-inside space-y-1 text-sm">
                 <li>Set <code className="bg-muted px-1 rounded">locationId</code> to <strong>{newLocationId}</strong></li>
-                <li>Save current locationId to <code className="bg-muted px-1 rounded">originalLocationId</code> (if not already saved)</li>
+                <li>Archive current locationId as <code className="bg-muted px-1 rounded">locationId_yyyy-MM-dd_HHmmss</code></li>
               </ul>
               <p className="text-amber-600 dark:text-amber-500 font-medium mt-3">
                 This action cannot be undone. Are you sure you want to continue?
@@ -2746,7 +3079,7 @@ export default function Admin() {
               <ul className="list-disc list-inside space-y-1 text-sm">
                 <li>Change locationId from <strong>"999"</strong> to <strong>"9999"</strong></li>
                 <li>Exclude team: <code className="bg-muted px-1 rounded">6ZsR0Bd6WbXyc11ooEuV</code></li>
-                <li>Save original locationId to <code className="bg-muted px-1 rounded">originalLocationId</code></li>
+                <li>Archive original locationId as <code className="bg-muted px-1 rounded">locationId_yyyy-MM-dd_HHmmss</code></li>
               </ul>
               <p className="text-amber-600 dark:text-amber-500 font-medium mt-3">
                 This action cannot be undone. Are you sure you want to continue?

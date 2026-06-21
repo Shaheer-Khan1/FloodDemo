@@ -93,7 +93,7 @@ export interface Installation {
   id: string;
   deviceId: string;
   locationId: string;
-  originalLocationId?: string; // Stores the original locationId before bulk updates
+  originalLocationId?: string; // Legacy; new edits use `locationId_{yyyy-MM-dd_HHmmss}` archives
   latitude?: number; // GPS latitude
   longitude?: number; // GPS longitude
   sensorReading: number;
@@ -113,6 +113,8 @@ export interface Installation {
   createdAt?: Date;
   updatedAt?: Date;
   deviceInputMethod?: "qr" | "manual";
+  /** Culvert (type 2) or Waterway (type 3) from bulk type import */
+  type?: "Culvert" | "Waterway" | string;
   serverRefreshedAt?: Date; // last time we attempted a server fetch
   tags?: string[]; // Tags for tracking special states (e.g., "edited by verifier", "escalated to manager")
   escalatedBy?: string; // User who escalated
