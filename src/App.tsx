@@ -43,6 +43,8 @@ import BulkUpdateRecent from "@/pages/bulk-update-recent";
 import CoordinateFlag from "@/pages/coordinate-flag";
 import MunicipalityImport from "@/pages/municipality-import";
 import InstallationTypeImport from "@/pages/installation-type-import";
+import AmanahReadingVariance from "@/pages/amanah-reading-variance";
+import DeviceSqlExport from "@/pages/device-sql-export";
 
 function Router() {
   return (
@@ -235,6 +237,22 @@ function Router() {
         <ProtectedRoute>
           <AppLayout>
             <AdminDeviceFilter />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/amanah-reading-variance">
+        <ProtectedRoute>
+          <AppLayout>
+            <AmanahReadingVariance />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/device-sql-export">
+        <ProtectedRoute>
+          <AppLayout>
+            <DeviceSqlExport />
           </AppLayout>
         </ProtectedRoute>
       </Route>

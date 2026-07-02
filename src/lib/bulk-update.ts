@@ -5,7 +5,7 @@ export const BULK_UPDATE_TAG = "bulk-update";
 export const VERIFIER_EDIT_TAG = "edited by verifier";
 
 /** Default window for “recently edited” installations */
-export const BULK_UPDATE_RECENT_DAYS = 3;
+export const BULK_UPDATE_RECENT_DAYS = 30;
 
 export type RecentEditSource = "bulk" | "verifier";
 

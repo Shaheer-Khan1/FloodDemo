@@ -1981,6 +1981,9 @@ export default function Verification() {
       "Installer",
       "Amanah",
       "Current Location ID",
+      "Current GPS Latitude",
+      "Current GPS Longitude",
+      "Current GPS Coordinates",
       "Snapshot Date/Time",
       "Archived Location ID",
       "Location Ref Latitude",
@@ -2021,6 +2024,14 @@ export default function Verification() {
       const installer = installation.installedByName || "-";
       const deviceId = dev?.id || installation.deviceId || "-";
 
+      // Current GPS
+      const curLat = installation.latitude != null ? installation.latitude.toFixed(6) : "-";
+      const curLon = installation.longitude != null ? installation.longitude.toFixed(6) : "-";
+      const curCoords =
+        installation.latitude != null && installation.longitude != null
+          ? `${installation.latitude.toFixed(6)}, ${installation.longitude.toFixed(6)}`
+          : "-";
+
       relevant.forEach((snap) => {
         const dateLabel = formatSuffix(snap.suffix);
 
@@ -2051,6 +2062,9 @@ export default function Verification() {
           installer,
           amanah,
           currentLocationId,
+          curLat,
+          curLon,
+          curCoords,
           dateLabel,
           archivedLocId,
           locRefLat,
@@ -2080,6 +2094,100 @@ export default function Verification() {
     toast({
       title: "XLSX downloaded",
       description: `Exported ${rows.length} archived snapshot${rows.length === 1 ? "" : "s"} from ${allItems.length} installation${allItems.length === 1 ? "" : "s"}.`,
+    });
+  };
+
+  const handleCurrentAndRecentArchivedXlsx = () => {
+    const allItems = [...displayedItems, ...displayedVerifiedItems];
+
+    // Helper: resolve effective coordinates using location-ref or user GPS
+    const resolveEffectiveCoords = (locationId: string, lat?: number | null, lon?: number | null) => {
+      if (!locationId || locationId === "9999") {
+        if (lat != null && lon != null) {
+          return { lat: lat.toFixed(6), lon: lon.toFixed(6), coords: `${lat.toFixed(6)}, ${lon.toFixed(6)}` };
+        }
+        return { lat: "-", lon: "-", coords: "-" };
+      }
+      const ref = lookupLocationCoords(locationId);
+      if (ref) {
+        return {
+          lat: ref.latitude.toFixed(6),
+          lon: ref.longitude.toFixed(6),
+          coords: `${ref.latitude.toFixed(6)}, ${ref.longitude.toFixed(6)}`,
+        };
+      }
+      return { lat: "-", lon: "-", coords: "-" };
+    };
+
+    const headers = [
+      "Device ID",
+      "Current Location ID",
+      "Current Coordinates",
+      "Last Archived Date/Time",
+      "Last Archived Location ID",
+      "Last Archived Coordinates",
+    ];
+
+    const rows: string[][] = [];
+
+    allItems.forEach(({ installation, device: dev }) => {
+      const deviceId = dev?.id || installation.deviceId || "-";
+      const currentLocId = installation.locationId ? String(installation.locationId).trim() : "";
+
+      // Current effective coords
+      const cur = resolveEffectiveCoords(currentLocId, installation.latitude, installation.longitude);
+
+      // Most recent archived snapshot that has coords or a location ID
+      const snapshots = getInstallationArchivedSnapshots(installation);
+      const latestSnap = snapshots.find(
+        (s) => s.locationId != null || (s.latitude != null && s.longitude != null)
+      );
+
+      let archDate = "-";
+      let archLocId = "-";
+      let archCoords = "-";
+
+      if (latestSnap) {
+        // Format suffix
+        try {
+          const [dp, tp] = latestSnap.suffix.split("_");
+          archDate = `${dp} ${tp.slice(0, 2)}:${tp.slice(2, 4)}:${tp.slice(4, 6)}`;
+        } catch {
+          archDate = latestSnap.suffix;
+        }
+
+        archLocId = latestSnap.locationId ?? "-";
+
+        // Resolve archived effective coords: prefer location-ref for non-9999, else archived GPS
+        const archivedLocIdStr = latestSnap.locationId ?? "";
+        const resolved = resolveEffectiveCoords(archivedLocIdStr, latestSnap.latitude, latestSnap.longitude);
+        archCoords = resolved.coords;
+      }
+
+      rows.push([
+        `="${deviceId}"`,
+        currentLocId || "-",
+        cur.coords,
+        archDate,
+        archLocId,
+        archCoords,
+      ]);
+    });
+
+    if (rows.length === 0) {
+      toast({ title: "No data", description: "No installations in the current view." });
+      return;
+    }
+
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Current + Archived");
+    const dateStr = format(new Date(), "yyyy-MM-dd");
+    XLSX.writeFile(workbook, `current_and_archived_coords_${dateStr}.xlsx`);
+
+    toast({
+      title: "XLSX downloaded",
+      description: `Exported ${rows.length} installation${rows.length === 1 ? "" : "s"} with current + latest archived coordinates.`,
     });
   };
 
@@ -3360,6 +3468,14 @@ export default function Verification() {
                   <FileDown className="h-4 w-4" />
                   Archived + Location ID XLSX
                 </Button>
+                <Button
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  onClick={handleCurrentAndRecentArchivedXlsx}
+                >
+                  <FileDown className="h-4 w-4" />
+                  Current + Archived XLSX
+                </Button>
               </div>
             </div>
           </CardHeader>
@@ -3650,6 +3766,14 @@ export default function Verification() {
                 >
                   <FileDown className="h-4 w-4" />
                   Archived + Location ID XLSX
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  onClick={handleCurrentAndRecentArchivedXlsx}
+                >
+                  <FileDown className="h-4 w-4" />
+                  Current + Archived XLSX
                 </Button>
               </div>
             </div>

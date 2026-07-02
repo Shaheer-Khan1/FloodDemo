@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, Plus, ChevronLeft, ChevronRight, Settings, Map, Filter, FileSpreadsheet, MapPin, Flag, Building2, History, Tags } from "lucide-react";
+import { Droplets, LayoutDashboard, Users, Shield, User, LogOut, Package, Plus, ChevronLeft, ChevronRight, Settings, Map, Filter, FileSpreadsheet, MapPin, Flag, Building2, History, Tags, Gauge, Database } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
@@ -54,6 +54,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       { title: "Box Management", icon: Package, url: "/box-management" },
       { title: "Device Management", icon: Package, url: "/device-management" },
       { title: "Device Filter", icon: Filter, url: "/admin-device-filter" },
+      { title: "Reading Variance", icon: Gauge, url: "/amanah-reading-variance" },
+      { title: "Device SQL Export", icon: Database, url: "/device-sql-export" },
       { title: "Bulk Device Lookup", icon: FileSpreadsheet, url: "/bulk-device-lookup" },
       { title: "Coordinate Update", icon: MapPin, url: "/coordinate-update" },
       { title: "Recent Edits", icon: History, url: "/bulk-update-recent" },
