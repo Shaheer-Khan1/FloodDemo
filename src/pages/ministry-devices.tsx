@@ -1274,216 +1274,287 @@ export default function MinistryDevices() {
   };
 
   // Generate PDF report for a specific Amanah
+  type ReportIssueReason = "device_not_found" | "no_images" | "image_load_failed" | "page_error";
+  type ReportIssue = { deviceId: string; reason: ReportIssueReason };
+
+  const drawImagePlaceholder = (
+    doc: jsPDF,
+    centerX: number,
+    centerY: number,
+    message: string
+  ) => {
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "italic");
+    doc.text(message, centerX, centerY, { align: "center" });
+    doc.setFont("helvetica", "normal");
+  };
+
   const generateReportForAmanah = async (
     amanahName: string,
     amanahRows: typeof rows,
     locationMapRef: Map<string, Location>,
-    imageCache: Map<string, { base64: string; format: "PNG" | "JPEG"; width: number; height: number }> = new Map()
-  ) => {
+    imageCache: Map<string, { base64: string; format: "PNG" | "JPEG"; width: number; height: number }> = new Map(),
+    deviceLookup: Map<string, Device> = new Map()
+  ): Promise<{ issues: ReportIssue[]; pagesGenerated: number }> => {
+    const issues: ReportIssue[] = [];
     const doc = new jsPDF();
     const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
     const margin = 15;
-    const leftPanelWidth = 85; // Width for left panel (text boxes)
-    const rightPanelWidth = pageWidth - leftPanelWidth - margin * 2 - 10; // Width for right panel (images)
+    const leftPanelWidth = 85;
+    const rightPanelWidth = pageWidth - leftPanelWidth - margin * 2 - 10;
     const leftPanelX = margin;
     const rightPanelX = leftPanelX + leftPanelWidth + 10;
+    let pagesGenerated = 0;
 
-    // Generate one page per device
     for (let i = 0; i < amanahRows.length; i++) {
       const row = amanahRows[i];
       const { device, inst } = row;
+      const deviceId = device?.id || inst?.deviceId || "unknown";
+      const deviceMissingFromMaster = !deviceLookup.has(deviceId);
 
-      // Add new page for each device (except first)
-      if (i > 0) {
-        doc.addPage();
-      }
+      try {
+        if (i > 0) {
+          doc.addPage();
+        }
+        pagesGenerated++;
 
-      let yPos = margin;
+        if (deviceMissingFromMaster) {
+          issues.push({ deviceId, reason: "device_not_found" });
+        }
 
-      // Get location data
-      const locationId = inst?.locationId ? String(inst.locationId).trim() : "N/A";
-      const location = locationMapRef.get(locationId);
-      const resolved = resolveCoords(locationId, location, inst, row.amanah, preferUserCapturedCoords);
-      const latitude = resolved?.lat ?? null;
-      const longitude = resolved?.lon ?? null;
-      const sensorReading = inst?.sensorReading ?? null;
+        let yPos = margin;
 
-      // Resolve amanah / municipality for PDF (same logic as XLSX exports)
-      const englishAmanahName = row.amanah && row.amanah !== "-" ? row.amanah : null;
-      const amanahDisplay = translateTeamNameToArabic(englishAmanahName) || row.amanah || "N/A";
-      const { value: municipalityDisplay } = resolveMunicipality(location ?? null, amanahDisplay);
-      const installerName = inst?.installedByName || "N/A";
-      const installDate = inst?.createdAt ? format(inst.createdAt, "yyyy-MM-dd HH:mm") : "N/A";
+        const locationId = inst?.locationId ? String(inst.locationId).trim() : "N/A";
+        const location = locationMapRef.get(locationId);
+        const resolved = resolveCoords(locationId, location, inst, row.amanah, preferUserCapturedCoords);
+        const latitude = resolved?.lat ?? null;
+        const longitude = resolved?.lon ?? null;
+        const sensorReading = inst?.sensorReading ?? null;
 
-      // Header
-      doc.setFontSize(18);
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(...TEXT_COLOR);
-      doc.text(`LOCATION ${locationId}`, leftPanelX, yPos);
-      yPos += 8;
-      doc.setDrawColor(...PRIMARY_COLOR);
-      doc.setLineWidth(1.2);
-      doc.line(margin, yPos, pageWidth - margin, yPos);
-      yPos += 12;
+        const englishAmanahName = row.amanah && row.amanah !== "-" ? row.amanah : null;
+        const amanahDisplay = translateTeamNameToArabic(englishAmanahName) || row.amanah || "N/A";
+        const installerName = inst?.installedByName || "N/A";
+        const installDate = inst?.createdAt ? format(inst.createdAt, "yyyy-MM-dd HH:mm") : "N/A";
 
-      // Left Panel – Details Box
-      // Rows: Location No, Latitude, Longitude, Sensor Reading, Amanah, Municipality, Installer, Install Date
-      const FIELD_H = 8;
-      const FIELDS: { label: string; value: string; warn?: boolean }[] = [
-        { label: "LOCATION NO.", value: locationId },
-        { label: "LATITUDE",     value: latitude !== null ? latitude.toFixed(6) : "N/A" },
-        { label: "LONGITUDE",    value: longitude !== null ? longitude.toFixed(6) : "N/A" },
-        { label: "SENSOR HEIGHT",value: sensorReading !== null ? `${sensorReading} cm` : "N/A" },
-        { label: "AMANAH",       value: amanahDisplay },
-        { label: "INSTALLER",    value: installerName },
-        { label: "INSTALL DATE", value: installDate },
-      ];
-      const boxPadTop = 7;
-      const boxPadBottom = 5;
-      const boxY = yPos;
-      const boxHeight = boxPadTop + FIELDS.length * FIELD_H + boxPadBottom;
+        doc.setFontSize(18);
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(...TEXT_COLOR);
+        doc.text(`LOCATION ${locationId}`, leftPanelX, yPos);
+        yPos += 8;
+        doc.setDrawColor(...PRIMARY_COLOR);
+        doc.setLineWidth(1.2);
+        doc.line(margin, yPos, pageWidth - margin, yPos);
+        yPos += 12;
 
-      doc.setDrawColor(...PRIMARY_COLOR);
-      doc.setLineWidth(0.8);
-      doc.rect(leftPanelX, boxY, leftPanelWidth, boxHeight);
+        const FIELD_H = 8;
+        const FIELDS: { label: string; value: string; warn?: boolean }[] = [
+          { label: "LOCATION NO.", value: locationId },
+          { label: "LATITUDE", value: latitude !== null ? latitude.toFixed(6) : "N/A" },
+          { label: "LONGITUDE", value: longitude !== null ? longitude.toFixed(6) : "N/A" },
+          { label: "SENSOR HEIGHT", value: sensorReading !== null ? `${sensorReading} cm` : "N/A" },
+          { label: "AMANAH", value: amanahDisplay },
+          { label: "INSTALLER", value: installerName },
+          { label: "INSTALL DATE", value: installDate },
+        ];
+        const boxPadTop = 7;
+        const boxPadBottom = 5;
+        const boxY = yPos;
+        const boxHeight = boxPadTop + FIELDS.length * FIELD_H + boxPadBottom;
 
-      let textY = boxY + boxPadTop + 2;
-      const labelX = leftPanelX + 4;
-      const valueX = leftPanelX + 46;
-      const maxValueWidth = leftPanelWidth - 46 - 4;
+        doc.setDrawColor(...PRIMARY_COLOR);
+        doc.setLineWidth(0.8);
+        doc.rect(leftPanelX, boxY, leftPanelWidth, boxHeight);
 
-      for (const field of FIELDS) {
-        doc.setFontSize(7.5);
+        let textY = boxY + boxPadTop + 2;
+        const labelX = leftPanelX + 4;
+        const valueX = leftPanelX + 46;
+        const maxValueWidth = leftPanelWidth - 46 - 4;
+
+        for (const field of FIELDS) {
+          doc.setFontSize(7.5);
+          doc.setFont("helvetica", "bold");
+          doc.setTextColor(...LABEL_COLOR);
+          doc.text(field.label, labelX, textY);
+          const valueColor: [number, number, number] = field.warn ? [200, 30, 30] : TEXT_COLOR;
+          addPdfText(doc, field.value, valueX, textY, 7.5, valueColor, maxValueWidth);
+          textY += FIELD_H;
+        }
+        doc.setTextColor(...TEXT_COLOR);
+
+        const bottomBoxY = boxY + boxHeight + 10;
+        const bottomBoxHeight = 24;
+
+        doc.setDrawColor(...PRIMARY_COLOR);
+        doc.setLineWidth(0.8);
+        doc.rect(leftPanelX, bottomBoxY, leftPanelWidth, bottomBoxHeight);
+
+        doc.setFontSize(8.5);
         doc.setFont("helvetica", "bold");
         doc.setTextColor(...LABEL_COLOR);
-        doc.text(field.label, labelX, textY);
-        // addPdfText handles Arabic via canvas and Latin via normal jsPDF path
-        const valueColor: [number, number, number] = field.warn ? [200, 30, 30] : TEXT_COLOR;
-        addPdfText(doc, field.value, valueX, textY, 7.5, valueColor, maxValueWidth);
-        textY += FIELD_H;
-      }
-      // Reset text color after field loop
-      doc.setTextColor(...TEXT_COLOR);
+        doc.text("DEVICE CODE", leftPanelX + 6, bottomBoxY + 9);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        doc.setTextColor(...PRIMARY_COLOR);
+        doc.text(deviceId, leftPanelX + 6, bottomBoxY + 18);
+        doc.setTextColor(...TEXT_COLOR);
 
-      // Left Panel – Device Code Box
-      const bottomBoxY = boxY + boxHeight + 10;
-      const bottomBoxHeight = 24;
+        const imageUrls = inst?.imageUrls || [];
+        const imagesToInclude = imageUrls.length > 1 ? imageUrls.slice(0, 2) : imageUrls.slice(0, 1);
 
-      doc.setDrawColor(...PRIMARY_COLOR);
-      doc.setLineWidth(0.8);
-      doc.rect(leftPanelX, bottomBoxY, leftPanelWidth, bottomBoxHeight);
+        const framePadding = 18;
+        const imageFrameY = yPos;
+        const isSingle = imagesToInclude.length === 1;
+        const slotWidth = rightPanelWidth - framePadding * 2;
+        const slotHeight = slotWidth * 0.75;
+        const slotGap = isSingle ? 0 : 18;
+        const frameHeight = isSingle
+          ? slotHeight + framePadding * 2
+          : slotHeight * 2 + slotGap + framePadding * 2;
+        const availableHeight = isSingle ? slotHeight : slotHeight * 2 + slotGap;
 
-      doc.setFontSize(8.5);
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(...LABEL_COLOR);
-      doc.text("DEVICE CODE", leftPanelX + 6, bottomBoxY + 9);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(10);
-      doc.setTextColor(...PRIMARY_COLOR);
-      doc.text(device.id, leftPanelX + 6, bottomBoxY + 18);
-      doc.setTextColor(...TEXT_COLOR);
+        doc.setDrawColor(...PRIMARY_COLOR);
+        doc.setLineWidth(0.8);
+        doc.rect(rightPanelX, imageFrameY, rightPanelWidth, frameHeight);
 
-      // Right Panel - Device Image(s)
-      const imageHeight = 140;
-      const imageUrls = inst?.imageUrls || [];
-      const imagesToInclude = imageUrls.length > 1 ? imageUrls.slice(0, 2) : imageUrls.slice(0, 1);
+        const imageAreaY = imageFrameY + framePadding;
 
-      const framePadding = 18;
-      const imageFrameY = yPos;
-      const isSingle = imagesToInclude.length === 1;
-      const slotWidth = rightPanelWidth - framePadding * 2;
-      const slotHeight = slotWidth * 0.75; // maintain 4:3 style box
-      const slotGap = isSingle ? 0 : 18;
-      const frameHeight = isSingle
-        ? slotHeight + framePadding * 2
-        : slotHeight * 2 + slotGap + framePadding * 2;
-      const availableHeight = isSingle ? slotHeight : slotHeight * 2 + slotGap;
-      const availableWidth = slotWidth;
+        if (imagesToInclude.length === 0) {
+          issues.push({ deviceId, reason: "no_images" });
+          drawImagePlaceholder(
+            doc,
+            rightPanelX + rightPanelWidth / 2,
+            imageAreaY + availableHeight / 2,
+            "No images available"
+          );
+        } else {
+          const multiple = !isSingle;
+          let loadedCount = 0;
 
-      doc.setDrawColor(...PRIMARY_COLOR);
-      doc.setLineWidth(0.8);
-      doc.rect(rightPanelX, imageFrameY, rightPanelWidth, frameHeight);
+          for (let index = 0; index < imagesToInclude.length; index++) {
+            const imageUrl = imagesToInclude[index];
+            const slotX = rightPanelX + framePadding;
+            const slotY = multiple ? imageAreaY + index * (slotHeight + slotGap) : imageAreaY;
+            const slotCenterX = slotX + slotWidth / 2;
+            const slotCenterY = slotY + slotHeight / 2;
 
-      const imageAreaY = imageFrameY + framePadding;
+            let imageDrawn = false;
 
-      if (imagesToInclude.length > 0) {
-        const multiple = !isSingle;
-
-        for (let index = 0; index < imagesToInclude.length; index++) {
-          const imageUrl = imagesToInclude[index];
-          const slotX = rightPanelX + framePadding;
-          const slotY = multiple ? imageAreaY + index * (slotHeight + slotGap) : imageAreaY;
-
-          try {
-            // Use pre-fetched cache first; fall back to live fetch if not cached
-            const cached = imageCache.get(imageUrl);
-            let base64: string;
-            let format: "PNG" | "JPEG";
-            let aspectRatio: number;
-
-            if (cached) {
-              base64 = cached.base64;
-              format = cached.format;
-              aspectRatio = cached.width / cached.height;
-            } else {
-              const fetched = await fetchImageAsBase64(imageUrl);
-              if (!fetched) throw new Error("Image fetch returned null");
-              base64 = fetched.base64;
-              format = fetched.format;
-              aspectRatio = fetched.width / fetched.height;
-            }
-
-            let targetWidth = slotWidth;
-            let targetHeight = slotHeight;
-            if (aspectRatio >= slotWidth / slotHeight) {
-              targetHeight = slotWidth / aspectRatio;
-            } else {
-              targetWidth = slotHeight * aspectRatio;
-            }
-
-            const offsetX = slotX + (slotWidth - targetWidth) / 2;
-            const offsetY = slotY + (slotHeight - targetHeight) / 2;
-            doc.addImage(base64, format, offsetX, offsetY, targetWidth, targetHeight);
-          } catch (error) {
-            console.error(`Error loading image for device ${device.id}:`, error);
-            // Last-resort: ask jsPDF to load the URL directly
             try {
-              const fallbackUrl = await getFreshDownloadURL(imageUrl);
-              const format = fallbackUrl.toLowerCase().includes(".png") ? "PNG" : "JPEG";
-              doc.addImage(fallbackUrl, format, slotX, slotY, slotWidth, slotHeight);
-            } catch {
-              doc.setFontSize(8);
-              doc.setFont("helvetica", "italic");
-              doc.text(
-                "Image not available",
-                rightPanelX + rightPanelWidth / 2,
-                slotY + slotHeight / 2,
-                { align: "center" }
-              );
-              doc.setFont("helvetica", "normal");
+              const cached = imageCache.get(imageUrl);
+              let base64: string;
+              let format: "PNG" | "JPEG";
+              let aspectRatio: number;
+
+              if (cached) {
+                base64 = cached.base64;
+                format = cached.format;
+                aspectRatio = cached.width / cached.height;
+              } else {
+                const fetched = await fetchImageAsBase64(imageUrl);
+                if (fetched) {
+                  base64 = fetched.base64;
+                  format = fetched.format;
+                  aspectRatio = fetched.width / fetched.height;
+                } else {
+                  base64 = "";
+                  format = "JPEG";
+                  aspectRatio = slotWidth / slotHeight;
+                }
+              }
+
+              if (base64) {
+                let targetWidth = slotWidth;
+                let targetHeight = slotHeight;
+                if (aspectRatio >= slotWidth / slotHeight) {
+                  targetHeight = slotWidth / aspectRatio;
+                } else {
+                  targetWidth = slotHeight * aspectRatio;
+                }
+
+                const offsetX = slotX + (slotWidth - targetWidth) / 2;
+                const offsetY = slotY + (slotHeight - targetHeight) / 2;
+                doc.addImage(base64, format, offsetX, offsetY, targetWidth, targetHeight);
+                imageDrawn = true;
+                loadedCount++;
+              }
+            } catch (error) {
+              console.error(`Error loading image for device ${deviceId}:`, error);
+            }
+
+            if (!imageDrawn) {
+              try {
+                const fallbackUrl = await getFreshDownloadURL(imageUrl);
+                const format = fallbackUrl.toLowerCase().includes(".png") ? "PNG" : "JPEG";
+                doc.addImage(fallbackUrl, format, slotX, slotY, slotWidth, slotHeight);
+                imageDrawn = true;
+                loadedCount++;
+              } catch {
+                drawImagePlaceholder(doc, slotCenterX, slotCenterY, "Image not available");
+              }
             }
           }
-        }
-      } else {
-        // No images available
-        doc.setFontSize(9);
-        doc.setFont("helvetica", "italic");
-        doc.text(
-          "No images available",
-          rightPanelX + rightPanelWidth / 2,
-          imageAreaY + availableHeight / 2,
-          { align: "center" }
-        );
-        doc.setFont("helvetica", "normal");
-      }
 
-      yPos = imageFrameY + frameHeight + 20;
+          if (loadedCount === 0) {
+            issues.push({ deviceId, reason: "image_load_failed" });
+          }
+        }
+      } catch (error) {
+        console.error(`Error generating PDF page for device ${deviceId}:`, error);
+        issues.push({ deviceId, reason: "page_error" });
+      }
     }
 
-    // Save PDF
     const fileName = `${amanahName.replace(/[^a-z0-9]/gi, "_")}_Report.pdf`;
     doc.save(fileName);
+    return { issues, pagesGenerated };
+  };
+
+  const formatReportIssuesToast = (issues: ReportIssue[], reportsGenerated: number) => {
+    const uniqueDevices = new Set(issues.map((issue) => issue.deviceId));
+    const noImages = issues.filter((issue) => issue.reason === "no_images");
+    const imageFailed = issues.filter((issue) => issue.reason === "image_load_failed");
+    const deviceNotFound = issues.filter((issue) => issue.reason === "device_not_found");
+    const pageErrors = issues.filter((issue) => issue.reason === "page_error");
+
+    const sampleIds = (list: ReportIssue[], limit = 3) =>
+      Array.from(new Set(list.map((issue) => issue.deviceId))).slice(0, limit).join(", ");
+
+    const parts = [`Generated ${reportsGenerated} report${reportsGenerated === 1 ? "" : "s"}.`];
+
+    if (noImages.length > 0) {
+      parts.push(
+        `${noImages.length} device${noImages.length === 1 ? "" : "s"} with no images` +
+          (sampleIds(noImages) ? ` (e.g. ${sampleIds(noImages)})` : "") +
+          "."
+      );
+    }
+    if (imageFailed.length > 0) {
+      parts.push(
+        `${imageFailed.length} device${imageFailed.length === 1 ? "" : "s"} with image load errors` +
+          (sampleIds(imageFailed) ? ` (e.g. ${sampleIds(imageFailed)})` : "") +
+          "."
+      );
+    }
+    if (deviceNotFound.length > 0) {
+      parts.push(
+        `${deviceNotFound.length} device${deviceNotFound.length === 1 ? "" : "s"} not in master list` +
+          (sampleIds(deviceNotFound) ? ` (e.g. ${sampleIds(deviceNotFound)})` : "") +
+          "."
+      );
+    }
+    if (pageErrors.length > 0) {
+      parts.push(
+        `${pageErrors.length} device${pageErrors.length === 1 ? "" : "s"} had page errors` +
+          (sampleIds(pageErrors) ? ` (e.g. ${sampleIds(pageErrors)})` : "") +
+          "."
+      );
+    }
+
+    if (uniqueDevices.size === 0) {
+      return parts.join(" ");
+    }
+
+    return parts.join(" ");
   };
 
   // Generate reports for all filtered Amanahs (or a single combined report when UIDs are selected)
@@ -1501,6 +1572,9 @@ export default function MinistryDevices() {
     setReportProgress({ phase: "fetching", fetched: 0, totalImages: 0, amanahIndex: 0, amanahTotal: 0, amanahName: "" });
 
     try {
+      const allIssues: ReportIssue[] = [];
+      let reportsGenerated = 0;
+
       // Count total images upfront so the progress bar has a denominator
       const totalImages = rows.reduce((sum, row) => {
         const urls: string[] = row.inst?.imageUrls || [];
@@ -1517,11 +1591,13 @@ export default function MinistryDevices() {
 
         const reportLabel = `Selected_Devices_${format(new Date(), "yyyy-MM-dd")}`;
         setReportProgress({ phase: "building", fetched: imageCache.size, totalImages, amanahIndex: 1, amanahTotal: 1, amanahName: reportLabel });
-        await generateReportForAmanah(reportLabel, rows, locationMap, imageCache);
+        const result = await generateReportForAmanah(reportLabel, rows, locationMap, imageCache, deviceMap);
+        allIssues.push(...result.issues);
+        reportsGenerated = 1;
 
         toast({
           title: "Report Generated",
-          description: `Generated 1 combined report for ${rows.length} selected device(s).`,
+          description: formatReportIssuesToast(allIssues, reportsGenerated),
         });
         return;
       }
@@ -1544,23 +1620,35 @@ export default function MinistryDevices() {
 
       setReportProgress({ phase: "fetching", fetched: 0, totalImages, amanahIndex: 0, amanahTotal: amanahNames.length, amanahName: "" });
 
-      // Pre-fetch all images in parallel batches of 100 before PDF generation
       const imageCache = await prefetchImagesInBatches(rows, 100, (fetched) => {
         setReportProgress((prev) => prev ? { ...prev, fetched } : null);
       });
 
-      // Generate report for each Amanah (images already in cache — no per-device network wait)
       for (let idx = 0; idx < amanahNames.length; idx++) {
         const amanahName = amanahNames[idx];
         setReportProgress({ phase: "building", fetched: imageCache.size, totalImages, amanahIndex: idx + 1, amanahTotal: amanahNames.length, amanahName });
-        await generateReportForAmanah(amanahName, groupedByAmanah[amanahName], locationMap, imageCache);
-        // Small delay between reports to avoid browser blocking
+        try {
+          const result = await generateReportForAmanah(
+            amanahName,
+            groupedByAmanah[amanahName],
+            locationMap,
+            imageCache,
+            deviceMap
+          );
+          allIssues.push(...result.issues);
+          reportsGenerated++;
+        } catch (error) {
+          console.error(`Error generating report for ${amanahName}:`, error);
+        }
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
       toast({
-        title: "Reports Generated",
-        description: `Successfully generated ${amanahNames.length} report(s).`,
+        title: reportsGenerated > 0 ? "Reports Generated" : "Report Generation Incomplete",
+        variant: reportsGenerated > 0 ? "default" : "destructive",
+        description: reportsGenerated > 0
+          ? formatReportIssuesToast(allIssues, reportsGenerated)
+          : "No reports could be generated. Check the console for details.",
       });
     } catch (error: any) {
       console.error("Error generating reports:", error);
