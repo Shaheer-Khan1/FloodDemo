@@ -26,7 +26,9 @@ import {
   where,
   getDocs,
   doc,
+  documentId,
   updateDoc,
+  setDoc,
   serverTimestamp,
   arrayUnion,
 } from "firebase/firestore";
@@ -76,6 +78,22 @@ const COORD_COMBINED_PATTERNS = [
   "gps", "gpscoords", "latlon", "latlng",
 ];
 
+/** Candidate patterns for municipality column */
+const MUNICIPALITY_PATTERNS = [
+  "municipalityname", "municipality", "البلدية", "بلدية",
+  "baladia", "baldia", "munic",
+];
+
+/** Location ID used to write municipality (sheet value preferred, else installation). */
+function resolveMunicipalityTargetLocationId(row: {
+  locationId?: string;
+  currentLocationId?: string | null;
+}): string | null {
+  const fromSheet = row.locationId?.trim();
+  if (fromSheet) return fromSheet;
+  const fromInstall = row.currentLocationId?.trim();
+  return fromInstall || null;
+}
 /**
  * Find a column header that matches one of the given patterns.
  * Exact matches are preferred over substring matches.
@@ -141,15 +159,19 @@ interface ParsedRow {
   lat?: number;
   lon?: number;
   locationId?: string;
+  municipality?: string;
 }
 
 interface PreviewRow extends ParsedRow {
   currentLat: number | null;
   currentLon: number | null;
   currentLocationId: string | null;
+  currentMunicipality: string | null;
+  municipalityTargetLocationId: string | null;
   installationId: string | null;
   coordsChanged: boolean;
   locationIdChanged: boolean;
+  municipalityChanged: boolean;
   bulkEditedRecently: boolean;
   lastBulkEditAt: Date | null;
   notFound: boolean;
@@ -182,11 +204,16 @@ export default function CoordinateUpdate() {
     lat: string;
     lon: string;
     locationId: string | null;
+    municipality: string | null;
   } | null>(null);
   const [updateCoordinates, setUpdateCoordinates] = useState(true);
   const [updateLocationId, setUpdateLocationId] = useState(false);
+  const [updateMunicipality, setUpdateMunicipality] = useState(false);
   /** Skip rows recently edited in the last 3 days (default on) */
   const [skipRecentlyBulkEdited, setSkipRecentlyBulkEdited] = useState(true);
+
+  const anyFieldSelected =
+    updateCoordinates || updateLocationId || updateMunicipality;
 
   if (!userProfile?.isAdmin) {
     return (
@@ -235,17 +262,19 @@ export default function CoordinateUpdate() {
         return;
       }
 
-      // Detect coordinate columns
+      // Detect coordinate / location / municipality columns
       const latCol = findColumn(headers, LAT_PATTERNS);
       const lonCol = findColumn(headers, LON_PATTERNS);
       const combinedCol = findColumn(headers, COORD_COMBINED_PATTERNS);
       const locationIdCol = findColumn(headers, LOCATION_ID_PATTERNS);
+      const municipalityCol = findColumn(headers, MUNICIPALITY_PATTERNS);
 
       const hasCoordColumns = !!(latCol || lonCol || combinedCol);
-      if (!hasCoordColumns && !locationIdCol) {
+      if (!hasCoordColumns && !locationIdCol && !municipalityCol) {
         setParseError(
-          `Could not find coordinate or Location ID columns. ` +
+          `Could not find coordinate, Location ID, or municipality columns. ` +
             `Tried location ID patterns: ${LOCATION_ID_PATTERNS.join(", ")}; ` +
+            `municipality patterns: ${MUNICIPALITY_PATTERNS.join(", ")}; ` +
             `lat patterns: ${LAT_PATTERNS.join(", ")}; ` +
             `lon patterns: ${LON_PATTERNS.join(", ")}; ` +
             `combined patterns: ${COORD_COMBINED_PATTERNS.join(", ")}. ` +
@@ -284,10 +313,14 @@ export default function CoordinateUpdate() {
         const locationId = locationIdCol
           ? String(row[locationIdCol] ?? "").trim()
           : "";
+        const municipality = municipalityCol
+          ? String(row[municipalityCol] ?? "").trim()
+          : "";
         const hasCoords = lat !== null && lon !== null;
         const hasLocationId = locationId.length > 0;
+        const hasMunicipality = municipality.length > 0;
 
-        if (!hasCoords && !hasLocationId) {
+        if (!hasCoords && !hasLocationId && !hasMunicipality) {
           skippedIds.push(deviceId);
           continue;
         }
@@ -300,6 +333,9 @@ export default function CoordinateUpdate() {
         if (hasLocationId) {
           entry.locationId = locationId;
         }
+        if (hasMunicipality) {
+          entry.municipality = municipality;
+        }
         parsed.push(entry);
       }
 
@@ -307,11 +343,12 @@ export default function CoordinateUpdate() {
         const hints: string[] = [];
         hints.push(`Detected columns → Device ID: "${deviceIdCol}"`);
         if (locationIdCol) hints.push(`Location ID: "${locationIdCol}"`);
+        if (municipalityCol) hints.push(`Municipality: "${municipalityCol}"`);
         if (combinedCol) hints.push(`Combined coords: "${combinedCol}"`);
         if (latCol) hints.push(`Lat: "${latCol}"`);
         if (lonCol) hints.push(`Lon: "${lonCol}"`);
         setParseError(
-          `No valid rows found. ${skippedIds.length} rows were skipped due to missing coordinates and Location ID.\n` +
+          `No valid rows found. ${skippedIds.length} rows were skipped due to missing coordinates, Location ID, and municipality.\n` +
           hints.join(" | ") + "\n" +
           `All headers: ${headers.join(", ")}`
         );
@@ -323,6 +360,7 @@ export default function CoordinateUpdate() {
         lat: latCol || combinedCol || "",
         lon: lonCol || combinedCol || "",
         locationId: locationIdCol,
+        municipality: municipalityCol,
       });
       setParsedRows(parsed);
 
@@ -381,6 +419,35 @@ export default function CoordinateUpdate() {
         });
       }
 
+      // Collect location IDs we may write municipality to (sheet + installation)
+      const locationIds = new Set<string>();
+      for (const row of rows) {
+        const existing = installationMap[row.deviceId];
+        const target = resolveMunicipalityTargetLocationId({
+          locationId: row.locationId,
+          currentLocationId: existing?.locationId ?? null,
+        });
+        if (target) locationIds.add(target);
+      }
+
+      const municipalityMap: Record<string, string | null> = {};
+      const locationIdList = Array.from(locationIds);
+      for (let i = 0; i < locationIdList.length; i += CHUNK) {
+        const chunk = locationIdList.slice(i, i + CHUNK);
+        const q = query(
+          collection(db, "locations"),
+          where(documentId(), "in", chunk)
+        );
+        const snap = await getDocs(q);
+        snap.forEach((d) => {
+          const name = d.data().municipalityName;
+          municipalityMap[d.id] =
+            name != null && String(name).trim() !== ""
+              ? String(name).trim()
+              : null;
+        });
+      }
+
       const preview: PreviewRow[] = rows.map((row) => {
         const existing = installationMap[row.deviceId];
         if (!existing) {
@@ -389,9 +456,15 @@ export default function CoordinateUpdate() {
             currentLat: null,
             currentLon: null,
             currentLocationId: null,
+            currentMunicipality: null,
+            municipalityTargetLocationId: resolveMunicipalityTargetLocationId({
+              locationId: row.locationId,
+              currentLocationId: null,
+            }),
             installationId: null,
             coordsChanged: false,
             locationIdChanged: false,
+            municipalityChanged: false,
             bulkEditedRecently: false,
             lastBulkEditAt: null,
             notFound: true,
@@ -420,14 +493,32 @@ export default function CoordinateUpdate() {
           locationIdChanged = current !== row.locationId.trim();
         }
 
+        const municipalityTargetLocationId = resolveMunicipalityTargetLocationId({
+          locationId: row.locationId,
+          currentLocationId: existing.locationId,
+        });
+        const currentMunicipality = municipalityTargetLocationId
+          ? municipalityMap[municipalityTargetLocationId] ?? null
+          : null;
+
+        let municipalityChanged = false;
+        if (row.municipality != null && row.municipality !== "") {
+          municipalityChanged =
+            !!municipalityTargetLocationId &&
+            (currentMunicipality ?? "") !== row.municipality.trim();
+        }
+
         return {
           ...row,
           currentLat: existing.lat,
           currentLon: existing.lon,
           currentLocationId: existing.locationId,
+          currentMunicipality,
+          municipalityTargetLocationId,
           installationId: existing.id,
           coordsChanged,
           locationIdChanged,
+          municipalityChanged,
           bulkEditedRecently,
           lastBulkEditAt,
           notFound: false,
@@ -448,10 +539,17 @@ export default function CoordinateUpdate() {
 
   // ── apply updates ─────────────────────────────────────────────────────────
 
+  const rowMunicipalityPending = (r: PreviewRow) =>
+    updateMunicipality &&
+    r.municipalityChanged &&
+    !!r.municipality &&
+    !!r.municipalityTargetLocationId;
+
   const rowHasPendingChanges = (r: PreviewRow) =>
     !r.notFound &&
     ((updateCoordinates && r.coordsChanged && r.lat != null && r.lon != null) ||
-      (updateLocationId && r.locationIdChanged && r.locationId != null));
+      (updateLocationId && r.locationIdChanged && r.locationId != null) ||
+      rowMunicipalityPending(r));
 
   const rowBlockedByRecentBulkEdit = (r: PreviewRow) =>
     skipRecentlyBulkEdited && r.bulkEditedRecently && rowHasPendingChanges(r);
@@ -460,11 +558,12 @@ export default function CoordinateUpdate() {
     rowHasPendingChanges(r) && !rowBlockedByRecentBulkEdit(r);
 
   const handleApplyUpdates = async () => {
-    if (!updateCoordinates && !updateLocationId) {
+    if (!anyFieldSelected) {
       toast({
         variant: "destructive",
         title: "Nothing selected",
-        description: "Choose at least one field to update (coordinates or Location ID).",
+        description:
+          "Choose at least one field to update (coordinates, Location ID, or municipality).",
       });
       return;
     }
@@ -486,6 +585,7 @@ export default function CoordinateUpdate() {
     const tagParts: string[] = [];
     if (updateCoordinates) tagParts.push("coordinates");
     if (updateLocationId) tagParts.push("location ID");
+    if (updateMunicipality) tagParts.push("municipality");
     const tagLabel = `${tagParts.join(" and ")} updated via bulk import`;
 
     for (let i = 0; i < toUpdate.length; i++) {
@@ -512,6 +612,18 @@ export default function CoordinateUpdate() {
         }
         applyFieldUpdates(payload, fieldChanges, archiveAt);
         await updateDoc(doc(db, "installations", row.installationId!), payload);
+
+        if (rowMunicipalityPending(row)) {
+          await setDoc(
+            doc(db, "locations", row.municipalityTargetLocationId!),
+            {
+              municipalityName: row.municipality!.trim(),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+
         updated++;
       } catch {
         failed++;
@@ -564,12 +676,16 @@ export default function CoordinateUpdate() {
   const locationIdUpdateCount = previewRows.filter(
     (r) => !r.notFound && updateLocationId && r.locationIdChanged && r.locationId
   ).length;
+  const municipalityUpdateCount = previewRows.filter(
+    (r) => !r.notFound && rowMunicipalityPending(r)
+  ).length;
   const recentEditBlockCount = previewRows.filter(rowBlockedByRecentBulkEdit).length;
 
-  const canApply = updateCoordinates || updateLocationId;
+  const canApply = anyFieldSelected;
 
   const showCoordColumns = previewRows.some((r) => r.lat != null && r.lon != null);
   const showLocationIdColumns = previewRows.some((r) => r.locationId != null);
+  const showMunicipalityColumns = previewRows.some((r) => r.municipality != null);
 
   const renderRowStatus = (row: PreviewRow) => {
     if (row.notFound) {
@@ -590,24 +706,26 @@ export default function CoordinateUpdate() {
       updateCoordinates && row.coordsChanged && row.lat != null && row.lon != null;
     const willLoc =
       updateLocationId && row.locationIdChanged && row.locationId;
-    if (willCoord && willLoc) {
+    const willMunic = rowMunicipalityPending(row);
+    const parts: string[] = [];
+    if (willCoord) parts.push("Coords");
+    if (willLoc) parts.push("Location ID");
+    if (willMunic) parts.push("Municipality");
+    if (parts.length) {
       return (
         <Badge className="text-xs bg-amber-500 hover:bg-amber-600">
-          Coords + Location ID
+          {parts.join(" + ")}
         </Badge>
       );
     }
-    if (willCoord) {
+    if (
+      updateMunicipality &&
+      row.municipality &&
+      !row.municipalityTargetLocationId
+    ) {
       return (
-        <Badge className="text-xs bg-amber-500 hover:bg-amber-600">
-          Coordinates
-        </Badge>
-      );
-    }
-    if (willLoc) {
-      return (
-        <Badge className="text-xs bg-amber-500 hover:bg-amber-600">
-          Location ID
+        <Badge variant="outline" className="text-xs border-red-300 text-red-700">
+          No Location ID
         </Badge>
       );
     }
@@ -626,8 +744,8 @@ export default function CoordinateUpdate() {
       <div>
         <h1 className="text-3xl font-bold">Bulk Installation Update</h1>
         <p className="text-muted-foreground mt-1">
-          Upload a spreadsheet with Device ID and coordinates, Location ID, or both.
-          Choose which fields to apply before running the update.
+          Upload a spreadsheet with Device ID plus coordinates, Location ID, and/or
+          municipality. Choose which fields to apply before running the update.
         </p>
       </div>
 
@@ -637,9 +755,11 @@ export default function CoordinateUpdate() {
         <AlertTitle>Auto-detection</AlertTitle>
         <AlertDescription>
           Detects Device ID (e.g. "Device UID"), Location ID (e.g. "Location ID",
-          "Location No"), and coordinates (e.g. "Latitude"/"Longitude", or combined
-          "Coordinates" like "24.8607,67.0011"). Each row needs at least coordinates
-          or a Location ID in the file.
+          "Location No"), municipality (e.g. "Municipality", "البلدية"), and
+          coordinates (e.g. "Latitude"/"Longitude", or combined "Coordinates" like
+          "24.8607,67.0011"). Each row needs at least one of those fields.
+          Municipality is written to the linked location record (sheet Location ID,
+          or the installation&apos;s current Location ID).
         </AlertDescription>
       </Alert>
 
@@ -648,21 +768,22 @@ export default function CoordinateUpdate() {
         <CardHeader>
           <CardTitle className="text-base">Fields to update</CardTitle>
           <CardDescription>
-            Select one or both. Only checked fields are written to installations.
+            Select one or more. Coordinates and Location ID write to installations;
+            municipality writes to the locations collection.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-6">
-          <div className="flex flex-col sm:flex-row gap-6">
+          <div className="flex flex-col sm:flex-row flex-wrap gap-6">
           <div className="flex items-start gap-3">
             <Checkbox
               id="update-coordinates"
               checked={updateCoordinates}
               onCheckedChange={(checked) => {
-                if (checked !== true && !updateLocationId) {
+                if (checked !== true && !updateLocationId && !updateMunicipality) {
                   toast({
                     variant: "destructive",
                     title: "Select at least one field",
-                    description: "Enable Location ID update or keep coordinates selected.",
+                    description: "Keep at least one update option selected.",
                   });
                   return;
                 }
@@ -683,11 +804,11 @@ export default function CoordinateUpdate() {
               id="update-location-id"
               checked={updateLocationId}
               onCheckedChange={(checked) => {
-                if (checked !== true && !updateCoordinates) {
+                if (checked !== true && !updateCoordinates && !updateMunicipality) {
                   toast({
                     variant: "destructive",
                     title: "Select at least one field",
-                    description: "Enable coordinates update or keep Location ID selected.",
+                    description: "Keep at least one update option selected.",
                   });
                   return;
                 }
@@ -703,7 +824,32 @@ export default function CoordinateUpdate() {
               </p>
             </div>
           </div>
-          <div className="flex items-start gap-3 pt-2 border-t">
+          <div className="flex items-start gap-3">
+            <Checkbox
+              id="update-municipality"
+              checked={updateMunicipality}
+              onCheckedChange={(checked) => {
+                if (checked !== true && !updateCoordinates && !updateLocationId) {
+                  toast({
+                    variant: "destructive",
+                    title: "Select at least one field",
+                    description: "Keep at least one update option selected.",
+                  });
+                  return;
+                }
+                setUpdateMunicipality(checked === true);
+              }}
+            />
+            <div className="space-y-0.5">
+              <Label htmlFor="update-municipality" className="font-medium cursor-pointer">
+                Municipality
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Update municipalityName on the linked location
+              </p>
+            </div>
+          </div>
+          <div className="flex items-start gap-3 pt-2 border-t w-full">
             <Checkbox
               id="skip-recent-bulk-edited"
               checked={skipRecentlyBulkEdited}

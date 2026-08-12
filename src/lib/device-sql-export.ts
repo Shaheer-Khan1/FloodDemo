@@ -52,9 +52,11 @@ function sqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-function sqlNumber(value: number | null | undefined): string {
+function sqlNumber(value: number | null | undefined, decimals?: number): string {
   if (value == null || Number.isNaN(value)) return "NULL";
-  return String(Math.round(value));
+  if (decimals == null) return String(Math.round(value));
+  // Keep full precision for coordinates; trim trailing zeros so ints stay clean (e.g. "21" not "21.000000")
+  return String(Number(value.toFixed(decimals)));
 }
 
 function resolveCoordinates(
@@ -122,7 +124,10 @@ export function buildDeviceUpdateSql(options: SqlExportOptions): string {
       sqlString(rowInput.installation.deviceId),
       ...selectedFields.map((field) => {
         const value = values[field];
-        if (typeof value === "number") return sqlNumber(value);
+        if (typeof value === "number") {
+          const decimals = field === "lat" || field === "lng" ? 6 : undefined;
+          return sqlNumber(value, decimals);
+        }
         if (value == null || value === "") return "NULL";
         return sqlString(String(value));
       }),

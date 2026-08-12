@@ -1131,97 +1131,249 @@ export default function MinistryDevices() {
     }
   };
 
-  const loadImageElement = (url: string): Promise<HTMLImageElement> =>
+  /**
+   * Fetches raw image bytes with a timeout guard so a single slow/hanging
+   * request can't stall an entire batch. This hits the stored URL directly —
+   * no Firebase Storage SDK round-trip needed, since imageUrls already
+   * contain valid, non-expiring download tokens. That extra round-trip
+   * (getDownloadURL per image) was the single biggest bottleneck when
+   * generating reports for Amanahs with thousands of images.
+   */
+  /**
+   * Fetches raw image bytes with a STALL-based timeout rather than a fixed
+   * total deadline: the abort timer resets every time a chunk of data
+   * arrives, so a large photo on a busy connection can take as long as it
+   * needs — we only give up if the connection goes silent for `stallMs`.
+   * (A fixed total timeout caused mass AbortErrors when many parallel
+   * downloads shared limited bandwidth and each one slowed down.)
+   */
+  const fetchImageBlobOnce = async (url: string, stallMs: number): Promise<Blob> => {
+    const controller = new AbortController();
+    let timer = setTimeout(() => controller.abort(), stallMs);
+    const resetTimer = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => controller.abort(), stallMs);
+    };
+
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      if (!response.body) {
+        resetTimer();
+        return await response.blob();
+      }
+
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      resetTimer();
+      // Read chunk by chunk; each received chunk proves the connection is alive
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(value);
+        resetTimer();
+      }
+      return new Blob(chunks, { type: response.headers.get("content-type") || "image/jpeg" });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  /**
+   * Fetches raw image bytes with retries + backoff for transient failures.
+   */
+  const fetchImageBlob = async (url: string, stallMs = 20000, retries = 2): Promise<Blob> => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await fetchImageBlobOnce(url, stallMs);
+      } catch (error) {
+        lastError = error;
+        if (attempt < retries) {
+          await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+        }
+      }
+    }
+    throw lastError;
+  };
+
+  const loadImageElementFromBlob = (blob: Blob): Promise<HTMLImageElement> =>
     new Promise((resolve, reject) => {
+      const objectUrl = URL.createObjectURL(blob);
       const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error(`Image failed to load: ${url}`));
-      img.src = url;
+      img.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error("Image failed to decode"));
+      };
+      img.src = objectUrl;
     });
 
   /**
-   * Converts a single image URL to a downsampled base64 data URL (fetch + canvas).
-   * Images are scaled so the longest side is at most MAX_IMG_PX pixels — this keeps
-   * the base64 string well within JavaScript's string-length limit while still
-   * producing crisp output at PDF print resolution.
+   * Decodes a Blob into a drawable image source, preferring createImageBitmap
+   * (decodes off the main thread where supported) and falling back to an
+   * <img> element for browsers/formats that don't support it.
+   */
+  const decodeImageBlob = async (
+    blob: Blob
+  ): Promise<{ drawable: ImageBitmap | HTMLImageElement; width: number; height: number }> => {
+    if (typeof createImageBitmap === "function") {
+      try {
+        const bitmap = await createImageBitmap(blob);
+        return { drawable: bitmap, width: bitmap.width, height: bitmap.height };
+      } catch {
+        // fall through to <img> decode below
+      }
+    }
+    const imgEl = await loadImageElementFromBlob(blob);
+    return { drawable: imgEl, width: imgEl.naturalWidth, height: imgEl.naturalHeight };
+  };
+
+  /**
+   * Encodes a scaled-down copy of an image to JPEG bytes, preferring
+   * OffscreenCanvas.convertToBlob (async, encodes off the main thread in
+   * modern browsers) over the synchronous canvas.toDataURL path.
+   */
+  const encodeScaledJpeg = async (
+    drawable: ImageBitmap | HTMLImageElement,
+    w: number,
+    h: number
+  ): Promise<Uint8Array | null> => {
+    if (typeof OffscreenCanvas === "function") {
+      const canvas = new OffscreenCanvas(w, h);
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(drawable as CanvasImageSource, 0, 0, w, h);
+        const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.82 });
+        return new Uint8Array(await blob.arrayBuffer());
+      }
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(drawable as CanvasImageSource, 0, 0, w, h);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.82)
+    );
+    if (!blob) return null;
+    return new Uint8Array(await blob.arrayBuffer());
+  };
+
+  /**
+   * Fetches an image and returns raw bytes ready for jsPDF embedding.
+   *
+   * Fast path: if the downloaded file is already a JPEG/PNG whose longest
+   * side is within MAX_IMG_PX, the original bytes are used as-is — no
+   * canvas redraw, no re-encode. Only oversized photos get downscaled and
+   * re-encoded (via OffscreenCanvas where available). Passing Uint8Array to
+   * jsPDF also skips base64 entirely, which is faster and uses ~33% less
+   * memory than data-URL strings.
+   *
+   * URL resolution: hits the stored download URL directly; only falls back
+   * to a fresh Storage SDK URL if the direct fetch fails.
    * Returns null on failure so the caller can fall back gracefully.
    */
-  const MAX_IMG_PX = 1600;
-  const fetchImageAsBase64 = async (
-    url: string
-  ): Promise<{ base64: string; format: "PNG" | "JPEG"; width: number; height: number } | null> => {
+  const MAX_IMG_PX = 2000;
+  type PdfImageData = { data: Uint8Array; format: "PNG" | "JPEG"; width: number; height: number };
+  const fetchImagePdfData = async (url: string): Promise<PdfImageData | null> => {
+    let blob: Blob;
     try {
-      const freshUrl = await getFreshDownloadURL(url);
-      const imgEl = await loadImageElement(freshUrl);
+      blob = await fetchImageBlob(url);
+    } catch {
+      try {
+        const freshUrl = await getFreshDownloadURL(url);
+        blob = await fetchImageBlob(freshUrl);
+      } catch (error) {
+        console.error("Failed to fetch image:", url, error);
+        return null;
+      }
+    }
 
-      let w = imgEl.naturalWidth;
-      let h = imgEl.naturalHeight;
+    try {
+      const { drawable, width: rawW, height: rawH } = await decodeImageBlob(blob);
+      const mime = (blob.type || "").toLowerCase();
+      const isJpeg = mime.includes("jpeg") || mime.includes("jpg");
+      const isPng = mime.includes("png");
 
-      // Downsample if larger than the cap to avoid RangeError on very large photos
-      if (w > MAX_IMG_PX || h > MAX_IMG_PX) {
-        const scale = MAX_IMG_PX / Math.max(w, h);
-        w = Math.round(w * scale);
-        h = Math.round(h * scale);
+      // Fast path: original bytes are directly embeddable, skip re-encode
+      if ((isJpeg || isPng) && rawW <= MAX_IMG_PX && rawH <= MAX_IMG_PX) {
+        if (typeof (drawable as ImageBitmap).close === "function") {
+          (drawable as ImageBitmap).close();
+        }
+        return {
+          data: new Uint8Array(await blob.arrayBuffer()),
+          format: isPng ? "PNG" : "JPEG",
+          width: rawW,
+          height: rawH,
+        };
       }
 
-      const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return null;
-      ctx.drawImage(imgEl, 0, 0, w, h);
-      const format: "PNG" | "JPEG" = freshUrl.toLowerCase().includes(".png") ? "PNG" : "JPEG";
-      // Use 0.85 JPEG quality — visually identical in a PDF, ~40% smaller base64
-      const base64 = canvas.toDataURL(format === "PNG" ? "image/png" : "image/jpeg", 0.85);
-      return { base64, format, width: w, height: h };
-    } catch {
+      // Oversized (or exotic format): downscale and re-encode as JPEG
+      const scale = Math.min(1, MAX_IMG_PX / Math.max(rawW, rawH));
+      const w = Math.max(1, Math.round(rawW * scale));
+      const h = Math.max(1, Math.round(rawH * scale));
+      const data = await encodeScaledJpeg(drawable, w, h);
+      if (typeof (drawable as ImageBitmap).close === "function") {
+        (drawable as ImageBitmap).close();
+      }
+      if (!data) return null;
+      return { data, format: "JPEG", width: w, height: h };
+    } catch (error) {
+      console.error("Failed to decode image:", url, error);
       return null;
     }
   };
 
   /**
-   * Pre-fetches all images for the given rows in parallel batches.
-   * Returns a Map<originalUrl, {base64, format}> used as a cache during PDF generation
+   * Pre-fetches all images for the given rows using a bounded worker pool
+   * (instead of fixed-size sequential batches). Each worker grabs the next
+   * URL as soon as it's free, so a handful of slow images no longer stall
+   * the whole queue waiting for the slowest item in a batch — this is
+   * dramatically faster for Amanahs with thousands of images.
+   * Returns a Map<originalUrl, PdfImageData> used as a cache during PDF generation
    * so each image is only downloaded once regardless of how many reports reference it.
    * Calls onProgress(fetched, total) after every individual image resolves.
    */
   const prefetchImagesInBatches = async (
     targetRows: typeof rows,
-    batchSize = 100,
+    concurrency = 12,
     onProgress?: (fetched: number, total: number) => void
-  ): Promise<Map<string, { base64: string; format: "PNG" | "JPEG"; width: number; height: number }>> => {
-    const cache = new Map<string, { base64: string; format: "PNG" | "JPEG"; width: number; height: number }>();
+  ): Promise<Map<string, PdfImageData>> => {
+    const cache = new Map<string, PdfImageData>();
 
-    // Collect unique URLs (at most 2 per device, same slice used later in PDF)
+    // Collect unique URLs — ALL images for every device are included
     const allUrls = new Set<string>();
     for (const row of targetRows) {
       const imageUrls: string[] = row.inst?.imageUrls || [];
-      const toFetch = imageUrls.length > 1 ? imageUrls.slice(0, 2) : imageUrls.slice(0, 1);
-      toFetch.forEach((u) => allUrls.add(u));
+      imageUrls.forEach((u) => allUrls.add(u));
     }
 
     const urlArray = Array.from(allUrls);
     const total = urlArray.length;
     let fetched = 0;
+    let nextIndex = 0;
 
-    for (let i = 0; i < urlArray.length; i += batchSize) {
-      const batch = urlArray.slice(i, i + batchSize);
-      const results = await Promise.allSettled(
-        batch.map(async (url) => {
-          const result = await fetchImageAsBase64(url);
-          fetched++;
-          onProgress?.(fetched, total);
-          return { url, result };
-        })
-      );
-
-      for (const settled of results) {
-        if (settled.status === "fulfilled" && settled.value.result) {
-          cache.set(settled.value.url, settled.value.result);
+    const worker = async () => {
+      while (nextIndex < urlArray.length) {
+        const currentIndex = nextIndex++;
+        const url = urlArray[currentIndex];
+        const result = await fetchImagePdfData(url);
+        if (result) {
+          cache.set(url, result);
         }
+        fetched++;
+        onProgress?.(fetched, total);
       }
-    }
+    };
+
+    const workerCount = Math.min(concurrency, Math.max(urlArray.length, 1));
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
     return cache;
   };
@@ -1293,18 +1445,33 @@ export default function MinistryDevices() {
     amanahName: string,
     amanahRows: typeof rows,
     locationMapRef: Map<string, Location>,
-    imageCache: Map<string, { base64: string; format: "PNG" | "JPEG"; width: number; height: number }> = new Map(),
+    imageCache: Map<string, PdfImageData> = new Map(),
     deviceLookup: Map<string, Device> = new Map()
   ): Promise<{ issues: ReportIssue[]; pagesGenerated: number }> => {
     const issues: ReportIssue[] = [];
-    const doc = new jsPDF();
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const margin = 15;
-    const leftPanelWidth = 85;
-    const rightPanelWidth = pageWidth - leftPanelWidth - margin * 2 - 10;
-    const leftPanelX = margin;
-    const rightPanelX = leftPanelX + leftPanelWidth + 10;
+    const margin = 10;
+    const HEADER_BAR_COLOR: [number, number, number] = [17, 34, 64];
+    const BADGE_COLOR: [number, number, number] = [8, 178, 196];
+    const GPS_BAR_COLOR: [number, number, number] = [240, 241, 244];
     let pagesGenerated = 0;
+
+    // jsPDF builds each document by joining an internal array of strings — once
+    // the embedded image data for a single document gets too large, that join
+    // blows past the JS engine's max string length and throws
+    // "RangeError: Invalid string length". Amanahs with thousands of large
+    // photos can easily exceed this, so we track the embedded data size as we
+    // go and split into multiple PDF files ("_Part1", "_Part2", ...) once a
+    // document gets close to the limit — keeping every file safely small
+    // while still allowing full-size images.
+    const MAX_DOC_IMAGE_BYTES = 300_000_000;
+    const completedDocs: jsPDF[] = [];
+    let doc = new jsPDF();
+    let pageWidth = doc.internal.pageSize.getWidth();
+    let pageHeight = doc.internal.pageSize.getHeight();
+    let contentX = margin;
+    let contentWidth = pageWidth - margin * 2;
+    let pagesInCurrentDoc = 0;
+    let currentDocImageBytes = 0;
 
     for (let i = 0; i < amanahRows.length; i++) {
       const row = amanahRows[i];
@@ -1313,16 +1480,9 @@ export default function MinistryDevices() {
       const deviceMissingFromMaster = !deviceLookup.has(deviceId);
 
       try {
-        if (i > 0) {
-          doc.addPage();
-        }
-        pagesGenerated++;
-
         if (deviceMissingFromMaster) {
           issues.push({ deviceId, reason: "device_not_found" });
         }
-
-        let yPos = margin;
 
         const locationId = inst?.locationId ? String(inst.locationId).trim() : "N/A";
         const location = locationMapRef.get(locationId);
@@ -1336,133 +1496,169 @@ export default function MinistryDevices() {
         const installerName = inst?.installedByName || "N/A";
         const installDate = inst?.createdAt ? format(inst.createdAt, "yyyy-MM-dd HH:mm") : "N/A";
 
-        doc.setFontSize(18);
-        doc.setFont("helvetica", "bold");
-        doc.setTextColor(...TEXT_COLOR);
-        doc.text(`LOCATION ${locationId}`, leftPanelX, yPos);
-        yPos += 8;
-        doc.setDrawColor(...PRIMARY_COLOR);
-        doc.setLineWidth(1.2);
-        doc.line(margin, yPos, pageWidth - margin, yPos);
-        yPos += 12;
-
-        const FIELD_H = 8;
-        const FIELDS: { label: string; value: string; warn?: boolean }[] = [
-          { label: "LOCATION NO.", value: locationId },
-          { label: "LATITUDE", value: latitude !== null ? latitude.toFixed(6) : "N/A" },
-          { label: "LONGITUDE", value: longitude !== null ? longitude.toFixed(6) : "N/A" },
-          { label: "SENSOR HEIGHT", value: sensorReading !== null ? `${sensorReading} cm` : "N/A" },
-          { label: "AMANAH", value: amanahDisplay },
-          { label: "INSTALLER", value: installerName },
-          { label: "INSTALL DATE", value: installDate },
-        ];
-        const boxPadTop = 7;
-        const boxPadBottom = 5;
-        const boxY = yPos;
-        const boxHeight = boxPadTop + FIELDS.length * FIELD_H + boxPadBottom;
-
-        doc.setDrawColor(...PRIMARY_COLOR);
-        doc.setLineWidth(0.8);
-        doc.rect(leftPanelX, boxY, leftPanelWidth, boxHeight);
-
-        let textY = boxY + boxPadTop + 2;
-        const labelX = leftPanelX + 4;
-        const valueX = leftPanelX + 46;
-        const maxValueWidth = leftPanelWidth - 46 - 4;
-
-        for (const field of FIELDS) {
-          doc.setFontSize(7.5);
-          doc.setFont("helvetica", "bold");
-          doc.setTextColor(...LABEL_COLOR);
-          doc.text(field.label, labelX, textY);
-          const valueColor: [number, number, number] = field.warn ? [200, 30, 30] : TEXT_COLOR;
-          addPdfText(doc, field.value, valueX, textY, 7.5, valueColor, maxValueWidth);
-          textY += FIELD_H;
-        }
-        doc.setTextColor(...TEXT_COLOR);
-
-        const bottomBoxY = boxY + boxHeight + 10;
-        const bottomBoxHeight = 24;
-
-        doc.setDrawColor(...PRIMARY_COLOR);
-        doc.setLineWidth(0.8);
-        doc.rect(leftPanelX, bottomBoxY, leftPanelWidth, bottomBoxHeight);
-
-        doc.setFontSize(8.5);
-        doc.setFont("helvetica", "bold");
-        doc.setTextColor(...LABEL_COLOR);
-        doc.text("DEVICE CODE", leftPanelX + 6, bottomBoxY + 9);
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(10);
-        doc.setTextColor(...PRIMARY_COLOR);
-        doc.text(deviceId, leftPanelX + 6, bottomBoxY + 18);
-        doc.setTextColor(...TEXT_COLOR);
-
-        const imageUrls = inst?.imageUrls || [];
-        const imagesToInclude = imageUrls.length > 1 ? imageUrls.slice(0, 2) : imageUrls.slice(0, 1);
-
-        const framePadding = 18;
-        const imageFrameY = yPos;
-        const isSingle = imagesToInclude.length === 1;
-        const slotWidth = rightPanelWidth - framePadding * 2;
-        const slotHeight = slotWidth * 0.75;
-        const slotGap = isSingle ? 0 : 18;
-        const frameHeight = isSingle
-          ? slotHeight + framePadding * 2
-          : slotHeight * 2 + slotGap + framePadding * 2;
-        const availableHeight = isSingle ? slotHeight : slotHeight * 2 + slotGap;
-
-        doc.setDrawColor(...PRIMARY_COLOR);
-        doc.setLineWidth(0.8);
-        doc.rect(rightPanelX, imageFrameY, rightPanelWidth, frameHeight);
-
-        const imageAreaY = imageFrameY + framePadding;
-
+        // ALL of the device's images are included, up to 2 per page (kept
+        // large); devices with more than 2 photos get continuation pages.
+        const imagesToInclude: string[] = inst?.imageUrls || [];
+        const IMAGES_PER_PAGE = 2;
+        const pageChunks: string[][] = [];
         if (imagesToInclude.length === 0) {
           issues.push({ deviceId, reason: "no_images" });
-          drawImagePlaceholder(
-            doc,
-            rightPanelX + rightPanelWidth / 2,
-            imageAreaY + availableHeight / 2,
-            "No images available"
-          );
+          pageChunks.push([]);
         } else {
-          const multiple = !isSingle;
-          let loadedCount = 0;
+          for (let c = 0; c < imagesToInclude.length; c += IMAGES_PER_PAGE) {
+            pageChunks.push(imagesToInclude.slice(c, c + IMAGES_PER_PAGE));
+          }
+        }
 
-          for (let index = 0; index < imagesToInclude.length; index++) {
-            const imageUrl = imagesToInclude[index];
-            const slotX = rightPanelX + framePadding;
-            const slotY = multiple ? imageAreaY + index * (slotHeight + slotGap) : imageAreaY;
+        let loadedCount = 0;
+
+        for (let pageIdx = 0; pageIdx < pageChunks.length; pageIdx++) {
+          const chunk = pageChunks[pageIdx];
+
+          if (pagesInCurrentDoc > 0 && currentDocImageBytes > MAX_DOC_IMAGE_BYTES) {
+            completedDocs.push(doc);
+            doc = new jsPDF();
+            pageWidth = doc.internal.pageSize.getWidth();
+            pageHeight = doc.internal.pageSize.getHeight();
+            contentX = margin;
+            contentWidth = pageWidth - margin * 2;
+            pagesInCurrentDoc = 0;
+            currentDocImageBytes = 0;
+          }
+
+          if (pagesInCurrentDoc > 0) {
+            doc.addPage();
+          }
+          pagesInCurrentDoc++;
+          pagesGenerated++;
+
+          // --- Header bar: index badge + device ID (large, full width) ---
+          const headerY = margin;
+          const headerH = 16;
+          doc.setFillColor(...HEADER_BAR_COLOR);
+          doc.rect(contentX, headerY, contentWidth, headerH, "F");
+
+          const badgeW = 16;
+          const badgeH = headerH;
+          doc.setFillColor(...BADGE_COLOR);
+          doc.rect(contentX, headerY, badgeW, badgeH, "F");
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(11);
+          doc.setTextColor(255, 255, 255);
+          doc.text(`#${i + 1}`, contentX + badgeW / 2, headerY + badgeH / 2 + 1.5, { align: "center" });
+
+          doc.setFontSize(13);
+          doc.text(deviceId, contentX + badgeW + 6, headerY + badgeH / 2 + 1.5);
+
+          if (pageChunks.length > 1) {
+            doc.setFontSize(9);
+            doc.text(`Photos ${pageIdx + 1}/${pageChunks.length}`, contentX + contentWidth - 4, headerY + badgeH / 2 + 1.5, { align: "right" });
+          }
+
+          // --- GPS bar ---
+          const gpsY = headerY + headerH;
+          const gpsH = 10;
+          doc.setFillColor(...GPS_BAR_COLOR);
+          doc.setDrawColor(210, 212, 218);
+          doc.setLineWidth(0.3);
+          doc.rect(contentX, gpsY, contentWidth, gpsH, "FD");
+
+          const gpsTextY = gpsY + gpsH / 2 + 1.2;
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(9);
+          doc.setTextColor(...BADGE_COLOR);
+          doc.text("GPS:", contentX + 4, gpsTextY);
+
+          const hasCoords = latitude !== null && longitude !== null;
+          doc.setTextColor(...TEXT_COLOR);
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(9.5);
+          doc.text(
+            hasCoords ? `${latitude!.toFixed(6)}\u00B0 N,  ${longitude!.toFixed(6)}\u00B0 E` : "N/A",
+            contentX + 16,
+            gpsTextY
+          );
+
+          if (hasCoords) {
+            const mapsUrl = `https://maps.google.com/?q=${latitude},${longitude}`;
+            const mapsLabel = `maps.google.com/?q=${latitude!.toFixed(6)},${longitude!.toFixed(6)}`;
+            doc.setFont("helvetica", "italic");
+            doc.setFontSize(8);
+            doc.setTextColor(110, 116, 130);
+            doc.textWithLink(mapsLabel, contentX + contentWidth - 4, gpsTextY, { url: mapsUrl, align: "right" });
+            doc.setFont("helvetica", "normal");
+          }
+
+          // --- Details strip: compact two-row grid ---
+          const detailY = gpsY + gpsH + 2;
+          const detailH = 16;
+          doc.setDrawColor(...PRIMARY_COLOR);
+          doc.setLineWidth(0.5);
+          doc.rect(contentX, detailY, contentWidth, detailH);
+
+          const DETAIL_FIELDS: { label: string; value: string }[] = [
+            { label: "LOCATION NO.", value: locationId },
+            { label: "SENSOR HEIGHT", value: sensorReading !== null ? `${sensorReading} cm` : "N/A" },
+            { label: "AMANAH", value: amanahDisplay },
+            { label: "INSTALLER", value: installerName },
+            { label: "INSTALL DATE", value: installDate },
+          ];
+          const colWidth = contentWidth / 3;
+          const rowH = detailH / 2;
+          DETAIL_FIELDS.forEach((field, idx) => {
+            const col = idx % 3;
+            const rowNum = Math.floor(idx / 3);
+            const cellX = contentX + col * colWidth;
+            const cellY = detailY + rowNum * rowH;
+            const labelX = cellX + 3;
+            const labelBaselineY = cellY + rowH / 2 - 1.5;
+            const valueBaselineY = cellY + rowH / 2 + 3.5;
+            doc.setFont("helvetica", "bold");
+            doc.setFontSize(6.5);
+            doc.setTextColor(...LABEL_COLOR);
+            doc.text(field.label, labelX, labelBaselineY);
+            addPdfText(doc, field.value, labelX, valueBaselineY, 7.5, TEXT_COLOR, colWidth - 6);
+          });
+          doc.setTextColor(...TEXT_COLOR);
+
+          // --- Image area: takes up nearly the entire remaining page ---
+          const imageAreaY = detailY + detailH + 4;
+          const imageAreaBottom = pageHeight - margin;
+          const availableHeight = imageAreaBottom - imageAreaY;
+          const isSingle = chunk.length === 1;
+          const slotGap = isSingle ? 0 : 4;
+          const slotCount = Math.max(chunk.length, 1);
+          const slotHeight = slotCount === 1 ? availableHeight : (availableHeight - slotGap * (slotCount - 1)) / slotCount;
+          const slotWidth = contentWidth;
+
+          doc.setDrawColor(...PRIMARY_COLOR);
+          doc.setLineWidth(0.5);
+          doc.rect(contentX, imageAreaY, contentWidth, availableHeight);
+
+          if (chunk.length === 0) {
+            drawImagePlaceholder(
+              doc,
+              contentX + contentWidth / 2,
+              imageAreaY + availableHeight / 2,
+              "No images available"
+            );
+            continue;
+          }
+
+          for (let index = 0; index < chunk.length; index++) {
+            const imageUrl = chunk[index];
+            const slotX = contentX;
+            const slotY = imageAreaY + index * (slotHeight + slotGap);
             const slotCenterX = slotX + slotWidth / 2;
             const slotCenterY = slotY + slotHeight / 2;
 
             let imageDrawn = false;
 
             try {
-              const cached = imageCache.get(imageUrl);
-              let base64: string;
-              let format: "PNG" | "JPEG";
-              let aspectRatio: number;
+              const image = imageCache.get(imageUrl) ?? (await fetchImagePdfData(imageUrl));
 
-              if (cached) {
-                base64 = cached.base64;
-                format = cached.format;
-                aspectRatio = cached.width / cached.height;
-              } else {
-                const fetched = await fetchImageAsBase64(imageUrl);
-                if (fetched) {
-                  base64 = fetched.base64;
-                  format = fetched.format;
-                  aspectRatio = fetched.width / fetched.height;
-                } else {
-                  base64 = "";
-                  format = "JPEG";
-                  aspectRatio = slotWidth / slotHeight;
-                }
-              }
-
-              if (base64) {
+              if (image) {
+                const aspectRatio = image.width / image.height;
                 let targetWidth = slotWidth;
                 let targetHeight = slotHeight;
                 if (aspectRatio >= slotWidth / slotHeight) {
@@ -1473,7 +1669,8 @@ export default function MinistryDevices() {
 
                 const offsetX = slotX + (slotWidth - targetWidth) / 2;
                 const offsetY = slotY + (slotHeight - targetHeight) / 2;
-                doc.addImage(base64, format, offsetX, offsetY, targetWidth, targetHeight);
+                doc.addImage(image.data, image.format, offsetX, offsetY, targetWidth, targetHeight);
+                currentDocImageBytes += image.data.byteLength;
                 imageDrawn = true;
                 loadedCount++;
               }
@@ -1482,21 +1679,13 @@ export default function MinistryDevices() {
             }
 
             if (!imageDrawn) {
-              try {
-                const fallbackUrl = await getFreshDownloadURL(imageUrl);
-                const format = fallbackUrl.toLowerCase().includes(".png") ? "PNG" : "JPEG";
-                doc.addImage(fallbackUrl, format, slotX, slotY, slotWidth, slotHeight);
-                imageDrawn = true;
-                loadedCount++;
-              } catch {
-                drawImagePlaceholder(doc, slotCenterX, slotCenterY, "Image not available");
-              }
+              drawImagePlaceholder(doc, slotCenterX, slotCenterY, "Image not available");
             }
           }
+        }
 
-          if (loadedCount === 0) {
-            issues.push({ deviceId, reason: "image_load_failed" });
-          }
+        if (imagesToInclude.length > 0 && loadedCount === 0) {
+          issues.push({ deviceId, reason: "image_load_failed" });
         }
       } catch (error) {
         console.error(`Error generating PDF page for device ${deviceId}:`, error);
@@ -1504,8 +1693,22 @@ export default function MinistryDevices() {
       }
     }
 
-    const fileName = `${amanahName.replace(/[^a-z0-9]/gi, "_")}_Report.pdf`;
-    doc.save(fileName);
+    if (pagesInCurrentDoc > 0) {
+      completedDocs.push(doc);
+    }
+
+    const baseName = amanahName.replace(/[^a-z0-9]/gi, "_");
+    for (let partIdx = 0; partIdx < completedDocs.length; partIdx++) {
+      const fileName = completedDocs.length > 1
+        ? `${baseName}_Report_Part${partIdx + 1}.pdf`
+        : `${baseName}_Report.pdf`;
+      completedDocs[partIdx].save(fileName);
+      // Small delay between triggered downloads so browsers don't block/drop them
+      if (partIdx < completedDocs.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    }
+
     return { issues, pagesGenerated };
   };
 
@@ -1577,15 +1780,14 @@ export default function MinistryDevices() {
 
       // Count total images upfront so the progress bar has a denominator
       const totalImages = rows.reduce((sum, row) => {
-        const urls: string[] = row.inst?.imageUrls || [];
-        return sum + (urls.length > 1 ? 2 : urls.length > 0 ? 1 : 0);
+        return sum + (row.inst?.imageUrls?.length || 0);
       }, 0);
 
       // When device UIDs are selected line-by-line, generate ONE combined report
       if (deviceUidsFilter.trim()) {
         setReportProgress({ phase: "fetching", fetched: 0, totalImages, amanahIndex: 0, amanahTotal: 1, amanahName: "" });
 
-        const imageCache = await prefetchImagesInBatches(rows, 100, (fetched) => {
+        const imageCache = await prefetchImagesInBatches(rows, 12, (fetched) => {
           setReportProgress((prev) => prev ? { ...prev, fetched } : null);
         });
 
@@ -1620,7 +1822,7 @@ export default function MinistryDevices() {
 
       setReportProgress({ phase: "fetching", fetched: 0, totalImages, amanahIndex: 0, amanahTotal: amanahNames.length, amanahName: "" });
 
-      const imageCache = await prefetchImagesInBatches(rows, 100, (fetched) => {
+      const imageCache = await prefetchImagesInBatches(rows, 12, (fetched) => {
         setReportProgress((prev) => prev ? { ...prev, fetched } : null);
       });
 

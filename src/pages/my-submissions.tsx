@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { Installation } from "@/lib/types";
+import { fetchLatestSmartEndsReading } from "@/lib/smartends-api";
 import { format } from "date-fns";
 
 const statusConfig = {
@@ -77,23 +78,19 @@ export default function MySubmissions() {
           if (!fresh.exists() || fresh.data().latestDisCm !== null) return;
           const deviceId: string = fresh.data().deviceId;
           try {
-            const res = await fetch(`https://op1.smarttive.com/device/${deviceId.toUpperCase()}`, {
-              headers: { "X-API-KEY": import.meta.env.VITE_API_KEY ?? "" }
-            });
-            if (!res.ok) throw new Error(`API ${res.status}`);
-            const data = await res.json();
-            const latestRecord = data?.records?.[0];
-            const latest = latestRecord?.dis_cm ?? null;
+            const reading = await fetchLatestSmartEndsReading(deviceId);
+            const latest = reading.waterLevel;
             // Treat null or zero as "no server data yet"; skip variance/flagging until real data exists
-            const hasServerData = latest !== null && Number(latest) > 0;
+            const hasServerData = Number(latest) > 0;
             if (hasServerData) {
               const sensor: number | undefined = fresh.data().sensorReading;
               const variancePct = sensor ? (Math.abs(latest - sensor) / sensor) * 100 : undefined;
               const preVerified = variancePct !== undefined && variancePct < 5;
+              const latestDisTimestamp = reading.datetime ?? new Date(reading.timestamp).toISOString();
               if (variancePct !== undefined && variancePct > 10) {
                 await updateDoc(d.ref, {
                   latestDisCm: latest,
-                  latestDisTimestamp: latestRecord?.timestamp ?? null,
+                  latestDisTimestamp,
                   status: "flagged",
                   flaggedReason: `Auto-rejected: variance ${variancePct.toFixed(2)}% > 10%`,
                   verifiedBy: "System (Auto-rejected)",
@@ -105,7 +102,7 @@ export default function MySubmissions() {
               } else {
                 await updateDoc(d.ref, {
                   latestDisCm: latest,
-                  latestDisTimestamp: latestRecord?.timestamp ?? null,
+                  latestDisTimestamp,
                   systemPreVerified: preVerified,
                   systemPreVerifiedAt: preVerified ? serverTimestamp() : null,
                   updatedAt: serverTimestamp(),
@@ -113,7 +110,7 @@ export default function MySubmissions() {
               }
             }
           } catch (e) {
-            // Ignore; verifier can fetch later
+            // Ignore (e.g. SmartEndsApiError "not_found" for devices with no reading yet); verifier can fetch later
           }
         }));
       } catch {}

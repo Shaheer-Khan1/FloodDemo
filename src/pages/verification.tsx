@@ -61,6 +61,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { translateTeamNameToArabic } from "@/lib/amanah-translations";
+import { fetchLatestSmartEndsReading, SmartEndsApiError, type SmartEndsReading } from "@/lib/smartends-api";
 import * as XLSX from "xlsx";
 
 function formatCoordPair(
@@ -2289,56 +2290,12 @@ export default function Verification() {
     setFetchingMap(prev => ({ ...prev, [installation.id]: true }));
     
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        console.warn(`⏱️ Request timeout after 15s for device ${installation.deviceId}, aborting...`);
-        controller.abort();
-      }, 15000); // 15 second timeout
-      
-      const apiUrl = `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`;
-      console.log(`📡 Fetching from API: ${apiUrl}`);
-      
-      const apiResponse = await fetch(apiUrl, {
-        method: 'GET',
-        headers: {
-          'X-API-KEY': import.meta.env.VITE_API_KEY || ''
-        },
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
-      console.log(`✅ API Response received: Status ${apiResponse.status}`);
-      
-      // If server hasn't ingested data yet, the API may return 404. Show a friendly message instead of an error.
-      if (apiResponse.status === 404) {
-        console.log(`ℹ️ Device ${installation.deviceId} not found on server (404) - marking as refreshed`);
-        await updateDoc(doc(db, "installations", installation.id), {
-          serverRefreshedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        toast({
-          title: "Data not available yet, please try later.",
-        });
-        return;
-      }
-      
-      if (!apiResponse.ok) {
-        console.error(`❌ API returned error status: ${apiResponse.status}`);
-        throw new Error(`API ${apiResponse.status}`);
-      }
-      
-      console.log('📦 Parsing API response JSON...');
-      const apiData = await apiResponse.json();
-      console.log('📊 API Data received:', {
-        recordsCount: apiData?.records?.length || 0,
-        latestRecord: apiData?.records?.[0] || null
-      });
-      
-      const latestRecord = apiData?.records?.[0];
-      const latestDistance = latestRecord?.dis_cm ?? null;
+      console.log(`📡 Fetching SmartEnds reading for device ${installation.deviceId}`);
+      const reading = await fetchLatestSmartEndsReading(installation.deviceId);
+      console.log('📊 SmartEnds reading received:', reading);
 
-      // Consider null or 0 as "no server data yet"
-      const hasServerData = latestDistance !== null && Number(latestDistance) > 0;
+      const latestDistance = reading.waterLevel;
+      const hasServerData = Number(latestDistance) > 0;
       const hasSensor = !!installation.sensorReading;
       const variancePct = (hasServerData && hasSensor)
         ? (Math.abs(latestDistance - installation.sensorReading) / installation.sensorReading) * 100
@@ -2358,7 +2315,7 @@ export default function Verification() {
         // Auto-reject due to high variance
         await updateDoc(doc(db, "installations", installation.id), {
           latestDisCm: latestDistance,
-          latestDisTimestamp: latestRecord?.timestamp ?? null,
+          latestDisTimestamp: reading.datetime ?? new Date(reading.timestamp).toISOString(),
           status: "flagged",
           flaggedReason: `Auto-rejected: variance ${variancePct.toFixed(2)}% > 10%`,
           verifiedBy: "System (Auto-rejected)",
@@ -2375,7 +2332,7 @@ export default function Verification() {
       } else if (hasServerData) {
         await updateDoc(doc(db, "installations", installation.id), {
           latestDisCm: latestDistance,
-          latestDisTimestamp: latestRecord?.timestamp ?? null,
+          latestDisTimestamp: reading.datetime ?? new Date(reading.timestamp).toISOString(),
           systemPreVerified: preVerified,
           systemPreVerifiedAt: preVerified ? serverTimestamp() : null,
           serverRefreshedAt: serverTimestamp(),
@@ -2400,9 +2357,20 @@ export default function Verification() {
         title: variancePct !== undefined && variancePct > 10
           ? "Installation Auto-Rejected"
           : hasServerData ? (preVerified ? "Pre-verified by System" : "Server Readings Updated") : "No Server Data Yet",
-        description: hasServerData ? `Latest dis_cm: ${latestDistance}` : "No valid records returned.",
+        description: hasServerData ? `Latest water level: ${latestDistance}` : "No valid records returned.",
       });
     } catch (e) {
+      // If SmartEnds explicitly reports "no recent reading yet", show a friendly message.
+      if (e instanceof SmartEndsApiError && e.reason === "not_found") {
+        console.log(`ℹ️ Device ${installation.deviceId} not found on SmartEnds (404) - marking as refreshed`);
+        await updateDoc(doc(db, "installations", installation.id), {
+          serverRefreshedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        toast({ title: "Data not available yet, please try later." });
+        return;
+      }
+
       console.error(`❌ Fetch failed for device ${installation.deviceId}:`, {
         error: e,
         errorName: e instanceof Error ? e.name : 'Unknown',
@@ -2445,39 +2413,14 @@ export default function Verification() {
     setFetchingMap(prev => ({ ...prev, [installation.id]: true }));
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-      const apiResponse = await fetch(
-        `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`,
-        {
-          method: 'GET',
-          headers: { 'X-API-KEY': import.meta.env.VITE_API_KEY || '' },
-          signal: controller.signal,
-        }
-      );
-      clearTimeout(timeoutId);
-
-      if (apiResponse.status === 404) {
-        await updateDoc(doc(db, "installations", installation.id), {
-          serverRefreshedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        toast({ title: "No server data yet for this device." });
-        return;
-      }
-
-      if (!apiResponse.ok) throw new Error(`API ${apiResponse.status}`);
-
-      const apiData = await apiResponse.json();
-      const latestRecord = apiData?.records?.[0];
-      const latestDistance = latestRecord?.dis_cm ?? null;
-      const hasServerData = latestDistance !== null && Number(latestDistance) > 0;
+      const reading = await fetchLatestSmartEndsReading(installation.deviceId);
+      const latestDistance = reading.waterLevel;
+      const hasServerData = Number(latestDistance) > 0;
 
       await updateDoc(doc(db, "installations", installation.id), {
         ...(hasServerData ? {
           latestDisCm: latestDistance,
-          latestDisTimestamp: latestRecord?.timestamp ?? null,
+          latestDisTimestamp: reading.datetime ?? new Date(reading.timestamp).toISOString(),
         } : {}),
         serverRefreshedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -2486,10 +2429,19 @@ export default function Verification() {
       toast({
         title: hasServerData ? "Server Data Updated" : "No Server Data Yet",
         description: hasServerData
-          ? `Latest dis_cm: ${latestDistance}`
+          ? `Latest water level: ${latestDistance}`
           : "Device hasn't reported data yet.",
       });
     } catch (e) {
+      if (e instanceof SmartEndsApiError && e.reason === "not_found") {
+        await updateDoc(doc(db, "installations", installation.id), {
+          serverRefreshedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        toast({ title: "No server data yet for this device." });
+        return;
+      }
+
       toast({
         variant: "destructive",
         title: "Refresh Failed",
@@ -2611,45 +2563,28 @@ export default function Verification() {
 
     const fetchResults: Array<{
       installation: Installation;
-      data?: any;
+      data?: SmartEndsReading;
       error?: boolean;
       skipped?: boolean;
+      reason?: string;
     }> = await Promise.all(
       installationsToRefresh.map(async (installation) => {
         if (!installation.deviceId) {
-          return { installation, skipped: true };
+          return { installation, skipped: true, reason: "Missing device ID" };
         }
 
         try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 15000);
-          
-          const apiResponse = await fetch(
-            `https://op1.smarttive.com/device/${installation.deviceId.toUpperCase()}`,
-            {
-              method: 'GET',
-              headers: {
-                'X-API-KEY': import.meta.env.VITE_API_KEY || ''
-              },
-              signal: controller.signal
-            }
-          );
-          
-          clearTimeout(timeoutId);
-
-          if (apiResponse.status === 404) {
-            return { installation, skipped: true };
-          }
-
-          if (!apiResponse.ok) {
-            return { installation, error: true };
-          }
-
-          const apiData = await apiResponse.json();
-          return { installation, data: apiData };
+          const reading = await fetchLatestSmartEndsReading(installation.deviceId);
+          return { installation, data: reading };
         } catch (error) {
+          if (error instanceof SmartEndsApiError && error.reason === "not_found") {
+            return { installation, skipped: true, reason: "No data yet (404)" };
+          }
           console.error(`Failed to fetch ${installation.deviceId}:`, error);
-          return { installation, error: true };
+          const reason = error instanceof SmartEndsApiError
+            ? `${error.reason}: ${error.message}`
+            : error instanceof Error ? error.message : String(error);
+          return { installation, error: true, reason };
         }
       })
     );
@@ -2662,9 +2597,10 @@ export default function Verification() {
     // PHASE 2: Process results and prepare batch writes (in memory)
     const installationUpdates: Array<{ id: string; data: any }> = [];
     const deviceUpdates: Array<{ id: string; data: any }> = [];
+    const failedRows: Array<{ installation: Installation; status: string; reason: string }> = [];
 
     for (const result of fetchResults) {
-      const { installation, data, error, skipped } = result;
+      const { installation, data, error, skipped, reason } = result;
 
       if (skipped) {
         installationUpdates.push({
@@ -2676,20 +2612,21 @@ export default function Verification() {
         });
         skippedCount++;
         setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
+        failedRows.push({ installation, status: "Skipped", reason: reason || "No data yet" });
         continue;
       }
 
       if (error || !data) {
         errorCount++;
         setRefreshStatuses(prev => ({ ...prev, [installation.id]: "error" }));
+        failedRows.push({ installation, status: "Error", reason: reason || "Unknown error" });
         continue;
       }
 
-      const latestRecord = data?.records?.[0];
-      const latestDistance = latestRecord?.dis_cm ?? null;
+      const latestDistance = data?.waterLevel ?? null;
       const hasServerData = latestDistance !== null && Number(latestDistance) > 0;
 
-      if (hasServerData) {
+      if (hasServerData && data) {
         const hasSensor = !!installation.sensorReading;
         const variancePct = hasSensor
           ? (Math.abs(latestDistance - installation.sensorReading) / installation.sensorReading) * 100
@@ -2697,7 +2634,7 @@ export default function Verification() {
 
         const updateData: any = {
           latestDisCm: latestDistance,
-          latestDisTimestamp: latestRecord?.timestamp ?? null,
+          latestDisTimestamp: data.datetime ?? new Date(data.timestamp).toISOString(),
           serverRefreshedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         };
@@ -2736,6 +2673,7 @@ export default function Verification() {
         });
         skippedCount++;
         setRefreshStatuses(prev => ({ ...prev, [installation.id]: "skipped" }));
+        failedRows.push({ installation, status: "Skipped", reason: "No valid server data (0 or null water level)" });
       }
     }
 
@@ -2774,6 +2712,27 @@ export default function Verification() {
         variant: "destructive",
         title: "Database Update Failed",
         description: "Failed to save updates. Please try again.",
+      });
+    }
+
+    // Export a CSV of every device that didn't get a successful reading (errors + skips)
+    // so failures can be reviewed/retried without digging through the dialog list.
+    if (failedRows.length > 0) {
+      const failedCsvHeaders = ["Device ID", "Installation ID", "Location ID", "Amanah", "Status", "Reason"];
+      const failedCsvRows = failedRows.map(({ installation, status, reason }) => [
+        installation.deviceId || "-",
+        installation.id,
+        installation.locationId ? String(installation.locationId) : "-",
+        getTeamName(installation.teamId) || "-",
+        status,
+        reason,
+      ]);
+      const dateStr = format(new Date(), "yyyy-MM-dd_HHmmss");
+      downloadCsv(failedCsvRows, `refresh_failures_${dateStr}.csv`, failedCsvHeaders);
+
+      toast({
+        title: "Failed Devices CSV Downloaded",
+        description: `${failedRows.length} device${failedRows.length === 1 ? "" : "s"} (errors + skipped) exported.`,
       });
     }
 
