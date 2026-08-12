@@ -2555,39 +2555,69 @@ export default function Verification() {
     let errorCount = 0;
     let skippedCount = 0;
 
-    // PHASE 1: Fetch ALL API data in parallel (store in memory/cache, no Firebase writes yet)
+    // PHASE 1: Fetch API data with a limited concurrency pool (store in memory/cache, no
+    // Firebase writes yet). IMPORTANT: firing hundreds/thousands of requests at once via a
+    // single unbounded Promise.all overwhelms the browser's per-origin connection limit and
+    // the ngrok tunnel — most requests just sit queued until our own abort timeout fires,
+    // which looks like "AbortError: signal is aborted without reason" for almost everything.
+    // A small worker pool with retries on transient network errors fixes this.
+    const REFRESH_CONCURRENCY = 6;
     toast({
       title: "Fetching All Data",
-      description: `Making ${installationsToRefresh.length} parallel API requests...`,
+      description: `Fetching ${installationsToRefresh.length} device(s) (${REFRESH_CONCURRENCY} at a time)...`,
     });
 
-    const fetchResults: Array<{
+    type FetchResult = {
       installation: Installation;
       data?: SmartEndsReading;
       error?: boolean;
       skipped?: boolean;
       reason?: string;
-    }> = await Promise.all(
-      installationsToRefresh.map(async (installation) => {
-        if (!installation.deviceId) {
-          return { installation, skipped: true, reason: "Missing device ID" };
-        }
+    };
 
+    const fetchOneInstallation = async (installation: Installation): Promise<FetchResult> => {
+      if (!installation.deviceId) {
+        return { installation, skipped: true, reason: "Missing device ID" };
+      }
+
+      const maxAttempts = 3;
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-          const reading = await fetchLatestSmartEndsReading(installation.deviceId);
+          const reading = await fetchLatestSmartEndsReading(installation.deviceId, 20000);
           return { installation, data: reading };
         } catch (error) {
           if (error instanceof SmartEndsApiError && error.reason === "not_found") {
             return { installation, skipped: true, reason: "No data yet (404)" };
           }
-          console.error(`Failed to fetch ${installation.deviceId}:`, error);
-          const reason = error instanceof SmartEndsApiError
-            ? `${error.reason}: ${error.message}`
-            : error instanceof Error ? error.message : String(error);
-          return { installation, error: true, reason };
+          lastError = error;
+          // Only retry transient network/abort errors — auth/upstream failures won't self-resolve.
+          const isTransient = !(error instanceof SmartEndsApiError) || error.reason === "network_error";
+          if (!isTransient || attempt === maxAttempts) break;
+          await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
         }
-      })
-    );
+      }
+
+      console.error(`Failed to fetch ${installation.deviceId}:`, lastError);
+      const reason = lastError instanceof SmartEndsApiError
+        ? `${lastError.reason}: ${lastError.message}`
+        : lastError instanceof Error ? lastError.message : String(lastError);
+      return { installation, error: true, reason };
+    };
+
+    const fetchResults: FetchResult[] = [];
+    {
+      let nextIndex = 0;
+      const worker = async () => {
+        while (nextIndex < installationsToRefresh.length) {
+          const currentIndex = nextIndex++;
+          const result = await fetchOneInstallation(installationsToRefresh[currentIndex]);
+          fetchResults[currentIndex] = result;
+        }
+      };
+      const workerCount = Math.min(REFRESH_CONCURRENCY, Math.max(installationsToRefresh.length, 1));
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    }
 
     toast({
       title: "Processing Data",
