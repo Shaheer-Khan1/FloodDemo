@@ -996,6 +996,20 @@ export default function Verification() {
     return displayedVerifiedItems.slice(0, displayLimit);
   }, [displayedVerifiedItems, displayLimit]);
 
+  // Installations currently matching the screen filters (pending + verified tables).
+  // Refresh must use this set rather than allInstallations, otherwise a date/UID/team
+  // filter is ignored and every device in the database is hit.
+  const filteredVisibleInstallations = useMemo(() => {
+    const byId = new Map<string, Installation>();
+    for (const item of displayedItems) {
+      byId.set(item.installation.id, item.installation);
+    }
+    for (const item of displayedVerifiedItems) {
+      byId.set(item.installation.id, item.installation);
+    }
+    return Array.from(byId.values());
+  }, [displayedItems, displayedVerifiedItems]);
+
   // Reset display limit when filters change
   useEffect(() => {
     setDisplayLimit(500);
@@ -1824,6 +1838,121 @@ export default function Verification() {
     });
   };
 
+  const handleReadingsXlsxExport = () => {
+    let itemsToExport: VerificationItem[] = [];
+    if (activeFilter === "verified") {
+      itemsToExport = displayedVerifiedItems;
+    } else if (activeFilter === "all") {
+      itemsToExport = [...displayedItems, ...displayedVerifiedItems];
+    } else {
+      itemsToExport = displayedItems;
+    }
+
+    if (itemsToExport.length === 0) {
+      toast({
+        title: "No installations found",
+        description: "There are no installations in the current view to export.",
+      });
+      return;
+    }
+
+    const parseDateValue = (value: Date | string | undefined | null): Date | null => {
+      if (!value) return null;
+      try {
+        const date = value instanceof Date ? value : new Date(value);
+        return isNaN(date.getTime()) ? null : date;
+      } catch {
+        return null;
+      }
+    };
+
+    const formatDateTime = (value: Date | string | undefined | null): string => {
+      const date = parseDateValue(value);
+      return date ? format(date, "MMM d, yyyy HH:mm") : "-";
+    };
+
+    const sortedItems = [...itemsToExport].sort((a, b) => {
+      const aTime = parseDateValue(a.installation.latestDisTimestamp)?.getTime() ?? 0;
+      const bTime = parseDateValue(b.installation.latestDisTimestamp)?.getTime() ?? 0;
+      if (aTime !== bTime) return bTime - aTime;
+      const aCreated = a.installation.createdAt?.getTime() ?? 0;
+      const bCreated = b.installation.createdAt?.getTime() ?? 0;
+      return bCreated - aCreated;
+    });
+
+    const headers = [
+      "Device ID",
+      "Installer",
+      "Amanah",
+      "Municipality",
+      "Installation Date",
+      "Installer Reading",
+      "Server Reading",
+      "Server Reading Date",
+    ];
+
+    const rows = sortedItems.map((item) => {
+      const { installation } = item;
+      const teamName = installation.teamId ? getTeamName(installation.teamId) : null;
+      const amanah = translateTeamNameToArabic(teamName) ?? teamName ?? "-";
+      const locationId = installation.locationId ? String(installation.locationId).trim() : "";
+      const municipality = (locationId ? locationMap.get(locationId)?.municipalityName : undefined) || "-";
+
+      return [
+        `="${installation.deviceId || "-"}"`,
+        installation.installedByName || "-",
+        amanah,
+        municipality,
+        formatDateTime(installation.createdAt),
+        installation.sensorReading != null ? String(installation.sensorReading) : "-",
+        installation.latestDisCm != null ? String(installation.latestDisCm) : "-",
+        formatDateTime(installation.latestDisTimestamp),
+      ];
+    });
+
+    const countsByDate = new Map<string, { label: string; sortKey: number; count: number }>();
+    for (const item of sortedItems) {
+      const date = parseDateValue(item.installation.latestDisTimestamp);
+      const key = date ? format(date, "yyyy-MM-dd") : "__none__";
+      const existing = countsByDate.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        countsByDate.set(key, {
+          label: date ? format(date, "MMM d, yyyy") : "No server reading date",
+          sortKey: date ? new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime() : -1,
+          count: 1,
+        });
+      }
+    }
+
+    const dateCountRows = Array.from(countsByDate.values())
+      .sort((a, b) => b.sortKey - a.sortKey)
+      .map((entry) => [entry.label, String(entry.count)]);
+
+    const sheetRows = [
+      headers,
+      ...rows,
+      [],
+      ["Devices per date"],
+      ["Date", "Device Count"],
+      ...dateCountRows,
+      ["Total", String(sortedItems.length)],
+    ];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Readings");
+    const filterName = activeFilter === "all" ? "all" : activeFilter;
+    const dateStr = format(new Date(), "yyyy-MM-dd");
+    XLSX.writeFile(workbook, `verification_readings_${filterName}_${dateStr}.xlsx`);
+
+    toast({
+      title: "XLSX downloaded",
+      description: `Exported ${sortedItems.length} installation${sortedItems.length === 1 ? "" : "s"} (newest server reading first).`,
+    });
+  };
+
   const handleDailyCsvPrompt = () => {
     const defaultValue = exportDate || format(new Date(), "yyyy-MM-dd");
     const input = window.prompt("Enter date for CSV (YYYY-MM-DD)", defaultValue);
@@ -2458,8 +2587,8 @@ export default function Verification() {
     
     setRefreshingAll(true);
     
-    // Filter installations based on user selection
-    const installationsToRefresh = allInstallations.filter((installation) => {
+    // Only refresh devices that match the current screen filters (date, team, UIDs, etc.).
+    const installationsToRefresh = filteredVisibleInstallations.filter((installation) => {
       // Always need a deviceId
       if (!installation.deviceId) return false;
       
@@ -2518,11 +2647,13 @@ export default function Verification() {
     });
     
     if (installationsToRefresh.length === 0) {
-      const message = refreshOption === 'all'
-        ? "No installations with device IDs found."
+      const message = filteredVisibleInstallations.length === 0
+        ? "No installations match the current filters."
+        : refreshOption === 'all'
+        ? "No installations with device IDs found in the current filter."
         : refreshOption === 'verified'
-        ? "No verified installations found."
-        : `All installations already have server data within ${refreshDays} days.`;
+        ? "No verified installations found in the current filter."
+        : `All filtered installations already have server data within ${refreshDays} days.`;
       toast({
         title: "No Installations to Refresh",
         description: message,
@@ -2532,10 +2663,10 @@ export default function Verification() {
     }
     
     const refreshDesc = refreshOption === 'all'
-      ? `Refreshing all ${installationsToRefresh.length} installation(s)...`
+      ? `Refreshing ${installationsToRefresh.length} filtered installation(s)...`
       : refreshOption === 'verified'
-      ? `Refreshing ${installationsToRefresh.length} verified installation(s)...`
-      : `Refreshing ${installationsToRefresh.length} installation(s) (missing or older than ${refreshDays} days)...`;
+      ? `Refreshing ${installationsToRefresh.length} filtered verified installation(s)...`
+      : `Refreshing ${installationsToRefresh.length} filtered installation(s) (missing or older than ${refreshDays} days)...`;
     
     toast({
       title: "Refreshing Server Data",
@@ -2555,16 +2686,18 @@ export default function Verification() {
     let errorCount = 0;
     let skippedCount = 0;
 
-    // PHASE 1: Fetch API data with a limited concurrency pool (store in memory/cache, no
-    // Firebase writes yet). IMPORTANT: firing hundreds/thousands of requests at once via a
-    // single unbounded Promise.all overwhelms the browser's per-origin connection limit and
-    // the ngrok tunnel — most requests just sit queued until our own abort timeout fires,
-    // which looks like "AbortError: signal is aborted without reason" for almost everything.
-    // A small worker pool with retries on transient network errors fixes this.
-    const REFRESH_CONCURRENCY = 6;
+    // PHASE 1: Fetch API data in small batches (store in memory/cache, no Firebase writes yet).
+    // IMPORTANT: firing hundreds/thousands of requests at once via a single unbounded Promise.all
+    // overwhelms the browser's per-origin connection limit and the ngrok tunnel — most requests
+    // just sit queued until our own abort timeout fires, which looks like "AbortError: signal is
+    // aborted without reason" for almost everything. Fetching in fixed-size batches with a short
+    // rest between batches (instead of a continuously-saturated pool) gives the tunnel/upstream
+    // room to breathe and avoids that pileup.
+    const REFRESH_BATCH_SIZE = 10;
+    const REFRESH_BATCH_REST_MS = 1500;
     toast({
       title: "Fetching All Data",
-      description: `Fetching ${installationsToRefresh.length} device(s) (${REFRESH_CONCURRENCY} at a time)...`,
+      description: `Fetching ${installationsToRefresh.length} device(s) in batches of ${REFRESH_BATCH_SIZE}...`,
     });
 
     type FetchResult = {
@@ -2606,17 +2739,17 @@ export default function Verification() {
     };
 
     const fetchResults: FetchResult[] = [];
-    {
-      let nextIndex = 0;
-      const worker = async () => {
-        while (nextIndex < installationsToRefresh.length) {
-          const currentIndex = nextIndex++;
-          const result = await fetchOneInstallation(installationsToRefresh[currentIndex]);
-          fetchResults[currentIndex] = result;
-        }
-      };
-      const workerCount = Math.min(REFRESH_CONCURRENCY, Math.max(installationsToRefresh.length, 1));
-      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    const totalBatches = Math.ceil(installationsToRefresh.length / REFRESH_BATCH_SIZE);
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      const start = batchIndex * REFRESH_BATCH_SIZE;
+      const batch = installationsToRefresh.slice(start, start + REFRESH_BATCH_SIZE);
+      const batchResults = await Promise.all(batch.map((installation) => fetchOneInstallation(installation)));
+      fetchResults.push(...batchResults);
+
+      // Rest between batches (but not after the last one) so the tunnel/upstream can recover.
+      if (batchIndex < totalBatches - 1) {
+        await new Promise((resolve) => setTimeout(resolve, REFRESH_BATCH_REST_MS));
+      }
     }
 
     toast({
@@ -2901,8 +3034,8 @@ export default function Verification() {
             </DialogTitle>
             <p className="text-sm text-muted-foreground">
               {refreshOption === 'all' 
-                ? 'Showing all installations being refreshed.'
-                : `Showing installations being refreshed (missing data or older than ${refreshDays} days).`}
+                ? 'Showing filtered installations being refreshed.'
+                : `Showing filtered installations being refreshed (missing data or older than ${refreshDays} days).`}
             </p>
           </DialogHeader>
           <div className="max-h-[420px] overflow-y-auto space-y-3">
@@ -3403,7 +3536,7 @@ export default function Verification() {
                   variant="outline"
                   className="flex items-center gap-2"
                   onClick={refreshAllServerData}
-                  disabled={refreshingAll || allInstallations.length === 0}
+                  disabled={refreshingAll || filteredVisibleInstallations.length === 0}
                 >
                   {refreshingAll ? (
                     <>
@@ -3434,6 +3567,15 @@ export default function Verification() {
                 >
                   <FileDown className="h-4 w-4" />
                   Download CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  onClick={handleReadingsXlsxExport}
+                  disabled={displayedItems.length === 0 && displayedVerifiedItems.length === 0}
+                >
+                  <FileDown className="h-4 w-4" />
+                  Readings XLSX
                 </Button>
                 <Button
                   onClick={handleDailyCsvPrompt}
@@ -3733,6 +3875,15 @@ export default function Verification() {
                 >
                   <FileDown className="h-4 w-4" />
                   Download CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  onClick={handleReadingsXlsxExport}
+                  disabled={displayedVerifiedItems.length === 0 && displayedItems.length === 0}
+                >
+                  <FileDown className="h-4 w-4" />
+                  Readings XLSX
                 </Button>
                 <Button
                   onClick={handleDailyCsvPrompt}
