@@ -68,7 +68,7 @@ export default function Dashboard() {
                 ? "Verifier Dashboard - Review submissions"
                 : userProfile.role === "manager"
                 ? "Manager Dashboard - Monitor & analyze"
-                : "FlowSet IoT Installation Management"}
+                : "OrcaDMP IoT Installation Management"}
             </p>
             {userProfile.role && !userProfile.isAdmin && (
               <Badge variant="secondary" className="capitalize">

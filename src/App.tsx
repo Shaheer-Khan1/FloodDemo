@@ -15,7 +15,7 @@ import Profile from "@/pages/profile";
 import Teams from "@/pages/teams";
 import Admin from "@/pages/admin";
 import NotFound from "@/pages/not-found";
-// FlowSet Pages
+// OrcaDMP Pages
 import Devices from "@/pages/devices";
 import DeviceImport from "@/pages/device-import";
 import BoxImport from "@/pages/box-import";

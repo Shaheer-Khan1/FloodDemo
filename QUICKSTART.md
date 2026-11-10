@@ -1,6 +1,6 @@
-# FlowSet Quick Start Guide
+# OrcaDMP Quick Start Guide
 
-Get FlowSet up and running in 5 minutes!
+Get OrcaDMP up and running in 5 minutes!
 
 ## 🚀 Quick Setup
 
@@ -38,7 +38,7 @@ npm install
 1. Go to Project Settings (gear icon)
 2. Scroll to "Your apps" section
 3. Click the web icon (`</>`) to create a web app
-4. Register your app with a nickname (e.g., "FlowSet")
+4. Register your app with a nickname (e.g., "OrcaDMP")
 5. Copy the `firebaseConfig` object values
 
 ### 3. Set Environment Variables
@@ -283,7 +283,7 @@ service firebase.storage {
 
 ## 📱 Mobile Responsive
 
-FlowSet is fully responsive and works great on:
+OrcaDMP is fully responsive and works great on:
 - Desktop browsers (Chrome, Firefox, Safari, Edge)
 - Tablets
 - Mobile phones
@@ -339,7 +339,7 @@ Perfect for field technicians using phones!
 
 ## 🤝 Need Help?
 
-Contact the Smarttive development team for support and questions.
+Contact the Orca Technologies development team for support and questions.
 
 ---
 

@@ -84,7 +84,7 @@ export default function RoleSelection() {
           <div className="mx-auto mb-4 h-16 w-16 rounded-full bg-gradient-to-br from-blue-600 to-blue-700 flex items-center justify-center shadow-lg">
             <Shield className="h-8 w-8 text-white" />
           </div>
-          <CardTitle className="text-3xl font-bold">Welcome to FlowSet!</CardTitle>
+          <CardTitle className="text-3xl font-bold">Welcome to OrcaDMP!</CardTitle>
           <CardDescription className="text-base mt-2">
             Please select your role to continue. This determines your access and responsibilities in the system.
           </CardDescription>

@@ -44,6 +44,6 @@ export function getUserLabels(user: User | null) {
     installerName: isLPG ? 'Customer Name' : 'Installer Name',
     userReading: isLPG ? 'Initial Weight/Level' : 'User Reading (cm)',
     serverReading: isLPG ? 'Latest Weight/Level' : 'Server Reading (cm)',
-    pageTitle: isLPG ? 'Smart LPG Management' : 'FlowSet IoT Management',
+    pageTitle: isLPG ? 'Smart LPG Management' : 'OrcaDMP IoT Management',
   };
 }

@@ -111,7 +111,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 <Droplets className="h-5 w-5 text-white" />
               </div>
               <div className="flex flex-col">
-                <span className="font-bold text-lg leading-none">FlowSet</span>
+                <span className="font-bold text-lg leading-none">OrcaDMP</span>
                 <span className="text-xs text-muted-foreground leading-none">IoT Installation</span>
               </div>
             </button>
@@ -273,7 +273,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       {/* Footer - stays at bottom */}
       <footer className="border-t bg-white/50 dark:bg-slate-950/50 backdrop-blur-sm mt-auto">
         <div className="container mx-auto px-4 py-6 text-center text-sm text-muted-foreground">
-          <p>Built by <span className="font-semibold text-foreground">Smarttive</span> - FlowSet IoT Installation Management</p>
+          <p>Built by <span className="font-semibold text-foreground">Orca Technologies</span> - OrcaDMP IoT Installation Management</p>
         </div>
       </footer>
     </div>

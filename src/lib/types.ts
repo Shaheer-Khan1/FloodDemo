@@ -10,7 +10,7 @@ export interface UserProfile {
   height: number;
   heightUnit: "cm" | "ft";
   isAdmin: boolean;
-  role?: "admin" | "installer" | "verifier" | "manager" | "ministry"; // FlowSet roles
+  role?: "admin" | "installer" | "verifier" | "manager" | "ministry"; // OrcaDMP roles
   teamId?: string; // For installers/verifiers
   createdAt?: Date;
   updatedAt?: Date;
@@ -46,7 +46,7 @@ export interface CustomTeamMember {
   addedAt?: Date;
 }
 
-// FlowSet Types
+// OrcaDMP Types
 
 export type DeviceStatus = "pending" | "installed" | "verified" | "flagged";
 

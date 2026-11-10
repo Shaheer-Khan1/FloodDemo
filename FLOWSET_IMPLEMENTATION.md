@@ -1,7 +1,7 @@
-# FlowSet Implementation Summary
+# OrcaDMP Implementation Summary
 
 ## Overview
-FlowSet is a robust IoT device installation management system built on React, TypeScript, Firebase, and Tailwind CSS. This document outlines the complete implementation of Sprint 1 features and bonus Sprint 2 verification functionality.
+OrcaDMP is a robust IoT device installation management system built on React, TypeScript, Firebase, and Tailwind CSS. This document outlines the complete implementation of Sprint 1 features and bonus Sprint 2 verification functionality.
 
 ---
 
@@ -63,7 +63,7 @@ FlowSet is a robust IoT device installation management system built on React, Ty
   - `ServerData`: Device server data model
   - `VerificationItem`: Combined verification view model
   - `DeviceStatus`: Type-safe status enum
-  - Enhanced `UserProfile` with FlowSet roles
+  - Enhanced `UserProfile` with OrcaDMP roles
 
 ### Sprint 2: Verification & Quality Loop - **100% Complete** (Bonus)
 
@@ -427,15 +427,15 @@ service cloud.firestore {
 
 ## 🤝 Contributing
 
-This project is part of the FlowSet IoT Installation Management System. For questions or issues, please contact the development team at Smarttive.
+This project is part of the OrcaDMP IoT Installation Management System. For questions or issues, please contact the development team at Orca Technologies.
 
 ---
 
 ## 📄 License
 
-Copyright © 2025 Smarttive. All rights reserved.
+Copyright © 2025 Orca Technologies. All rights reserved.
 
 ---
 
-**Built with ❤️ by Smarttive**
+**Built with ❤️ by Orca Technologies**
 

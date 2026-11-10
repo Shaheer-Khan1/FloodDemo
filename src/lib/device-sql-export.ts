@@ -110,7 +110,7 @@ export function buildDeviceUpdateSql(options: SqlExportOptions): string {
   const columns = ["device_uid", ...selectedFields];
   const lines: string[] = [
     `-- ${scriptLabel}`,
-    "-- Auto-generated from FlowSet Console",
+    "-- Auto-generated from OrcaDMP Console",
     `-- Fields: ${columns.join(", ")}`,
     "-- Cloud-safe: single statement, no BEGIN/COMMIT, no TEMP tables.",
     "",

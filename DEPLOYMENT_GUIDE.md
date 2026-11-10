@@ -1,7 +1,7 @@
-# FlowSet Deployment Guide
+# OrcaDMP Deployment Guide
 
 ## Overview
-This guide explains how to deploy the FlowSet IoT Installation Management system in your own data center or on your infrastructure.
+This guide explains how to deploy the OrcaDMP IoT Installation Management system in your own data center or on your infrastructure.
 
 ## Current Architecture
 - **Frontend**: React + Vite (runs on Vercel/any static host)

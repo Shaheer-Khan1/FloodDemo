@@ -101,7 +101,7 @@ export default function DeviceSqlExport() {
   const [coordinateMode, setCoordinateMode] = useState<CoordinateMode>("location");
   const [forceMunicipalityDash, setForceMunicipalityDash] = useState(true);
   const [includeFloodThresholds, setIncludeFloodThresholds] = useState(true);
-  const [scriptLabel, setScriptLabel] = useState("update_devices_flowset_export");
+  const [scriptLabel, setScriptLabel] = useState("update_devices_orcadmp_export");
   const [selectedFields, setSelectedFields] = useState<Set<SqlExportFieldKey>>(
     () => new Set(DEFAULT_SELECTED_FIELDS)
   );
@@ -322,7 +322,7 @@ export default function DeviceSqlExport() {
       rows: sqlRowInputs,
       selectedFields: selectedFieldList,
       includeFloodThresholds,
-      scriptLabel: scriptLabel.trim() || "update_devices_flowset_export",
+      scriptLabel: scriptLabel.trim() || "update_devices_orcadmp_export",
     });
   }, [sqlRowInputs, selectedFieldList, includeFloodThresholds, scriptLabel]);
 
@@ -342,7 +342,7 @@ export default function DeviceSqlExport() {
 
   const handleDownload = () => {
     if (!generatedSql) return;
-    const safeLabel = (scriptLabel.trim() || "update_devices_flowset_export").replace(
+    const safeLabel = (scriptLabel.trim() || "update_devices_orcadmp_export").replace(
       /[^a-z0-9._-]/gi,
       "_"
     );

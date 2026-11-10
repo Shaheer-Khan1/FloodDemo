@@ -2,7 +2,7 @@
 
 ## 🎉 What's Been Implemented
 
-I've successfully implemented a comprehensive role-based access control system for FlowSet with automatic role selection upon first login. Here's everything that's been added:
+I've successfully implemented a comprehensive role-based access control system for OrcaDMP with automatic role selection upon first login. Here's everything that's been added:
 
 ---
 
@@ -534,19 +534,19 @@ The role-based access control system is now **fully implemented and tested**. Us
 For questions or issues:
 - Check **ROLE_BASED_ACCESS.md** for detailed documentation
 - Review Firebase Console for user roles
-- Contact Smarttive development team
+- Contact Orca Technologies development team
 
 ---
 
 **Role-Based Access Control v1.0**  
 *Successfully Implemented October 2025*  
-*Built by Smarttive for FlowSet IoT Installation Management*
+*Built by Orca Technologies for OrcaDMP IoT Installation Management*
 
 ---
 
 ## 🎊 Thank You!
 
-The FlowSet system now has a robust, scalable, and user-friendly role-based access control system that will serve as the foundation for secure, efficient device installation management!
+The OrcaDMP system now has a robust, scalable, and user-friendly role-based access control system that will serve as the foundation for secure, efficient device installation management!
 
 **Happy Installing! 🔧✅**
 

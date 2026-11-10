@@ -37,7 +37,7 @@
 
 | Document | Description |
 |----------|-------------|
-| [FLOWSET_IMPLEMENTATION.md](./FLOWSET_IMPLEMENTATION.md) | FlowSet IoT system implementation details |
+| [FLOWSET_IMPLEMENTATION.md](./FLOWSET_IMPLEMENTATION.md) | OrcaDMP IoT system implementation details |
 | [ROLE_BASED_ACCESS.md](./ROLE_BASED_ACCESS.md) | Role-based access control system |
 | [ROLE_IMPLEMENTATION_SUMMARY.md](./ROLE_IMPLEMENTATION_SUMMARY.md) | RBAC implementation summary |
 | [CHECKBOX_REVIEW_SYSTEM.md](./CHECKBOX_REVIEW_SYSTEM.md) | Per-field verification checkbox system |

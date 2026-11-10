@@ -1,6 +1,6 @@
-# Firebase Setup Guide for FlowSet
+# Firebase Setup Guide for OrcaDMP
 
-Complete step-by-step guide to configure Firebase for FlowSet.
+Complete step-by-step guide to configure Firebase for OrcaDMP.
 
 ---
 
@@ -8,7 +8,7 @@ Complete step-by-step guide to configure Firebase for FlowSet.
 
 - Gmail account (for Firebase Console access)
 - Node.js 18+ installed
-- FlowSet source code downloaded
+- OrcaDMP source code downloaded
 
 ---
 
@@ -124,7 +124,7 @@ You can also enable:
 1. In Firebase Console, go to **Project Overview** (click the Firebase logo)
 2. Click the **Web icon** (`</>`) to add a web app
 3. Register your app:
-   - App nickname: `FlowSet Web`
+   - App nickname: `OrcaDMP Web`
    - (Optional) Enable Firebase Hosting
    - Click **Register app**
 4. Copy the `firebaseConfig` object
@@ -146,11 +146,11 @@ const firebaseConfig = {
 
 ---
 
-## 🔧 Configure FlowSet
+## 🔧 Configure OrcaDMP
 
 ### Step 8: Create Environment File
 
-1. In your FlowSet project root, create a `.env` file
+1. In your OrcaDMP project root, create a `.env` file
 2. Add your Firebase configuration:
 
 ```env
@@ -297,7 +297,7 @@ service firebase.storage {
 
 ### Step 11: Sign Up and Make Admin
 
-1. Start your FlowSet app: `npm run dev`
+1. Start your OrcaDMP app: `npm run dev`
 2. Open the app in browser
 3. Click **"Sign up"**
 4. Enter email and password
@@ -311,7 +311,7 @@ service firebase.storage {
     - `isAdmin`: change to `true`
     - Add field `role`: set value to `"admin"`
 12. Click **Update**
-13. Refresh your FlowSet app
+13. Refresh your OrcaDMP app
 14. You should now see all admin menu items
 
 ---
@@ -394,7 +394,7 @@ Free tier: Unlimited
 
 ## 🚀 Deploy to Firebase Hosting (Optional)
 
-### Step 14: Deploy FlowSet
+### Step 14: Deploy OrcaDMP
 
 1. Install Firebase CLI:
    ```bash
@@ -504,8 +504,8 @@ For Firebase-specific issues:
 - [Firebase Support](https://firebase.google.com/support)
 - [Stack Overflow](https://stackoverflow.com/questions/tagged/firebase)
 
-For FlowSet-specific issues:
-- Contact Smarttive development team
+For OrcaDMP-specific issues:
+- Contact Orca Technologies development team
 - Check `FLOWSET_IMPLEMENTATION.md` for architecture details
 - Review `QUICKSTART.md` for common issues
 
@@ -513,5 +513,5 @@ For FlowSet-specific issues:
 
 **Firebase setup complete! 🎉**
 
-Your FlowSet application is now connected to Firebase and ready to use!
+Your OrcaDMP application is now connected to Firebase and ready to use!
 

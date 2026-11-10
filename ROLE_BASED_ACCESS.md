@@ -1,8 +1,8 @@
-# FlowSet Role-Based Access Control Guide
+# OrcaDMP Role-Based Access Control Guide
 
 ## Overview
 
-FlowSet now implements a comprehensive role-based access control (RBAC) system that automatically prompts users to select their role upon first login. This ensures each user has the appropriate permissions and sees only relevant features.
+OrcaDMP now implements a comprehensive role-based access control (RBAC) system that automatically prompts users to select their role upon first login. This ensures each user has the appropriate permissions and sees only relevant features.
 
 ---
 
@@ -553,12 +553,12 @@ match /users/{userId} {
 For questions about role-based access control:
 - Review this documentation
 - Check Firebase Console for current role assignments
-- Contact Smarttive development team for issues
+- Contact Orca Technologies development team for issues
 - See `FLOWSET_IMPLEMENTATION.md` for technical details
 
 ---
 
 **Role-Based Access Control v1.0**  
-*Part of FlowSet IoT Installation Management System*  
-*Built by Smarttive*
+*Part of OrcaDMP IoT Installation Management System*  
+*Built by Orca Technologies*
 
